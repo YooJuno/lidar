@@ -1,0 +1,58 @@
+ground_removal:
+  enabled: true
+  use_cuda: true
+  mode: grid
+
+  # RANSAC plane fitting threshold. Smaller values reject non-road structures more strongly.
+  distance_threshold_m: 0.15
+
+  # Final ground mask threshold near the fitted plane.
+  # If wheels/guardrail bottoms turn red, lower this first.
+  final_distance_threshold_m: 0.20
+
+  # Local low-point confirmation margin.
+  # Lower values reduce false ground labels on low objects.
+  local_ground_margin_m: 0.18
+
+  # A point above the fitted plane by more than this is never ground.
+  # This is the main guard against wheels and guardrail bottoms.
+  max_above_plane_m: 0.22
+
+  # Allow slightly more below-plane tolerance for calibration/noise.
+  max_below_plane_m: 0.45
+
+  # Distance-adaptive threshold: far LiDAR points are sparse/noisy.
+  # Increase scale or max only if far road is not being marked red.
+  adaptive_threshold_scale: 0.0025
+  max_adaptive_threshold_m: 0.36
+
+  max_ground_angle_deg: 15.0
+  min_candidate_z: -3.0
+  max_candidate_z: 1.5
+  max_candidate_radius_m: 160.0
+  candidate_grid_cell_m: 0.8
+  grid_max_height_step_m: 0.22
+  grid_max_local_slope_m_per_m: 0.18
+  grid_seed_radius_m: 12.0
+  grid_max_vertical_extent_m: 0.35
+  max_iterations: 240
+  min_inliers: 80
+
+clustering:
+  enabled: true
+  use_cuda: true
+  tolerance_m: 0.55
+  grid_cell_m: 0.25
+  min_height_m: 0.2
+  max_height_m: 5.0
+  min_width_m: 0.1
+  max_width_m: 8.0
+  min_length_m: 0.1
+  max_length_m: 20.0
+  min_cluster_size: 8
+  max_cluster_size: 20000
+
+detection:
+  enabled: true
+  min_confidence: 0.22
+  min_points: 10
