@@ -2,13 +2,13 @@
 #include "lidar_viewer/algorithms/clustering_cuda.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
 #include <limits>
-#include <queue>
 #include <unordered_map>
-#include <unordered_set>
 
 namespace lidar_viewer::algorithms
 {
@@ -20,14 +20,10 @@ struct Vec2
   float y{0.0f};
 };
 
-struct Cell
+std::uint64_t GridKey(int x, int y)
 {
-  std::vector<std::size_t> point_indices;
-};
-
-std::int64_t GridKey(int x, int y)
-{
-  return (static_cast<std::int64_t>(x) << 32) ^ static_cast<std::uint32_t>(y);
+  return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(x)) << 32) |
+    static_cast<std::uint32_t>(y);
 }
 
 std::pair<int, int> CellCoord(const KittiPoint & point, float cell_size)
@@ -185,10 +181,14 @@ OrientedBox3D ComputeOrientedBounds(const std::vector<KittiPoint> & input, const
     best_axis_x.y * center_proj_x + best_axis_y.y * center_proj_y,
     0.5f * (cluster.bounds.min.z + cluster.bounds.max.z)
   };
-  oriented.axis_x = {best_axis_x.x, best_axis_x.y, 0.0f};
-  oriented.axis_y = {best_axis_y.x, best_axis_y.y, 0.0f};
-  oriented.half_length = 0.5f * length;
-  oriented.half_width = 0.5f * width;
+  // The hull's first edge has no preferred heading. Always name the long
+  // side "length", including when a vehicle turns across the sensor's axes.
+  oriented.axis_x = length >= width
+    ? Vec3{best_axis_x.x, best_axis_x.y, 0.0f}
+    : Vec3{best_axis_y.x, best_axis_y.y, 0.0f};
+  oriented.axis_y = {-oriented.axis_x.y, oriented.axis_x.x, 0.0f};
+  oriented.half_length = 0.5f * longer_side;
+  oriented.half_width = 0.5f * std::min(length, width);
   oriented.min_z = cluster.bounds.min.z;
   oriented.max_z = cluster.bounds.max.z;
   oriented.valid = true;
@@ -199,10 +199,10 @@ bool PassesSizeFilter(const Cluster & cluster, const ClusteringParams & params)
 {
   const float width = cluster.oriented_bounds.valid
     ? (cluster.oriented_bounds.half_width * 2.0f)
-    : (cluster.bounds.max.y - cluster.bounds.min.y);
+    : std::min(cluster.bounds.max.x - cluster.bounds.min.x, cluster.bounds.max.y - cluster.bounds.min.y);
   const float length = cluster.oriented_bounds.valid
     ? (cluster.oriented_bounds.half_length * 2.0f)
-    : (cluster.bounds.max.x - cluster.bounds.min.x);
+    : std::max(cluster.bounds.max.x - cluster.bounds.min.x, cluster.bounds.max.y - cluster.bounds.min.y);
   const float height = cluster.bounds.max.z - cluster.bounds.min.z;
 
   return
@@ -213,8 +213,8 @@ bool PassesSizeFilter(const Cluster & cluster, const ClusteringParams & params)
 
 void LogCudaBackendStatus(bool requested, bool used)
 {
-  static bool logged = false;
-  if (logged || !requested) {
+  static std::atomic<bool> logged{false};
+  if (!requested || logged.exchange(true)) {
     return;
   }
 
@@ -223,11 +223,10 @@ void LogCudaBackendStatus(bool requested, bool used)
   } else {
     std::cout << "Clustering CUDA backend unavailable; using CPU fallback\n";
   }
-  logged = true;
 }
 }  // namespace
 
-std::vector<Cluster> RunClusteringPlaceholder(
+std::vector<Cluster> RunClusteringEuclidean(
   const std::vector<KittiPoint> & input,
   const ClusteringParams & params)
 {
@@ -235,31 +234,69 @@ std::vector<Cluster> RunClusteringPlaceholder(
     return {};
   }
 
-  const float cell_size = std::max(params.grid_cell_m, 0.05f);
-  std::unordered_map<std::int64_t, Cell> cells;
-  cells.reserve(input.size() / 4);
+  const float base_tolerance = std::max(params.tolerance_m, 0.05f);
+  const float max_tolerance = std::max(params.max_tolerance_m, base_tolerance);
+  // Small cells avoid repeatedly checking tens of thousands of close-range
+  // returns against points on the far side of a maximum-radius bucket.
+  // Bound the widest query to eight cells in each direction.
+  const float cell_size = std::max({0.05f, max_tolerance / 8.0f,
+    std::min(params.grid_cell_m, base_tolerance)});
+  std::unordered_map<std::uint64_t, std::vector<std::size_t>> cells;
+  cells.reserve(input.size() / 12);
+
+  std::vector<std::pair<int, int>> coordinates(input.size());
+  std::vector<unsigned char> visited(input.size(), 0);
+  std::vector<float> tolerance_squared(input.size(), 0.0f);
+  std::vector<float> query_radius(input.size(), 0.0f);
+  const float range_scale = std::max(params.range_tolerance_scale, 0.0f);
+  bool all_indexable = true;
+  for (std::size_t i = 0; i < input.size(); ++i) {
+    const auto & point = input[i];
+    // Leave room for neighbouring cells and reject invalid input before any
+    // floating-to-integer conversion (including the optional CUDA kernel).
+    constexpr double limit = static_cast<double>(std::numeric_limits<int>::max()) - 16;
+    if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z) ||
+      std::abs(static_cast<double>(point.x) / cell_size) >= limit ||
+      std::abs(static_cast<double>(point.y) / cell_size) >= limit) {
+      visited[i] = 1;
+      all_indexable = false;
+      continue;
+    }
+    coordinates[i] = CellCoord(point, cell_size);
+    const float range = std::hypot(point.x, point.y);
+    const float tolerance = std::min(max_tolerance, base_tolerance + range_scale * range);
+    tolerance_squared[i] = tolerance * tolerance;
+    // A connected neighbour is at most max_tolerance farther from the
+    // sensor. This conservative bound also includes a neighbour whose own
+    // adaptive tolerance is larger than the current point's tolerance.
+    query_radius[i] = std::min(max_tolerance,
+      base_tolerance + range_scale * (range + max_tolerance)) + cell_size * 1e-4f;
+  }
 
   std::vector<CudaCellAssignment> cuda_assignments;
-  const bool used_cuda = params.use_cuda && BuildCellAssignmentsCuda(input, params, cuda_assignments);
+  ClusteringParams cuda_params = params;
+  cuda_params.grid_cell_m = cell_size;
+  const bool used_cuda = params.use_cuda && all_indexable &&
+    BuildCellAssignmentsCuda(input, cuda_params, cuda_assignments);
   LogCudaBackendStatus(params.use_cuda, used_cuda);
   if (used_cuda) {
     for (const auto & assignment : cuda_assignments) {
-      cells[assignment.key].point_indices.push_back(assignment.point_index);
+      cells[assignment.key].push_back(assignment.point_index);
     }
   } else {
     for (std::size_t i = 0; i < input.size(); ++i) {
-      const auto [cx, cy] = CellCoord(input[i], cell_size);
-      cells[GridKey(cx, cy)].point_indices.push_back(i);
+      if (visited[i] != 0) continue;
+      const auto [cx, cy] = coordinates[i];
+      cells[GridKey(cx, cy)].push_back(i);
     }
   }
 
-  const int neighbor_span = std::max(1, static_cast<int>(std::ceil(params.tolerance_m / cell_size)));
-  std::unordered_set<std::int64_t> visited;
-  visited.reserve(cells.size());
+  const float vertical_gap = std::max(params.max_vertical_gap_m, 0.05f);
   std::vector<Cluster> clusters;
+  clusters.reserve(cells.size() / 8);
 
-  for (const auto & [start_key, _] : cells) {
-    if (visited.find(start_key) != visited.end()) {
+  for (std::size_t start_index = 0; start_index < input.size(); ++start_index) {
+    if (visited[start_index] != 0) {
       continue;
     }
 
@@ -275,56 +312,87 @@ std::vector<Cluster> RunClusteringPlaceholder(
       std::numeric_limits<float>::lowest()
     };
 
-    std::queue<std::int64_t> pending;
-    pending.push(start_key);
-    visited.insert(start_key);
+    cluster.indices.reserve(64);
+    cluster.indices.push_back(start_index);
+    visited[start_index] = 1;
 
-    while (!pending.empty()) {
-      const std::int64_t key = pending.front();
-      pending.pop();
+    for (std::size_t pending_index = 0; pending_index < cluster.indices.size(); ++pending_index) {
+      const std::size_t point_index = cluster.indices[pending_index];
+      const KittiPoint & point = input[point_index];
+      ExpandBounds(cluster.bounds, point);
 
-      const auto cell_it = cells.find(key);
-      if (cell_it == cells.end()) {
-        continue;
-      }
-
-      for (const std::size_t point_index : cell_it->second.point_indices) {
-        cluster.indices.push_back(point_index);
-        ExpandBounds(cluster.bounds, input[point_index]);
-      }
-
-      const int cx = static_cast<int>(static_cast<std::int32_t>(key >> 32));
-      const int cy = static_cast<int>(static_cast<std::int32_t>(static_cast<std::uint32_t>(key)));
+      const auto [cx, cy] = coordinates[point_index];
+      const float radius = query_radius[point_index];
+      const int neighbor_span = static_cast<int>(std::ceil(radius / cell_size));
       for (int dy = -neighbor_span; dy <= neighbor_span; ++dy) {
+        const float min_y = static_cast<float>(cy + dy) * cell_size;
+        const float distance_y = std::max({min_y - point.y, point.y - (min_y + cell_size), 0.0f});
+        if (distance_y > radius) continue;
         for (int dx = -neighbor_span; dx <= neighbor_span; ++dx) {
-          if (dx == 0 && dy == 0) {
+          const float min_x = static_cast<float>(cx + dx) * cell_size;
+          const float distance_x = std::max({min_x - point.x, point.x - (min_x + cell_size), 0.0f});
+          if (distance_x * distance_x + distance_y * distance_y > radius * radius) continue;
+          const auto neighbor_key = GridKey(cx + dx, cy + dy);
+          const auto cell_it = cells.find(neighbor_key);
+          if (cell_it == cells.end()) {
             continue;
           }
-          if (std::sqrt(static_cast<float>(dx * dx + dy * dy)) * cell_size > params.tolerance_m) {
-            continue;
+          auto & candidates = cell_it->second;
+          for (std::size_t slot = 0; slot < candidates.size();) {
+            const std::size_t neighbor_index = candidates[slot];
+            if (visited[neighbor_index] != 0) {
+              candidates[slot] = candidates.back();
+              candidates.pop_back();
+              continue;
+            }
+            const KittiPoint & neighbor = input[neighbor_index];
+            const float dz = std::abs(neighbor.z - point.z);
+            if (dz > vertical_gap) {
+              ++slot;
+              continue;
+            }
+            const float delta_x = neighbor.x - point.x;
+            const float delta_y = neighbor.y - point.y;
+            if (delta_x * delta_x + delta_y * delta_y >
+              std::max(tolerance_squared[point_index], tolerance_squared[neighbor_index])) {
+              ++slot;
+              continue;
+            }
+            visited[neighbor_index] = 1;
+            cluster.indices.push_back(neighbor_index);
+            // A discovered point remains in the BFS queue, but never needs
+            // to be searched for again. This avoids quadratic visited scans
+            // inside dense cells without changing the connectivity rule.
+            candidates[slot] = candidates.back();
+            candidates.pop_back();
           }
-
-          const std::int64_t neighbor_key = GridKey(cx + dx, cy + dy);
-          if (cells.find(neighbor_key) == cells.end() || visited.find(neighbor_key) != visited.end()) {
-            continue;
-          }
-          visited.insert(neighbor_key);
-          pending.push(neighbor_key);
         }
       }
     }
 
     const int cluster_size = static_cast<int>(cluster.indices.size());
+    if (cluster_size < params.min_cluster_size || cluster_size > params.max_cluster_size) {
+      continue;
+    }
+    const float height = cluster.bounds.max.z - cluster.bounds.min.z;
+    if (height < params.min_height_m || height > params.max_height_m) {
+      continue;
+    }
     cluster.oriented_bounds = ComputeOrientedBounds(input, cluster);
-    if (
-      cluster_size >= params.min_cluster_size &&
-      cluster_size <= params.max_cluster_size &&
-      PassesSizeFilter(cluster, params))
-    {
+    if (PassesSizeFilter(cluster, params)) {
       clusters.push_back(std::move(cluster));
     }
   }
 
   return clusters;
+}
+
+std::vector<Cluster> RunClusteringPlaceholder(
+  const std::vector<KittiPoint> & input,
+  const ClusteringParams & params)
+{
+  // Keep the historical entry point for the viewer and public API while
+  // making exact, range-adaptive Euclidean clustering the default backend.
+  return RunClusteringEuclidean(input, params);
 }
 }  // namespace lidar_viewer::algorithms

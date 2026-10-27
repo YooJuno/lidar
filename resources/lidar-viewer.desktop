@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=LiDAR Viewer
+Comment=Point cloud viewer, ground segmentation and live ROS 2 sensors
+Exec=lidar-viewer
+Icon=applications-science
+Terminal=false
+Categories=Science;Graphics;

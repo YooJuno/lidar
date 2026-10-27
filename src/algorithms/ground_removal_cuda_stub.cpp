@@ -40,4 +40,12 @@ bool ClassifyGroundPointsGridCuda(
 {
   return false;
 }
+
+bool ClassifyGroundPointsGSeg3DCuda(
+  const std::vector<KittiPoint> &,
+  const GroundRemovalParams &,
+  std::vector<unsigned char> &)
+{
+  return false;
+}
 }  // namespace lidar_viewer::algorithms

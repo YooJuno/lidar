@@ -1,0 +1,3 @@
+[submodule "third_party/ground_segmentation"]
+	path = third_party/ground_segmentation
+	url = https://github.com/dfki-ric/ground_segmentation.git

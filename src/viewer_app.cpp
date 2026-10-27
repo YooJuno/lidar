@@ -1,11 +1,23 @@
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_opengl3.h>
 
 #include "lidar_viewer/data_io.hpp"
+#include "lidar_viewer/bag_io.hpp"
+#include "lidar_viewer/bag_catalog.hpp"
 #include "lidar_viewer/config.hpp"
 #include "lidar_viewer/algorithms/pipeline.hpp"
 #include "lidar_viewer/algorithms/ground_removal.hpp"
 #include "lidar_viewer/app.hpp"
+#include "lidar_viewer/ui_layout.hpp"
+#include "lidar_viewer/settings_io.hpp"
+#include "lidar_viewer/camera_2d.hpp"
+#include "lidar_viewer/roi.hpp"
+#include "lidar_viewer/file_dialog.hpp"
+#include "lidar_viewer/live_io.hpp"
+#include "lidar_viewer/platform.hpp"
 
 #include <algorithm>
 #include <array>
@@ -13,12 +25,15 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
+#include <ctime>
 #include <deque>
 #include <filesystem>
 #include <fstream>
 #include <future>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <optional>
 #include <stdexcept>
@@ -33,60 +48,10 @@ constexpr int kWindowWidth = 1600;
 constexpr int kWindowHeight = 960;
 constexpr float kOrbitSensitivity = 0.0045f;
 constexpr float kPanBaseScale = 0.002f;
-constexpr float kHudPanelX = 18.0f;
-constexpr float kHudPanelY = 18.0f;
-constexpr float kHudPanelW = 396.0f;
-constexpr float kHudPanelH = 430.0f;
-constexpr float kPlayButtonX = kHudPanelX + 16.0f;
-constexpr float kPlayButtonY = kHudPanelY + 62.0f;
-constexpr float kPlayButtonW = 70.0f;
-constexpr float kPlayButtonH = 18.0f;
-constexpr float kPauseButtonX = kHudPanelX + 92.0f;
-constexpr float kPauseButtonY = kHudPanelY + 62.0f;
-constexpr float kPauseButtonW = 74.0f;
-constexpr float kPauseButtonH = 18.0f;
-constexpr float kGroundButtonX = kHudPanelX + 176.0f;
-constexpr float kGroundButtonY = kHudPanelY + 62.0f;
-constexpr float kGroundButtonW = 72.0f;
-constexpr float kGroundButtonH = 18.0f;
-constexpr float kClusterButtonX = kHudPanelX + 254.0f;
-constexpr float kClusterButtonY = kHudPanelY + 62.0f;
-constexpr float kClusterButtonW = 46.0f;
-constexpr float kClusterButtonH = 18.0f;
-constexpr float kDetectButtonX = kHudPanelX + 306.0f;
-constexpr float kDetectButtonY = kHudPanelY + 62.0f;
-constexpr float kDetectButtonW = 56.0f;
-constexpr float kDetectButtonH = 18.0f;
-constexpr float kView2DButtonX = kHudPanelX + 16.0f;
-constexpr float kView2DButtonY = kHudPanelY + 84.0f;
-constexpr float kView2DButtonW = 54.0f;
-constexpr float kView2DButtonH = 18.0f;
-constexpr float kView3DButtonX = kHudPanelX + 76.0f;
-constexpr float kView3DButtonY = kHudPanelY + 84.0f;
-constexpr float kView3DButtonW = 54.0f;
-constexpr float kView3DButtonH = 18.0f;
-constexpr float kGridPanelX = 18.0f;
-constexpr float kGridPanelY = 464.0f;
-constexpr float kGridPanelW = 396.0f;
-constexpr float kGridPanelH = 356.0f;
 constexpr const char * kSettingsFileName = "lidar_viewer_settings.cfg";
 constexpr const char * kProfilesDir = "config/profiles";
-constexpr float kTimelineX = 380.0f;
-constexpr float kTimelineY = 18.0f;
-constexpr float kTimelineW = 980.0f;
-constexpr float kTimelineH = 66.0f;
-constexpr float kTimelineTrackX = kTimelineX + 18.0f;
-constexpr float kTimelineTrackY = kTimelineY + 42.0f;
-constexpr float kTimelineTrackW = 700.0f;
-constexpr float kTimelineTrackH = 6.0f;
-constexpr float kFileSelectorX = kTimelineX + 744.0f;
-constexpr float kFileSelectorY = kTimelineY + 24.0f;
-constexpr float kFileSelectorW = 218.0f;
-constexpr float kFileSelectorH = 22.0f;
-constexpr float kFileSelectorListRowH = 18.0f;
-constexpr int kFileSelectorVisibleRows = 6;
 constexpr const char * kAlgorithmsConfigPath = "config/algorithms.yaml";
-constexpr const char * kDefaultInputPath = "/home/juno/lidar/dataset/gangnam/2019_10_04_12_28_25.bin";
+constexpr const char * kDefaultInputPath = "dataset/gangnam/2019_10_04_12_28_25.bin";
 
 float Dot(const Vec3 & a, const Vec3 & b)
 {
@@ -254,15 +219,16 @@ GLuint CreateProgram()
         frag_color = vec4(1.0, 0.12, 0.08, 1.0);
         return;
       }
-      frag_color = vec4(0.92, 0.95, 0.98, 1.0);
-      return;
-
+      if (u_color_mode == 2) {
+        frag_color = vec4(0.82, 0.88, 0.94, 1.0);
+        return;
+      }
       float value = v_intensity;
       if (u_color_mode == 1) {
         float denom = max(1e-6, u_max_height - u_min_height);
         value = (v_height - u_min_height) / denom;
       }
-      frag_color = vec4(turbo(value), 1.0);
+      frag_color = vec4(clamp(turbo(value), 0.0, 1.0), 1.0);
     }
   )";
 
@@ -288,55 +254,6 @@ GLuint CreateProgram()
   return program;
 }
 
-GLuint CreateUiProgram()
-{
-  constexpr const char * kVertexShader = R"(
-    #version 330 core
-    layout(location = 0) in vec2 a_position;
-    layout(location = 1) in vec4 a_color;
-
-    uniform vec2 u_viewport;
-    out vec4 v_color;
-
-    void main() {
-      float x = (a_position.x / u_viewport.x) * 2.0 - 1.0;
-      float y = 1.0 - (a_position.y / u_viewport.y) * 2.0;
-      gl_Position = vec4(x, y, 0.0, 1.0);
-      v_color = a_color;
-    }
-  )";
-
-  constexpr const char * kFragmentShader = R"(
-    #version 330 core
-    in vec4 v_color;
-    out vec4 frag_color;
-
-    void main() {
-      frag_color = v_color;
-    }
-  )";
-
-  const GLuint vs = CompileShader(GL_VERTEX_SHADER, kVertexShader);
-  const GLuint fs = CompileShader(GL_FRAGMENT_SHADER, kFragmentShader);
-  const GLuint program = glCreateProgram();
-  glAttachShader(program, vs);
-  glAttachShader(program, fs);
-  glLinkProgram(program);
-
-  GLint ok = GL_FALSE;
-  glGetProgramiv(program, GL_LINK_STATUS, &ok);
-  if (ok != GL_TRUE) {
-    GLint log_len = 0;
-    glGetProgramiv(program, GL_INFO_LOG_LENGTH, &log_len);
-    std::string log(static_cast<std::size_t>(log_len), '\0');
-    glGetProgramInfoLog(program, log_len, nullptr, log.data());
-    throw std::runtime_error("UI program link failed:\n" + log);
-  }
-
-  glDeleteShader(vs);
-  glDeleteShader(fs);
-  return program;
-}
 
 GLuint CreateGridProgram()
 {
@@ -380,15 +297,6 @@ GLuint CreateGridProgram()
   return program;
 }
 
-struct UiVertex
-{
-  float x;
-  float y;
-  float r;
-  float g;
-  float b;
-  float a;
-};
 
 struct Color
 {
@@ -398,13 +306,6 @@ struct Color
   float a;
 };
 
-struct UiRenderer
-{
-  GLuint program{0};
-  GLuint vao{0};
-  GLuint vbo{0};
-  GLint viewport_loc{-1};
-};
 
 struct GridRenderer
 {
@@ -443,152 +344,15 @@ struct GridSettings
 
 struct CalibrationSettings
 {
-  float yaw_deg{1.2f};
-  float pitch_deg{-1.8f};
-  float roll_deg{-0.7f};
-  float z_m{2.0f};
+  float yaw_deg{0.0f};
+  float pitch_deg{0.0f};
+  float roll_deg{0.0f};
+  float z_m{0.0f};
 };
-
-struct GridButton
-{
-  float x;
-  float y;
-  float w;
-  float h;
-};
-
-using GlyphRows = std::array<const char *, 7>;
-
-GlyphRows GlyphFor(char ch)
-{
-  switch (ch) {
-    case 'A': return {{{"01110"}, {"10001"}, {"10001"}, {"11111"}, {"10001"}, {"10001"}, {"10001"}}};
-    case 'B': return {{{"11110"}, {"10001"}, {"10001"}, {"11110"}, {"10001"}, {"10001"}, {"11110"}}};
-    case 'C': return {{{"01110"}, {"10001"}, {"10000"}, {"10000"}, {"10000"}, {"10001"}, {"01110"}}};
-    case 'D': return {{{"11110"}, {"10001"}, {"10001"}, {"10001"}, {"10001"}, {"10001"}, {"11110"}}};
-    case 'E': return {{{"11111"}, {"10000"}, {"10000"}, {"11110"}, {"10000"}, {"10000"}, {"11111"}}};
-    case 'F': return {{{"11111"}, {"10000"}, {"10000"}, {"11110"}, {"10000"}, {"10000"}, {"10000"}}};
-    case 'G': return {{{"01110"}, {"10001"}, {"10000"}, {"10111"}, {"10001"}, {"10001"}, {"01111"}}};
-    case 'H': return {{{"10001"}, {"10001"}, {"10001"}, {"11111"}, {"10001"}, {"10001"}, {"10001"}}};
-    case 'I': return {{{"11111"}, {"00100"}, {"00100"}, {"00100"}, {"00100"}, {"00100"}, {"11111"}}};
-    case 'J': return {{{"00111"}, {"00010"}, {"00010"}, {"00010"}, {"10010"}, {"10010"}, {"01100"}}};
-    case 'K': return {{{"10001"}, {"10010"}, {"10100"}, {"11000"}, {"10100"}, {"10010"}, {"10001"}}};
-    case 'L': return {{{"10000"}, {"10000"}, {"10000"}, {"10000"}, {"10000"}, {"10000"}, {"11111"}}};
-    case 'M': return {{{"10001"}, {"11011"}, {"10101"}, {"10101"}, {"10001"}, {"10001"}, {"10001"}}};
-    case 'N': return {{{"10001"}, {"11001"}, {"10101"}, {"10011"}, {"10001"}, {"10001"}, {"10001"}}};
-    case 'O': return {{{"01110"}, {"10001"}, {"10001"}, {"10001"}, {"10001"}, {"10001"}, {"01110"}}};
-    case 'P': return {{{"11110"}, {"10001"}, {"10001"}, {"11110"}, {"10000"}, {"10000"}, {"10000"}}};
-    case 'Q': return {{{"01110"}, {"10001"}, {"10001"}, {"10001"}, {"10101"}, {"10010"}, {"01101"}}};
-    case 'R': return {{{"11110"}, {"10001"}, {"10001"}, {"11110"}, {"10100"}, {"10010"}, {"10001"}}};
-    case 'S': return {{{"01111"}, {"10000"}, {"10000"}, {"01110"}, {"00001"}, {"00001"}, {"11110"}}};
-    case 'T': return {{{"11111"}, {"00100"}, {"00100"}, {"00100"}, {"00100"}, {"00100"}, {"00100"}}};
-    case 'U': return {{{"10001"}, {"10001"}, {"10001"}, {"10001"}, {"10001"}, {"10001"}, {"01110"}}};
-    case 'V': return {{{"10001"}, {"10001"}, {"10001"}, {"10001"}, {"10001"}, {"01010"}, {"00100"}}};
-    case 'W': return {{{"10001"}, {"10001"}, {"10001"}, {"10101"}, {"10101"}, {"10101"}, {"01010"}}};
-    case 'X': return {{{"10001"}, {"10001"}, {"01010"}, {"00100"}, {"01010"}, {"10001"}, {"10001"}}};
-    case 'Y': return {{{"10001"}, {"10001"}, {"01010"}, {"00100"}, {"00100"}, {"00100"}, {"00100"}}};
-    case 'Z': return {{{"11111"}, {"00001"}, {"00010"}, {"00100"}, {"01000"}, {"10000"}, {"11111"}}};
-    case '0': return {{{"01110"}, {"10001"}, {"10011"}, {"10101"}, {"11001"}, {"10001"}, {"01110"}}};
-    case '1': return {{{"00100"}, {"01100"}, {"00100"}, {"00100"}, {"00100"}, {"00100"}, {"01110"}}};
-    case '2': return {{{"01110"}, {"10001"}, {"00001"}, {"00010"}, {"00100"}, {"01000"}, {"11111"}}};
-    case '3': return {{{"11110"}, {"00001"}, {"00001"}, {"01110"}, {"00001"}, {"00001"}, {"11110"}}};
-    case '4': return {{{"00010"}, {"00110"}, {"01010"}, {"10010"}, {"11111"}, {"00010"}, {"00010"}}};
-    case '5': return {{{"11111"}, {"10000"}, {"10000"}, {"11110"}, {"00001"}, {"00001"}, {"11110"}}};
-    case '6': return {{{"01110"}, {"10000"}, {"10000"}, {"11110"}, {"10001"}, {"10001"}, {"01110"}}};
-    case '7': return {{{"11111"}, {"00001"}, {"00010"}, {"00100"}, {"01000"}, {"01000"}, {"01000"}}};
-    case '8': return {{{"01110"}, {"10001"}, {"10001"}, {"01110"}, {"10001"}, {"10001"}, {"01110"}}};
-    case '9': return {{{"01110"}, {"10001"}, {"10001"}, {"01111"}, {"00001"}, {"00001"}, {"01110"}}};
-    case '[': return {{{"01110"}, {"01000"}, {"01000"}, {"01000"}, {"01000"}, {"01000"}, {"01110"}}};
-    case ']': return {{{"01110"}, {"00010"}, {"00010"}, {"00010"}, {"00010"}, {"00010"}, {"01110"}}};
-    case '/': return {{{"00001"}, {"00010"}, {"00100"}, {"00100"}, {"01000"}, {"10000"}, {"00000"}}};
-    case '.': return {{{"00000"}, {"00000"}, {"00000"}, {"00000"}, {"00000"}, {"00110"}, {"00110"}}};
-    case ':': return {{{"00000"}, {"00110"}, {"00110"}, {"00000"}, {"00110"}, {"00110"}, {"00000"}}};
-    case '-': return {{{"00000"}, {"00000"}, {"00000"}, {"01110"}, {"00000"}, {"00000"}, {"00000"}}};
-    case '_': return {{{"00000"}, {"00000"}, {"00000"}, {"00000"}, {"00000"}, {"00000"}, {"11111"}}};
-    case ' ': return {{{"00000"}, {"00000"}, {"00000"}, {"00000"}, {"00000"}, {"00000"}, {"00000"}}};
-    default: return {{{"11111"}, {"00001"}, {"00010"}, {"00100"}, {"00100"}, {"00000"}, {"00100"}}};
-  }
-}
-
-void AppendRect(
-  std::vector<UiVertex> & vertices,
-  float x0,
-  float y0,
-  float x1,
-  float y1,
-  Color color)
-{
-  vertices.push_back({x0, y0, color.r, color.g, color.b, color.a});
-  vertices.push_back({x1, y0, color.r, color.g, color.b, color.a});
-  vertices.push_back({x1, y1, color.r, color.g, color.b, color.a});
-  vertices.push_back({x0, y0, color.r, color.g, color.b, color.a});
-  vertices.push_back({x1, y1, color.r, color.g, color.b, color.a});
-  vertices.push_back({x0, y1, color.r, color.g, color.b, color.a});
-}
-
-std::string ToUpperCopy(std::string text)
-{
-  for (char & ch : text) {
-    ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
-  }
-  return text;
-}
-
-std::string EllipsizeMiddle(const std::string & text, std::size_t max_chars)
-{
-  if (text.size() <= max_chars) {
-    return text;
-  }
-  if (max_chars <= 3) {
-    return text.substr(0, max_chars);
-  }
-  const std::size_t left = (max_chars - 3) / 2;
-  const std::size_t right = max_chars - 3 - left;
-  return text.substr(0, left) + "..." + text.substr(text.size() - right);
-}
 
 std::string FileDisplayName(const fs::path & path)
 {
-  if (path.has_filename()) {
-    return path.filename().string();
-  }
-  return path.string();
-}
-
-void AppendGlyph(
-  std::vector<UiVertex> & vertices,
-  float x,
-  float y,
-  float scale,
-  char ch,
-  Color color)
-{
-  const GlyphRows glyph = GlyphFor(ch);
-  for (std::size_t row = 0; row < glyph.size(); ++row) {
-    for (int col = 0; col < 5; ++col) {
-      if (glyph[row][col] != '1') {
-        continue;
-      }
-      const float x0 = x + static_cast<float>(col) * scale;
-      const float y0 = y + static_cast<float>(row) * scale;
-      AppendRect(vertices, x0, y0, x0 + scale, y0 + scale, color);
-    }
-  }
-}
-
-void AppendText(
-  std::vector<UiVertex> & vertices,
-  float x,
-  float y,
-  float scale,
-  const std::string & text,
-  Color color)
-{
-  float cursor = x;
-  for (char ch : ToUpperCopy(text)) {
-    AppendGlyph(vertices, cursor, y, scale, ch, color);
-    cursor += scale * 6.0f;
-  }
+  return path.has_filename() ? path.filename().string() : path.string();
 }
 
 struct CameraState
@@ -625,6 +389,17 @@ struct CameraState
 
 struct ViewerState
 {
+  struct BagLoadResult
+  {
+    std::vector<FrameHandle> frames;
+    FrameData first_frame;
+  };
+  struct FolderScanResult
+  {
+    fs::path folder;
+    std::vector<BagSource> sources;
+  };
+
   struct FileGroup
   {
     fs::path path;
@@ -635,6 +410,34 @@ struct ViewerState
 
   std::vector<FrameHandle> frames;
   std::vector<FileGroup> file_groups;
+  std::vector<BagSource> bag_sources;
+  std::optional<std::size_t> current_bag_source;
+  std::optional<std::size_t> loading_bag_source;
+  std::future<BagLoadResult> bag_load_future;
+  lidar_viewer::FileDialog bag_picker;
+  lidar_viewer::LiveSession live;
+  lidar_viewer::LiveStats live_stats;
+  bool live_mode{false}, live_paused{false}, live_has_frame{false};
+  std::uint64_t live_display_sequence{0};
+  std::array<char, 256> live_points_topic{}, live_imu_topic{};
+  std::array<char, 2048> live_record_folder{};
+  std::string bag_topic{"/b2/points"};
+  std::string bag_imu_topic;
+  bool imu_level_enabled{false};
+  bool imu_level_cli_override{false};
+  lidar_viewer::ImuMountSettings imu_mount;
+  lidar_viewer::ImuLevelingResult imu_level_result;
+  std::optional<float> bag_sensor_height_override;
+  std::string bag_date_filter;
+  std::array<char, 128> bag_search{};
+  std::vector<fs::path> data_folders;
+  fs::path data_folders_config;
+  bool open_folder_picker{false};
+  fs::path browsing_folder;
+  std::array<char, 4096> folder_path_input{};
+  std::vector<fs::path> folder_children;
+  std::string folder_error;
+  std::future<FolderScanResult> folder_scan_future;
   std::size_t current_index{0};
   std::size_t current_file_group{0};
   FrameData base_frame;
@@ -648,8 +451,15 @@ struct ViewerState
   bool fit_view_requested{false};
   int color_mode{0};
   bool is_playing{false};
+  bool loop_playback{true};
   bool timeline_dragging{false};
-  bool file_selector_open{false};
+  int seek_draft{0};
+  float ui_scale{1.0f};
+  float font_raster_scale{1.0f};
+  float height_color_min{-1.0f};
+  float height_color_max{4.0f};
+  lidar_viewer::UiLayout ui_layout;
+  std::string ui_error;
   bool ground_removal_enabled{false};
   std::size_t ground_removed_count{0};
   double playback_fps{8.0};
@@ -663,18 +473,22 @@ struct ViewerState
   double last_frame_advance_time{0.0};
   std::string transient_status;
   double transient_status_until{0.0};
-  UiRenderer ui;
   GridRenderer grid;
   ClusterBoxRenderer cluster_boxes;
+  lidar_viewer::RoiSettings roi;
+  std::size_t selected_roi{0};
+  lidar_viewer::RoiCoordinateFrame roi_frame;
+  struct RoiRenderer {
+    GLuint vao{0}, vbo{0};
+    std::vector<Vec3> vertices;
+    bool dirty{true};
+  } roi_renderer;
   GridSettings grid_settings;
   CalibrationSettings calibration;
   lidar_viewer::algorithms::PipelineConfig algorithm_config;
   std::vector<lidar_viewer::algorithms::Cluster> clusters;
   std::vector<lidar_viewer::algorithms::Detection> detections;
   std::string dataset_profile{"default"};
-  int active_slider{-1};
-  int active_value_box{-1};
-  std::string value_input_buffer;
   std::unordered_map<std::size_t, FrameData> frame_cache;
   std::deque<std::size_t> frame_cache_order;
   std::future<FrameData> prefetch_future;
@@ -714,8 +528,8 @@ void ResetCameraToFrame(ViewerState & state)
     state.camera.yaw = 0.0f;
   } else {
     state.camera.distance = state.frame.radius * 2.2f;
-    state.camera.pitch = -0.35f;
-    state.camera.yaw = 0.2f;
+    state.camera.pitch = 0.55f;
+    state.camera.yaw = -0.8f;
   }
   StoreCurrentProjectionView(state.camera);
 }
@@ -745,8 +559,8 @@ void SetProjectionMode(ViewerState & state, CameraState::ProjectionMode mode)
     state.camera.yaw = 0.0f;
   } else {
     state.camera.distance = std::max(state.camera.distance, 2.0f);
-    state.camera.pitch = -0.35f;
-    state.camera.yaw = 0.2f;
+    state.camera.pitch = 0.55f;
+    state.camera.yaw = -0.8f;
   }
   StoreCurrentProjectionView(state.camera);
 }
@@ -1069,95 +883,102 @@ Vec3 ApplyCalibrationTransform(const Vec3 & v, const CalibrationTransform & tran
 
 void ApplyGlobalAlignment(FrameData & frame, float ground_offset)
 {
-  if (frame.points.empty()) {
+  if (frame.points.empty() || ground_offset == 0.0f) {
     return;
   }
-
-  Vec3 min_corner{
-    std::numeric_limits<float>::max(),
-    std::numeric_limits<float>::max(),
-    std::numeric_limits<float>::max()
-  };
-  Vec3 max_corner{
-    std::numeric_limits<float>::lowest(),
-    std::numeric_limits<float>::lowest(),
-    std::numeric_limits<float>::lowest()
-  };
-
   for (auto & p : frame.points) {
     p.z -= ground_offset;
-    min_corner.x = std::min(min_corner.x, p.x);
-    min_corner.y = std::min(min_corner.y, p.y);
-    min_corner.z = std::min(min_corner.z, p.z);
-    max_corner.x = std::max(max_corner.x, p.x);
-    max_corner.y = std::max(max_corner.y, p.y);
-    max_corner.z = std::max(max_corner.z, p.z);
   }
-
-  frame.center = {
-    0.5f * (min_corner.x + max_corner.x),
-    0.5f * (min_corner.y + max_corner.y),
-    0.5f * (min_corner.z + max_corner.z)
-  };
-  const Vec3 extent = max_corner - min_corner;
-  frame.radius = std::max({extent.x, extent.y, extent.z}) * 0.7f;
-  frame.radius = std::max(frame.radius, 10.0f);
-  frame.min_z = min_corner.z;
-  frame.max_z = max_corner.z;
+  // Translation changes neither XY bounds nor extents/radius.
+  frame.center.z -= ground_offset;
+  frame.min_z -= ground_offset;
+  frame.max_z -= ground_offset;
   frame.ground_z -= ground_offset;
 }
 
-void ApplyCalibration(ViewerState & state)
+void ApplyCalibration(ViewerState & state, const FrameData * source = nullptr,
+  std::optional<float> source_ground_offset = std::nullopt)
 {
-  state.frame = state.base_frame;
-  if (state.frame.points.empty()) {
-    return;
+  FrameData frame = source ? *source : state.base_frame;
+  auto calibration = state.calibration;
+  lidar_viewer::ImuLevelingResult leveling;
+  leveling.status = "Off";
+  if (state.imu_level_enabled) {
+    leveling = lidar_viewer::ComputeImuLeveling(frame.imu, state.imu_mount);
+    if (leveling.applied) {
+      calibration.roll_deg = leveling.roll_deg;
+      calibration.pitch_deg = leveling.pitch_deg;
+    }
   }
-
-  const CalibrationTransform transform = BuildCalibrationTransform(state.calibration);
-  for (auto & p : state.frame.points) {
-    const Vec3 rotated = ApplyCalibrationTransform({p.x, p.y, p.z}, transform);
-    p.x = rotated.x;
-    p.y = rotated.y;
-    p.z = rotated.z;
-    p.intensity = 0.0f;
+  const CalibrationTransform transform = BuildCalibrationTransform(calibration);
+  // Boxes are authored in the raw sensor frame, before dataset Z alignment.
+  lidar_viewer::RoiCoordinateFrame roi_frame;
+  roi_frame.rotation = transform.rotation;
+  roi_frame.translation = roi_frame.Rotate({0, 0, -source_ground_offset.value_or(state.global_ground_offset)}) +
+    Vec3{0, 0, transform.z_offset};
+  const lidar_viewer::PreparedRoi roi(state.roi, roi_frame);
+  std::vector<Vec3> roi_vertices;
+  roi_vertices.reserve(state.roi.boxes.size() * 24);
+  for (const auto & box : state.roi.boxes) {
+    auto corners = lidar_viewer::RoiCorners(box);
+    for (auto & corner : corners) corner = roi_frame.Transform(corner);
+    for (unsigned i = 0; i < 8; ++i) {
+      for (unsigned bit : {1u, 2u, 4u}) {
+        if (!(i & bit)) {
+          roi_vertices.push_back(corners[i]);
+          roi_vertices.push_back(corners[i | bit]);
+        }
+      }
+    }
   }
-
-  state.ground_removed_count = 0;
-  if (state.ground_removal_enabled) {
+  for (auto & point : frame.points) {
+    const Vec3 rotated = ApplyCalibrationTransform({point.x, point.y, point.z}, transform);
+    point.x = rotated.x;
+    point.y = rotated.y;
+    point.z = rotated.z;
+  }
+  std::size_t ground_count = 0;
+  std::vector<lidar_viewer::algorithms::Cluster> clusters;
+  std::vector<lidar_viewer::algorithms::Detection> detections;
+  if (roi.RejectsAll()) frame.points.clear();
+  if (state.ground_removal_enabled && !frame.points.empty()) {
     auto params = state.algorithm_config.ground_removal;
     params.enabled = true;
-    auto result = lidar_viewer::algorithms::RunGroundRemovalPlaceholder(state.frame.points, params);
-    state.ground_removed_count = result.ground_points.size();
-    state.clusters = lidar_viewer::algorithms::RunClusteringPlaceholder(
-      result.non_ground_points,
-      state.algorithm_config.clustering);
-    state.detections = lidar_viewer::algorithms::RunDetectionPlaceholder(
-      result.non_ground_points,
-      state.clusters,
-      state.algorithm_config.detection);
-    state.frame.points.clear();
-    state.frame.points.reserve(result.non_ground_points.size() + result.ground_points.size());
-    state.frame.points.insert(
-      state.frame.points.end(),
-      result.non_ground_points.begin(),
-      result.non_ground_points.end());
+    auto result = lidar_viewer::algorithms::RunGroundRemovalPlaceholder(frame.points, params);
+    // Keep the surrounding terrain available to the ground estimator.
+    roi.Filter(result.ground_points);
+    roi.Filter(result.non_ground_points);
+    ground_count = result.ground_points.size();
+    clusters = lidar_viewer::algorithms::RunClusteringPlaceholder(
+      result.non_ground_points, state.algorithm_config.clustering);
+    detections = lidar_viewer::algorithms::RunDetectionPlaceholder(
+      result.non_ground_points, clusters, state.algorithm_config.detection);
+    frame.points = std::move(result.non_ground_points);
+    frame.points.reserve(frame.points.size() + result.ground_points.size());
     for (auto point : result.ground_points) {
       point.intensity = -1.0f;
-      state.frame.points.push_back(point);
+      frame.points.push_back(point);
     }
   } else {
-    state.clusters = lidar_viewer::algorithms::RunClusteringPlaceholder(
-      state.frame.points,
-      state.algorithm_config.clustering);
-    state.detections = lidar_viewer::algorithms::RunDetectionPlaceholder(
-      state.frame.points,
-      state.clusters,
-      state.algorithm_config.detection);
+    roi.Filter(frame.points);
+    clusters = lidar_viewer::algorithms::RunClusteringPlaceholder(frame.points, state.algorithm_config.clustering);
+    detections = lidar_viewer::algorithms::RunDetectionPlaceholder(frame.points, clusters, state.algorithm_config.detection);
   }
-
+  RecomputeFrameBounds(frame);
+  // Commit only after all CPU/algorithm operations succeeded.
+  state.frame = std::move(frame);
+  state.roi_frame = roi_frame;
+  state.roi_renderer.vertices = std::move(roi_vertices);
+  state.roi_renderer.dirty = true;
+  state.ground_removed_count = ground_count;
+  state.clusters = std::move(clusters);
+  state.detections = std::move(detections);
+  if (state.imu_level_enabled && leveling.applied != state.imu_level_result.applied) {
+    std::cout << "IMU leveling " << (leveling.applied ? "active: " : "unavailable: ")
+              << leveling.status << std::endl;
+  }
+  state.imu_level_result = std::move(leveling);
   RebuildClusterBoxes(state);
-  RecomputeFrameBounds(state.frame);
   state.frame_dirty = true;
 }
 
@@ -1258,156 +1079,54 @@ void QueueNextFramePrefetch(ViewerState & state)
 
 void LoadFrameByIndex(ViewerState & state, std::size_t index)
 {
-  state.current_index = index % state.frames.size();
-  UpdateCurrentFileGroup(state);
-  ConsumeReadyPrefetch(state);
-  const auto cache_it = state.frame_cache.find(state.current_index);
-  if (cache_it != state.frame_cache.end()) {
-    state.base_frame = cache_it->second;
-  } else if (state.prefetched_index.has_value() && *state.prefetched_index == state.current_index && state.prefetch_future.valid()) {
-    state.base_frame = state.prefetch_future.get();
-    StoreFrameInCache(state, state.current_index, state.base_frame);
-    state.prefetched_index.reset();
-  } else {
-    state.base_frame = LoadFrame(state.frames[state.current_index]);
-    StoreFrameInCache(state, state.current_index, state.base_frame);
-  }
-  if (!state.alignment_initialized) {
-    state.global_ground_offset = (state.frames[state.current_index].format == InputFormat::OusterLegacyContainer)
-      ? 0.0f
-      : state.base_frame.ground_z;
-    state.alignment_initialized = true;
-  }
-  ApplyGlobalAlignment(state.base_frame, state.global_ground_offset);
-  ApplyCalibration(state);
-  QueueNextFramePrefetch(state);
-  // std::cout << "Loaded " << state.frames[state.current_index].label << " (" << state.base_frame.points.size() << " points)\n";
-}
-
-bool IsInsideRect(double x, double y, float rx, float ry, float rw, float rh)
-{
-  return x >= rx && x <= (rx + rw) && y >= ry && y <= (ry + rh);
-}
-
-GridButton GridToggleButton()
-{
-  return {kGridPanelX + 16.0f, kGridPanelY + 34.0f, 78.0f, 18.0f};
-}
-
-GridButton GridMinusButton(int row)
-{
-  return {kGridPanelX + 148.0f, kGridPanelY + 34.0f + 26.0f * static_cast<float>(row), 18.0f, 16.0f};
-}
-
-GridButton GridPlusButton(int row)
-{
-  return {kGridPanelX + 246.0f, kGridPanelY + 34.0f + 26.0f * static_cast<float>(row), 18.0f, 16.0f};
-}
-
-GridButton GridSaveButton()
-{
-  return {kGridPanelX + kGridPanelW - 96.0f, kGridPanelY + kGridPanelH - 28.0f, 78.0f, 18.0f};
-}
-
-GridButton GroundRemovalButton()
-{
-  return {kGroundButtonX, kGroundButtonY, kGroundButtonW, kGroundButtonH};
-}
-
-GridButton ClusteringButton()
-{
-  return {kClusterButtonX, kClusterButtonY, kClusterButtonW, kClusterButtonH};
-}
-
-GridButton DetectionButton()
-{
-  return {kDetectButtonX, kDetectButtonY, kDetectButtonW, kDetectButtonH};
-}
-
-GridButton View2DButton()
-{
-  return {kView2DButtonX, kView2DButtonY, kView2DButtonW, kView2DButtonH};
-}
-
-GridButton View3DButton()
-{
-  return {kView3DButtonX, kView3DButtonY, kView3DButtonW, kView3DButtonH};
-}
-
-GridButton CalibrationSliderRect(int row)
-{
-  return {kGridPanelX + 86.0f, kGridPanelY + 152.0f + 28.0f * static_cast<float>(row), 126.0f, 14.0f};
-}
-
-GridButton CalibrationValueBoxRect(int row)
-{
-  return {kGridPanelX + 224.0f, kGridPanelY + 150.0f + 28.0f * static_cast<float>(row), 70.0f, 18.0f};
-}
-
-GridButton PointSizeSliderRect()
-{
-  return {kGridPanelX + 86.0f, kGridPanelY + 270.0f, 126.0f, 14.0f};
-}
-
-GridButton PointSizeValueBoxRect()
-{
-  return {kGridPanelX + 224.0f, kGridPanelY + 268.0f, 70.0f, 18.0f};
-}
-
-GridButton GroundCellSizeSliderRect()
-{
-  return {kGridPanelX + 86.0f, kGridPanelY + 294.0f, 126.0f, 14.0f};
-}
-
-GridButton GroundCellSizeValueBoxRect()
-{
-  return {kGridPanelX + 224.0f, kGridPanelY + 292.0f, 70.0f, 18.0f};
-}
-
-GridButton TimelineTrackRect()
-{
-  return {kTimelineTrackX, kTimelineTrackY - 6.0f, kTimelineTrackW, 18.0f};
-}
-
-GridButton FileSelectorRect()
-{
-  return {kFileSelectorX, kFileSelectorY, kFileSelectorW, kFileSelectorH};
-}
-
-GridButton FileSelectorListRect()
-{
-  return {
-    kFileSelectorX,
-    kFileSelectorY + kFileSelectorH + 4.0f,
-    kFileSelectorW,
-    static_cast<float>(kFileSelectorVisibleRows) * kFileSelectorListRowH + 8.0f
-  };
-}
-
-void ScrubToNormalized(ViewerState & state, double normalized)
-{
   if (state.frames.empty()) {
-    return;
+    throw std::runtime_error("No frames are available");
   }
-
-  normalized = std::clamp(normalized, 0.0, 1.0);
-  const auto & group = state.file_groups[state.current_file_group];
-  const std::size_t file_frame_count = group.last_index - group.first_index + 1;
-  const std::size_t max_file_offset = file_frame_count - 1;
-  const std::size_t target_offset =
-    static_cast<std::size_t>(std::llround(normalized * static_cast<double>(max_file_offset)));
-  const std::size_t target_index = group.first_index + target_offset;
-  if (target_index != state.current_index) {
-    LoadFrameByIndex(state, target_index);
+  const auto next_index = index % state.frames.size();
+  ConsumeReadyPrefetch(state);
+  FrameData next_base;
+  const auto cached = state.frame_cache.find(next_index);
+  if (cached != state.frame_cache.end()) {
+    next_base = cached->second;
+  } else if (state.prefetched_index && *state.prefetched_index == next_index && state.prefetch_future.valid()) {
+    state.prefetched_index.reset();
+    next_base = state.prefetch_future.get();
+    StoreFrameInCache(state, next_index, next_base);
+  } else {
+    next_base = LoadFrame(state.frames[next_index]);
+    StoreFrameInCache(state, next_index, next_base);
   }
-  state.last_frame_advance_time = glfwGetTime();
+  float offset = state.global_ground_offset;
+  if (!state.alignment_initialized) {
+    const auto format = state.frames[next_index].format;
+    offset = (format == InputFormat::OusterLegacyContainer || format == InputFormat::Ros2Bag)
+      ? 0.0f : next_base.ground_z;
+  }
+  ApplyGlobalAlignment(next_base, offset);
+  ApplyCalibration(state, &next_base, offset);
+  state.base_frame = std::move(next_base);
+  state.global_ground_offset = offset;
+  state.alignment_initialized = true;
+  state.current_index = next_index;
+  UpdateCurrentFileGroup(state);
+  QueueNextFramePrefetch(state);
 }
 
-void ScrubToMouse(ViewerState & state, double mouse_x)
+bool TryLoadFrame(ViewerState & state, std::size_t index)
 {
-  const double normalized = (mouse_x - kTimelineTrackX) / kTimelineTrackW;
-  ScrubToNormalized(state, normalized);
+  try {
+    LoadFrameByIndex(state, index);
+    state.ui_error.clear();
+    state.last_frame_advance_time = glfwGetTime();
+    return true;
+  } catch (const std::exception & error) {
+    state.is_playing = false;
+    state.ui_error = std::string("Frame could not be loaded: ") + error.what();
+    std::cerr << state.ui_error << '\n';
+    return false;
+  }
 }
+
 
 void MarkGridDirty(ViewerState & state)
 {
@@ -1434,6 +1153,24 @@ std::optional<double> EstimateInputFps(const ViewerState & state)
   }
 
   switch (state.frames.front().format) {
+    case InputFormat::Ros2Bag: {
+      std::vector<double> intervals;
+      for (std::size_t i = 1; i < state.frames.size(); ++i) {
+        if (state.frames[i].path != state.frames[i - 1].path) {
+          continue;
+        }
+        const auto delta = state.frames[i].bag_timestamp_ns - state.frames[i - 1].bag_timestamp_ns;
+        if (delta > 0) {
+          intervals.push_back(static_cast<double>(delta) * 1e-9);
+        }
+      }
+      if (intervals.empty()) {
+        return std::nullopt;
+      }
+      const auto middle = intervals.begin() + static_cast<std::ptrdiff_t>(intervals.size() / 2);
+      std::nth_element(intervals.begin(), middle, intervals.end());
+      return 1.0 / *middle;
+    }
     case InputFormat::OusterLegacyContainer:
       return 10.0;
     case InputFormat::KittiXyzi:
@@ -1450,13 +1187,323 @@ void SyncPlaybackFpsToInput(ViewerState & state)
   }
 }
 
+void OpenBagSource(ViewerState & state, std::size_t index)
+{
+  if (state.live.Active() || state.loading_bag_source || index >= state.bag_sources.size() ||
+      (state.current_bag_source && *state.current_bag_source == index)) return;
+  state.is_playing = false;
+  state.timeline_dragging = false;
+  try {
+    const auto path = state.bag_sources[index].path;
+    const auto topic = state.bag_topic;
+    const auto imu_topic = state.bag_imu_topic;
+    state.bag_load_future = std::async(std::launch::async, [path, topic, imu_topic]() {
+      ViewerState::BagLoadResult result;
+      result.frames = ResolveInputFrames(path, topic, imu_topic);
+      if (result.frames.empty()) throw std::runtime_error("No point cloud frames in this bag");
+      result.first_frame = LoadFrame(result.frames.front());
+      return result;
+    });
+    state.loading_bag_source = index;
+    state.ui_error.clear();
+  } catch (const std::exception & error) {
+    state.ui_error = std::string("Bag could not be opened: ") + error.what();
+  }
+}
+
+void LoadSettings(ViewerState & state);
+fs::path AlgorithmsConfigPath();
+std::string DetectDatasetProfile(const fs::path & input_path);
+
+void StartBagPicker(ViewerState & state)
+{
+  if (state.live.Active() || state.loading_bag_source || state.folder_scan_future.valid() || state.bag_picker.Active()) return;
+  state.is_playing = false;
+  try {
+    fs::path initial;
+    if (!state.frames.empty()) {
+      const auto current = state.frames.front().path;
+      initial = fs::is_directory(current) ? current : current.parent_path();
+    } else if (!state.data_folders.empty()) {
+      initial = state.data_folders.front();
+    } else if (const char * home = std::getenv("HOME")) {
+      initial = home;
+    }
+    state.bag_picker.OpenBag(initial);
+    state.ui_error.clear();
+  } catch (const std::exception & error) {
+    state.ui_error = error.what();
+  }
+}
+
+void CompleteBagPicker(ViewerState & state, GLFWwindow * window)
+{
+  try {
+    const auto result = state.bag_picker.Poll();
+    if (!result) return;
+    glfwFocusWindow(window);
+    // Native dialogs can hide the cursor without a GLFW motion event. Restore
+    // its position so a second click at the same button works immediately.
+    double cursor_x = 0, cursor_y = 0;
+    glfwGetCursorPos(window, &cursor_x, &cursor_y);
+    ImGui_ImplGlfw_CursorPosCallback(window, cursor_x, cursor_y);
+    if (!result->error.empty()) throw std::runtime_error(result->error);
+    if (result->path.empty()) return;  // Cancel leaves the current frame intact.
+    auto sources = DiscoverBagSources(result->path);
+    if (sources.empty() && result->path.extension()==".bin" && fs::is_regular_file(result->path)) {
+      const auto path=fs::canonical(result->path);
+      sources.push_back({path,path.filename().u8string(),{}, {}});
+    }
+    if (sources.size() != 1)
+      throw std::runtime_error("Select metadata.yaml, .db3, .mcap or a .bin point cloud");
+    const auto selected = sources.front().path;
+    std::optional<fs::path> current;
+    if (state.current_bag_source) current = state.bag_sources[*state.current_bag_source].path;
+    auto merged = MergeBagSources(state.bag_sources, sources);
+    state.bag_sources = std::move(merged);
+    state.current_bag_source.reset();
+    std::size_t selected_index = 0;
+    for (std::size_t i = 0; i < state.bag_sources.size(); ++i) {
+      if (current && state.bag_sources[i].path == *current) state.current_bag_source = i;
+      if (state.bag_sources[i].path == selected) selected_index = i;
+    }
+    state.bag_date_filter.clear();
+    state.bag_search.fill('\0');
+    OpenBagSource(state, selected_index);
+  } catch (const std::exception & error) {
+    state.ui_error = std::string("Bag could not be opened: ") + error.what();
+  }
+}
+
+void CompleteBagLoad(ViewerState & state)
+{
+  if (!state.loading_bag_source || !state.bag_load_future.valid() ||
+      state.bag_load_future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+  const auto selected = *state.loading_bag_source;
+  try {
+    auto result = state.bag_load_future.get();
+    // Fit/process the replacement before discarding any currently displayed data.
+    ViewerState staged;
+    const auto profile=DetectDatasetProfile(state.bag_sources[selected].path);
+    const bool change_profile = state.dataset_profile != profile;
+    staged.dataset_profile = profile;
+    if (change_profile) {
+      staged.calibration = {0, 0, 0, 0};
+      staged.algorithm_config = lidar_viewer::LoadPipelineConfig(AlgorithmsConfigPath());
+      LoadSettings(staged);
+      SetProjectionMode(staged,state.camera.projection_mode);
+      if (state.bag_sensor_height_override) staged.calibration.z_m = *state.bag_sensor_height_override;
+      if (state.imu_level_cli_override) staged.imu_level_enabled = true;
+    } else {
+      staged.calibration = state.calibration;
+      staged.algorithm_config = state.algorithm_config;
+      staged.ground_removal_enabled = state.ground_removal_enabled;
+      staged.imu_level_enabled = state.imu_level_enabled;
+      staged.imu_mount = state.imu_mount;
+      staged.roi = state.roi;
+      staged.selected_roi = state.selected_roi;
+    }
+    const float ground_offset=result.frames.front().format==InputFormat::KittiXyzi ? result.first_frame.ground_z : 0.f;
+    ApplyGlobalAlignment(result.first_frame,ground_offset);
+    ApplyCalibration(staged, &result.first_frame,ground_offset);
+    // Cache keys are frame indices. Drain the previous reader before reusing them.
+    if (state.prefetch_future.valid()) {
+      try { state.prefetch_future.get(); } catch (...) {}
+    }
+    state.prefetched_index.reset();
+    state.frame_cache.clear();
+    state.frame_cache_order.clear();
+    state.frames = std::move(result.frames);
+    state.base_frame = std::move(result.first_frame);
+    state.live_mode = false;
+    state.live_has_frame = false;
+    state.frame = std::move(staged.frame);
+    state.ground_removed_count = staged.ground_removed_count;
+    state.clusters = std::move(staged.clusters);
+    state.detections = std::move(staged.detections);
+    state.cluster_boxes.batches = std::move(staged.cluster_boxes.batches);
+    state.cluster_boxes.dirty = true;
+    state.frame_dirty = true;
+    state.imu_level_result = std::move(staged.imu_level_result);
+    state.roi = std::move(staged.roi);
+    state.selected_roi = staged.selected_roi;
+    state.roi_frame = staged.roi_frame;
+    state.roi_renderer.vertices = std::move(staged.roi_renderer.vertices);
+    state.roi_renderer.dirty = true;
+    if (change_profile) {
+      state.calibration = staged.calibration;
+      state.imu_level_enabled = staged.imu_level_enabled;
+      state.imu_mount = staged.imu_mount;
+      state.algorithm_config = staged.algorithm_config;
+      state.ground_removal_enabled = staged.ground_removal_enabled;
+      state.camera = staged.camera;
+      state.grid_settings = staged.grid_settings;
+      state.grid.dirty = true;
+      state.color_mode = staged.color_mode;
+      state.height_color_min = staged.height_color_min;
+      state.height_color_max = staged.height_color_max;
+      state.ui_scale = staged.ui_scale;
+      state.loop_playback = staged.loop_playback;
+    }
+    state.current_index = 0;
+    state.current_bag_source = selected;
+    state.global_ground_offset = ground_offset;
+    state.alignment_initialized = true;
+    state.dataset_profile = profile;
+    BuildFileGroups(state);
+    state.input_fps_estimate = EstimateInputFps(state);
+    SyncPlaybackFpsToInput(state);
+    state.current_playback_fps = 0;
+    state.playback_measurement_advances = 0;
+    state.playback_measurement_started_at = glfwGetTime();
+    state.seek_draft = 0;
+    state.fit_view_requested = true;
+    state.ui_error.clear();
+    SetTransientStatus(state, "Input opened - press Play to start");
+    std::cout << (state.frames.front().format==InputFormat::Ros2Bag ? "Opened bag: " : "Opened point cloud: ")
+              << state.bag_sources[selected].path << " | "
+              << state.frames.size() << " frames" << std::endl;
+  } catch (const std::exception & error) {
+    state.ui_error = std::string("Bag could not be opened: ") + error.what();
+    std::cerr << state.ui_error << std::endl;
+  }
+  state.loading_bag_source.reset();
+  state.is_playing = false;
+}
+
+fs::path DataFoldersConfigPath()
+{
+  return lidar_viewer::UserConfigurationDirectory()/"data_folders.cfg";
+}
+
+fs::path ExpandFolderPath(std::string path)
+{
+  if (path == "~" || path.rfind("~/", 0) == 0) {
+    return lidar_viewer::UserHome()/fs::u8path(path.size()>2 ? path.substr(2) : "");
+  }
+  return fs::u8path(path);
+}
+
+void SetLivePaused(ViewerState & state, bool paused)
+{
+  if (!state.live.Active() || state.live_paused == paused) return;
+  state.live_paused = paused;
+  std::cout << "Live display " << (paused ? "paused" : "resumed") << " at frame "
+            << state.live_display_sequence << " | receiver remains active" << std::endl;
+}
+
+void ConnectLive(ViewerState & state)
+{
+  if (state.live.Active() || state.loading_bag_source || state.bag_picker.Active() || state.folder_scan_future.valid()) return;
+  state.live.Connect({state.live_points_topic.data(), state.live_imu_topic.data()});
+  if (state.dataset_profile != "rosbag") {
+    state.dataset_profile = "rosbag";
+    state.calibration = {};
+    LoadSettings(state);
+    if (state.bag_sensor_height_override) state.calibration.z_m = *state.bag_sensor_height_override;
+    if (state.imu_level_cli_override) state.imu_level_enabled = true;
+  }
+  if (state.prefetch_future.valid()) {try {state.prefetch_future.get();} catch (...) {}}
+  state.prefetched_index.reset(); state.frame_cache.clear(); state.frame_cache_order.clear();
+  state.frames.clear(); state.file_groups.clear(); state.current_bag_source.reset();
+  state.base_frame = {}; state.frame = {}; state.clusters.clear(); state.detections.clear();
+  RebuildClusterBoxes(state);
+  state.roi_renderer.vertices.clear(); state.roi_renderer.dirty = true;
+  state.global_ground_offset = 0; state.alignment_initialized = true;
+  state.current_index = 0; state.current_file_group = 0; state.seek_draft = 0;
+  state.is_playing = false; state.timeline_dragging = false; state.ground_removed_count = 0;
+  state.live_mode = true; state.live_paused = false; state.live_has_frame = false; state.live_display_sequence = 0;
+  state.live_stats = state.live.Stats(); state.frame_dirty = true;
+  state.ui_error.clear();
+  std::cout << "Live connected: " << state.live_points_topic.data() << " | IMU "
+            << state.live_imu_topic.data() << std::endl;
+}
+
+void UpdateLiveFrame(ViewerState & state)
+{
+  if (!state.live_mode) return;
+  state.live_stats = state.live.Stats();
+  if (!state.live_stats.connected || state.live_paused) return;
+  auto next = state.live.TakeLatest();
+  if (!next) return;
+  try {
+    ApplyCalibration(state, &next->frame, 0);
+    state.base_frame = std::move(next->frame);
+    state.live_display_sequence = next->sequence;
+    if (!state.live_has_frame) {
+      state.fit_view_requested = true;
+      std::cout << "Live first frame: " << state.frame.points.size() << " points" << std::endl;
+    }
+    state.live_has_frame = true;
+  } catch (const std::exception & error) {
+    state.ui_error = std::string("Live frame could not be processed: ") + error.what();
+    SetLivePaused(state, true);
+  }
+}
+
+fs::path NewLiveRecordingPath(const ViewerState & state)
+{
+  const auto folder = ExpandFolderPath(state.live_record_folder.data());
+  if (folder.empty()) throw std::runtime_error("Choose a recording folder");
+  const auto now = std::chrono::system_clock::now();
+  const auto micros = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+  const std::time_t korea_time = std::chrono::system_clock::to_time_t(now) + 9 * 3600;
+  const std::tm date = lidar_viewer::UtcTime(korea_time);
+  std::ostringstream name;
+  name << "sensors_" << std::put_time(&date, "%Y%m%d_%H%M%S_") << std::setfill('0') << std::setw(6) << micros % 1000000;
+  return folder / name.str();
+}
+
+void ToggleLiveRecording(ViewerState & state)
+{
+  if (state.live_stats.record_busy) {
+    state.live.StopRecording();
+    std::cout << "Live recording: finalizing" << std::endl;
+  } else {
+    const auto destination = NewLiveRecordingPath(state);
+    state.live.StartRecording(destination);
+    std::cout << "Live recording: " << destination << std::endl;
+  }
+  state.live_stats = state.live.Stats();
+}
+
+void BrowseFolder(ViewerState & state, const fs::path & folder)
+{
+  try {
+    const auto canonical = fs::canonical(folder);
+    if (!fs::is_directory(canonical)) throw std::runtime_error("Choose a directory");
+    if (canonical.string().size() >= state.folder_path_input.size())
+      throw std::runtime_error("Folder path is too long");
+    std::vector<fs::path> children;
+    std::error_code error;
+    for (fs::directory_iterator it(canonical, fs::directory_options::skip_permission_denied, error), end;
+         it != end; it.increment(error)) {
+      if (error) break;
+      if (it->is_directory(error) && it->path().filename().string().front() != '.') children.push_back(it->path());
+      error.clear();
+    }
+    std::sort(children.begin(), children.end());
+    state.browsing_folder = canonical;
+    std::fill(state.folder_path_input.begin(), state.folder_path_input.end(), '\0');
+    const auto text = canonical.string();
+    std::copy(text.begin(), text.end(), state.folder_path_input.begin());
+    state.folder_children = std::move(children);
+    state.folder_error.clear();
+  } catch (const std::exception & error) {
+    state.folder_error = std::string("Folder could not be opened: ") + error.what();
+  }
+}
+
 fs::path SettingsPath()
 {
-  return fs::current_path() / kSettingsFileName;
+  return lidar_viewer::ProjectResourcePath(kSettingsFileName);
 }
 
 std::string DetectDatasetProfile(const fs::path & input_path)
 {
+  if (IsRos2BagInput(input_path)) {
+    return "rosbag";
+  }
   const std::string path = input_path.string();
   if (path.find("gangnam") != std::string::npos ||
     path.find("2019_10_04") != std::string::npos)
@@ -1474,23 +1521,40 @@ std::string DetectDatasetProfile(const fs::path & input_path)
 
 fs::path ProfileSettingsPath(const std::string & profile)
 {
-  return fs::current_path() / kProfilesDir / (profile + ".cfg");
+#ifdef LIDAR_VIEWER_USER_SETTINGS
+  return lidar_viewer::UserConfigurationDirectory()/"profiles"/(profile+".cfg");
+#else
+  return lidar_viewer::ProjectResourcePath(kProfilesDir) / (profile + ".cfg");
+#endif
 }
 
 fs::path AlgorithmsConfigPath()
 {
-  return fs::current_path() / kAlgorithmsConfigPath;
+  return lidar_viewer::ProjectResourcePath(kAlgorithmsConfigPath);
 }
 
 void SaveSettings(const ViewerState & state)
 {
-  std::error_code ec;
-  fs::create_directories(fs::current_path() / kProfilesDir, ec);
-
-  std::ofstream out(ProfileSettingsPath(state.dataset_profile), std::ios::trunc);
-  if (!out) {
-    throw std::runtime_error("Failed to open settings file for write");
+  for (const float value : {state.camera.point_size, state.camera.distance,
+      state.calibration.yaw_deg, state.calibration.pitch_deg, state.calibration.roll_deg,
+      state.calibration.z_m, state.grid_settings.spacing, state.grid_settings.thickness,
+      state.height_color_min, state.height_color_max, state.ui_scale,
+      state.imu_mount.roll_deg, state.imu_mount.pitch_deg, state.imu_mount.yaw_deg}) {
+    if (!std::isfinite(value)) throw std::runtime_error("Cannot save a non-finite setting");
   }
+  for (const auto & value : {state.imu_mount.imu_frame, state.imu_mount.lidar_frame}) {
+    if (value.find_first_of("\r\n") != std::string::npos || value.find('\0') != std::string::npos)
+      throw std::runtime_error("Invalid IMU mount frame name");
+  }
+  const fs::path destination = ProfileSettingsPath(state.dataset_profile);
+  std::error_code ec;
+  fs::create_directories(destination.parent_path(), ec);
+  if (ec) {
+    throw std::system_error(ec, "Failed to create settings directory");
+  }
+
+  std::ostringstream out;
+  out << std::setprecision(std::numeric_limits<float>::max_digits10);
 
   out << "profile=" << state.dataset_profile << '\n';
   out << "grid_enabled=" << (state.grid_settings.enabled ? 1 : 0) << '\n';
@@ -1498,11 +1562,21 @@ void SaveSettings(const ViewerState & state)
   out << "grid_thickness=" << state.grid_settings.thickness << '\n';
   out << "grid_count=" << state.grid_settings.count << '\n';
   out << "color_mode=" << state.color_mode << '\n';
+  out << "height_color_min=" << state.height_color_min << '\n';
+  out << "height_color_max=" << state.height_color_max << '\n';
+  out << "ui_scale=" << state.ui_scale << '\n';
+  out << "loop_playback=" << (state.loop_playback ? 1 : 0) << '\n';
   CameraState camera_snapshot = state.camera;
   StoreCurrentProjectionView(camera_snapshot);
 
   out << "point_size=" << camera_snapshot.point_size << '\n';
   out << "ground_cell_size_m=" << state.algorithm_config.ground_removal.candidate_grid_cell_m << '\n';
+  out << "ground_mode=" << state.algorithm_config.ground_removal.mode << '\n';
+  out << "ground_use_cuda=" << state.algorithm_config.ground_removal.use_cuda << '\n';
+  out << "gseg3d_ground_inlier_threshold_m=" << state.algorithm_config.ground_removal.gseg3d_ground_inlier_threshold_m << '\n';
+  out << "gseg3d_cell_size_x_m=" << state.algorithm_config.ground_removal.gseg3d_cell_size_x_m << '\n';
+  out << "gseg3d_cell_size_y_m=" << state.algorithm_config.ground_removal.gseg3d_cell_size_y_m << '\n';
+  out << "gseg3d_cuda_cell_size_m=" << state.algorithm_config.ground_removal.gseg3d_cuda_cell_size_m << '\n';
   out << "projection_mode=" <<
     (camera_snapshot.projection_mode == CameraState::ProjectionMode::View2D ? "2d" : "3d") << '\n';
   out << "camera_target_x=" << camera_snapshot.target.x << '\n';
@@ -1532,6 +1606,18 @@ void SaveSettings(const ViewerState & state)
   out << "calibration_pitch_deg=" << state.calibration.pitch_deg << '\n';
   out << "calibration_roll_deg=" << state.calibration.roll_deg << '\n';
   out << "calibration_z_m=" << state.calibration.z_m << '\n';
+  out << "imu_level_enabled=" << state.imu_level_enabled << '\n';
+  out << "imu_mount_confirmed=" << state.imu_mount.confirmed << '\n';
+  out << "imu_mount_imu_frame=" << state.imu_mount.imu_frame << '\n';
+  out << "imu_mount_lidar_frame=" << state.imu_mount.lidar_frame << '\n';
+  out << "imu_mount_roll_deg=" << state.imu_mount.roll_deg << '\n';
+  out << "imu_mount_pitch_deg=" << state.imu_mount.pitch_deg << '\n';
+  out << "imu_mount_yaw_deg=" << state.imu_mount.yaw_deg << '\n';
+  out << lidar_viewer::SerializeRoiSettings(state.roi);
+  if (!out) {
+    throw std::runtime_error("Failed to serialize settings");
+  }
+  lidar_viewer::settings::AtomicWriteText(destination, out.str());
 }
 
 void LoadSettingsFile(ViewerState & state, const fs::path & path)
@@ -1541,8 +1627,16 @@ void LoadSettingsFile(ViewerState & state, const fs::path & path)
     return;
   }
 
+  using lidar_viewer::settings::ParseFiniteFloat;
+  using lidar_viewer::settings::ParseStrictInt;
+  float height_min = state.height_color_min;
+  float height_max = state.height_color_max;
+  std::size_t line_number = 0;
   std::string line;
+  std::string settings_text;
   while (std::getline(in, line)) {
+    settings_text += line + '\n';
+    ++line_number;
     const std::size_t eq = line.find('=');
     if (eq == std::string::npos) {
       continue;
@@ -1551,400 +1645,229 @@ void LoadSettingsFile(ViewerState & state, const fs::path & path)
     const std::string value = line.substr(eq + 1);
     try {
       if (key == "grid_enabled") {
-        state.grid_settings.enabled = (std::stoi(value) != 0);
+        state.grid_settings.enabled = (ParseStrictInt(value) != 0);
       } else if (key == "grid_spacing") {
-        state.grid_settings.spacing = std::stof(value);
+        state.grid_settings.spacing = ParseFiniteFloat(value);
       } else if (key == "grid_thickness") {
-        state.grid_settings.thickness = std::stof(value);
+        state.grid_settings.thickness = ParseFiniteFloat(value);
       } else if (key == "grid_count") {
-        state.grid_settings.count = std::stoi(value);
+        state.grid_settings.count = ParseStrictInt(value);
       } else if (key == "color_mode") {
-        state.color_mode = std::clamp(std::stoi(value), 0, 1);
+        state.color_mode = std::clamp(ParseStrictInt(value), 0, 2);
+      } else if (key == "height_color_min") {
+        height_min = std::clamp(ParseFiniteFloat(value), -100.0f, 100.0f);
+      } else if (key == "height_color_max") {
+        height_max = std::clamp(ParseFiniteFloat(value), -100.0f, 100.0f);
+      } else if (key == "ui_scale") {
+        state.ui_scale = std::clamp(ParseFiniteFloat(value), 0.75f, 1.5f);
+      } else if (key == "loop_playback") {
+        state.loop_playback = ParseStrictInt(value) != 0;
       } else if (key == "point_size") {
-        state.camera.point_size = std::clamp(std::stof(value), 1.0f, 8.0f);
+        state.camera.point_size = std::clamp(ParseFiniteFloat(value), 1.0f, 8.0f);
       } else if (key == "ground_cell_size_m") {
         state.algorithm_config.ground_removal.candidate_grid_cell_m =
-          std::clamp(std::stof(value), 0.1f, 0.5f);
+          std::clamp(ParseFiniteFloat(value), 0.1f, 5.0f);
+      } else if (key == "ground_mode") {
+        if (value == "fast_grid" || value == "gseg3d" || value == "patchworkpp" || value == "grid" || value == "ransac")
+          state.algorithm_config.ground_removal.mode = value;
+        else throw std::invalid_argument("Unknown ground segmentation method");
+      } else if (key == "ground_use_cuda") {
+        state.algorithm_config.ground_removal.use_cuda = ParseStrictInt(value) != 0;
+      } else if (key == "gseg3d_ground_inlier_threshold_m") {
+        state.algorithm_config.ground_removal.gseg3d_ground_inlier_threshold_m =
+          std::clamp(ParseFiniteFloat(value), .02f, 1.0f);
+      } else if (key == "gseg3d_cell_size_x_m") {
+        state.algorithm_config.ground_removal.gseg3d_cell_size_x_m =
+          std::clamp(ParseFiniteFloat(value), 0.1f, 5.0f);
+      } else if (key == "gseg3d_cell_size_y_m") {
+        state.algorithm_config.ground_removal.gseg3d_cell_size_y_m =
+          std::clamp(ParseFiniteFloat(value), 0.1f, 5.0f);
+      } else if (key == "gseg3d_cuda_cell_size_m") {
+        state.algorithm_config.ground_removal.gseg3d_cuda_cell_size_m =
+          std::clamp(ParseFiniteFloat(value), 0.1f, 5.0f);
       } else if (key == "projection_mode") {
         state.camera.projection_mode =
           (value == "2d") ? CameraState::ProjectionMode::View2D : CameraState::ProjectionMode::View3D;
       } else if (key == "camera_target_x") {
-        state.camera.target.x = std::stof(value);
+        state.camera.target.x = ParseFiniteFloat(value);
         state.camera.has_saved_view = true;
       } else if (key == "camera_target_y") {
-        state.camera.target.y = std::stof(value);
+        state.camera.target.y = ParseFiniteFloat(value);
         state.camera.has_saved_view = true;
       } else if (key == "camera_target_z") {
-        state.camera.target.z = std::stof(value);
+        state.camera.target.z = ParseFiniteFloat(value);
         state.camera.has_saved_view = true;
       } else if (key == "camera_yaw_rad") {
-        state.camera.yaw = std::stof(value);
+        state.camera.yaw = ParseFiniteFloat(value);
         state.camera.has_saved_view = true;
       } else if (key == "camera_pitch_rad") {
-        state.camera.pitch = std::clamp(std::stof(value), -1.5707f, 1.5707f);
+        state.camera.pitch = std::clamp(ParseFiniteFloat(value), -1.5707f, 1.5707f);
         state.camera.has_saved_view = true;
       } else if (key == "camera_distance") {
-        state.camera.distance = std::clamp(std::stof(value), 1.0f, 5000.0f);
+        state.camera.distance = std::clamp(ParseFiniteFloat(value), 1.0f, 5000.0f);
         state.camera.has_saved_view = true;
       } else if (key == "camera_3d_target_x") {
-        state.camera.saved_3d_view.target.x = std::stof(value);
+        state.camera.saved_3d_view.target.x = ParseFiniteFloat(value);
       } else if (key == "camera_3d_target_y") {
-        state.camera.saved_3d_view.target.y = std::stof(value);
+        state.camera.saved_3d_view.target.y = ParseFiniteFloat(value);
       } else if (key == "camera_3d_target_z") {
-        state.camera.saved_3d_view.target.z = std::stof(value);
+        state.camera.saved_3d_view.target.z = ParseFiniteFloat(value);
       } else if (key == "camera_3d_yaw_rad") {
-        state.camera.saved_3d_view.yaw = std::stof(value);
+        state.camera.saved_3d_view.yaw = ParseFiniteFloat(value);
       } else if (key == "camera_3d_pitch_rad") {
-        state.camera.saved_3d_view.pitch = std::clamp(std::stof(value), -1.5707f, 1.5707f);
+        state.camera.saved_3d_view.pitch = std::clamp(ParseFiniteFloat(value), -1.5707f, 1.5707f);
       } else if (key == "camera_3d_distance") {
-        state.camera.saved_3d_view.distance = std::clamp(std::stof(value), 1.0f, 5000.0f);
+        state.camera.saved_3d_view.distance = std::clamp(ParseFiniteFloat(value), 1.0f, 5000.0f);
       } else if (key == "camera_3d_valid") {
-        state.camera.saved_3d_view.valid = (std::stoi(value) != 0);
+        state.camera.saved_3d_view.valid = (ParseStrictInt(value) != 0);
       } else if (key == "camera_2d_target_x") {
-        state.camera.saved_2d_view.target.x = std::stof(value);
+        state.camera.saved_2d_view.target.x = ParseFiniteFloat(value);
       } else if (key == "camera_2d_target_y") {
-        state.camera.saved_2d_view.target.y = std::stof(value);
+        state.camera.saved_2d_view.target.y = ParseFiniteFloat(value);
       } else if (key == "camera_2d_target_z") {
-        state.camera.saved_2d_view.target.z = std::stof(value);
+        state.camera.saved_2d_view.target.z = ParseFiniteFloat(value);
       } else if (key == "camera_2d_yaw_rad") {
-        state.camera.saved_2d_view.yaw = std::stof(value);
+        state.camera.saved_2d_view.yaw = ParseFiniteFloat(value);
       } else if (key == "camera_2d_pitch_rad") {
-        state.camera.saved_2d_view.pitch = std::clamp(std::stof(value), -1.5707f, 1.5707f);
+        state.camera.saved_2d_view.pitch = std::clamp(ParseFiniteFloat(value), -1.5707f, 1.5707f);
       } else if (key == "camera_2d_distance") {
-        state.camera.saved_2d_view.distance = std::clamp(std::stof(value), 1.0f, 5000.0f);
+        state.camera.saved_2d_view.distance = std::clamp(ParseFiniteFloat(value), 1.0f, 5000.0f);
       } else if (key == "camera_2d_valid") {
-        state.camera.saved_2d_view.valid = (std::stoi(value) != 0);
+        state.camera.saved_2d_view.valid = (ParseStrictInt(value) != 0);
       } else if (key == "ground_removal_enabled") {
-        state.ground_removal_enabled = (std::stoi(value) != 0);
+        state.ground_removal_enabled = (ParseStrictInt(value) != 0);
       } else if (key == "clustering_enabled") {
-        state.algorithm_config.clustering.enabled = (std::stoi(value) != 0);
+        state.algorithm_config.clustering.enabled = (ParseStrictInt(value) != 0);
       } else if (key == "detection_enabled") {
-        state.algorithm_config.detection.enabled = (std::stoi(value) != 0);
+        state.algorithm_config.detection.enabled = (ParseStrictInt(value) != 0);
       } else if (key == "calibration_yaw_deg") {
-        state.calibration.yaw_deg = std::clamp(std::stof(value), -180.0f, 180.0f);
+        state.calibration.yaw_deg = std::clamp(ParseFiniteFloat(value), -180.0f, 180.0f);
       } else if (key == "calibration_pitch_deg") {
-        state.calibration.pitch_deg = std::clamp(std::stof(value), -180.0f, 180.0f);
+        state.calibration.pitch_deg = std::clamp(ParseFiniteFloat(value), -180.0f, 180.0f);
       } else if (key == "calibration_roll_deg") {
-        state.calibration.roll_deg = std::clamp(std::stof(value), -180.0f, 180.0f);
+        state.calibration.roll_deg = std::clamp(ParseFiniteFloat(value), -180.0f, 180.0f);
       } else if (key == "calibration_z_m") {
-        state.calibration.z_m = std::clamp(std::stof(value), -5.0f, 5.0f);
+        state.calibration.z_m = std::clamp(ParseFiniteFloat(value), -5.0f, 5.0f);
+      } else if (key == "imu_level_enabled") {
+        state.imu_level_enabled = ParseStrictInt(value) != 0;
+      } else if (key == "imu_mount_confirmed") {
+        state.imu_mount.confirmed = ParseStrictInt(value) != 0;
+      } else if (key == "imu_mount_imu_frame") {
+        state.imu_mount.imu_frame = value;
+      } else if (key == "imu_mount_lidar_frame") {
+        state.imu_mount.lidar_frame = value;
+      } else if (key == "imu_mount_roll_deg") {
+        state.imu_mount.roll_deg = std::clamp(ParseFiniteFloat(value), -180.0f, 180.0f);
+      } else if (key == "imu_mount_pitch_deg") {
+        state.imu_mount.pitch_deg = std::clamp(ParseFiniteFloat(value), -180.0f, 180.0f);
+      } else if (key == "imu_mount_yaw_deg") {
+        state.imu_mount.yaw_deg = std::clamp(ParseFiniteFloat(value), -180.0f, 180.0f);
       }
-    } catch (...) {
+    } catch (const std::exception & error) {
+      std::cerr << "Ignoring invalid setting '" << key << "' at " << path << ':'
+                << line_number << ": " << error.what() << '\n';
     }
   }
 
+  if (height_max - height_min > 1e-3f) {
+    state.height_color_min = height_min;
+    state.height_color_max = height_max;
+  } else {
+    std::cerr << "Ignoring invalid height color range in " << path << '\n';
+  }
+  if (in.bad()) {
+    std::cerr << "Failed to completely read settings file " << path << '\n';
+  }
+
+  if (!in.bad()) {
+    try { state.roi = lidar_viewer::ParseRoiSettings(settings_text, state.roi); }
+    catch (const std::exception & error) {
+      std::cerr << "Ignoring invalid ROI settings in " << path << ": " << error.what() << '\n';
+    }
+  }
   MarkGridDirty(state);
 }
 
 void LoadSettings(ViewerState & state)
 {
+#ifdef LIDAR_VIEWER_USER_SETTINGS
+  LoadSettingsFile(state,lidar_viewer::ProjectResourcePath(kProfilesDir)/(state.dataset_profile+".cfg"));
+#endif
   LoadSettingsFile(state, ProfileSettingsPath(state.dataset_profile));
   if (state.dataset_profile == "default") {
     LoadSettingsFile(state, SettingsPath());
   }
 }
 
-float * CalibrationValuePtr(ViewerState & state, int slider_index)
-{
-  switch (slider_index) {
-    case 0:
-      return &state.calibration.yaw_deg;
-    case 1:
-      return &state.calibration.pitch_deg;
-    case 2:
-      return &state.calibration.roll_deg;
-    case 3:
-      return &state.calibration.z_m;
-    default:
-      return nullptr;
-  }
-}
-
-std::pair<float, float> CalibrationRange(int index)
-{
-  if (index == 5) { // cell size
-    return {0.1f, 0.5f};
-  }
-  if (index == 4) {
-    return {1.0f, 8.0f};
-  }
-  if (index == 3) {
-    return {-5.0f, 5.0f};
-  }
-  return {-180.0f, 180.0f};
-}
-
-void UpdateCalibrationFromMouse(ViewerState & state, int slider_index, double mouse_x)
-{
-  float * value = CalibrationValuePtr(state, slider_index);
-  if (slider_index == 4) {
-    value = &state.camera.point_size;
-  } else if (slider_index == 5) {
-    value = &state.algorithm_config.ground_removal.candidate_grid_cell_m;
-  }
-  if (!value) {
-    return;
-  }
-
-  const GridButton slider =
-    (slider_index == 4) ? PointSizeSliderRect() :
-    (slider_index == 5) ? GroundCellSizeSliderRect() :
-    CalibrationSliderRect(slider_index);
-  const auto [min_value, max_value] = CalibrationRange(slider_index);
-  const double normalized = std::clamp((mouse_x - slider.x) / slider.w, 0.0, 1.0);
-  *value = static_cast<float>(min_value + normalized * (max_value - min_value));
-  if (slider_index == 4) {
-    state.frame_dirty = true;
-  } else if (slider_index == 5) {
-    ApplyCalibration(state);
-  } else {
-    ApplyCalibration(state);
-  }
-}
-
-void CommitCalibrationValueInput(ViewerState & state)
-{
-  float * value = CalibrationValuePtr(state, state.active_value_box);
-  if (state.active_value_box == 4) {
-    value = &state.camera.point_size;
-  } else if (state.active_value_box == 5) {
-    value = &state.algorithm_config.ground_removal.candidate_grid_cell_m;
-  }
-  if (value && !state.value_input_buffer.empty()) {
-    try {
-      const auto [min_value, max_value] = CalibrationRange(state.active_value_box);
-      *value = std::clamp(std::stof(state.value_input_buffer), min_value, max_value);
-      if (state.active_value_box == 4) {
-        state.frame_dirty = true;
-      } else {
-        ApplyCalibration(state);
-      }
-    } catch (...) {
-      SetTransientStatus(state, "INVALID VALUE");
-    }
-  }
-  state.active_value_box = -1;
-  state.value_input_buffer.clear();
-}
 
 void AdvanceFrame(ViewerState & state, int direction)
 {
-  if (state.frames.empty()) {
+  if (state.live_mode || state.frames.empty() || state.loading_bag_source) {
     return;
   }
-
-  if (direction >= 0) {
-    LoadFrameByIndex(state, (state.current_index + 1) % state.frames.size());
-    return;
+  if (direction > 0) {
+    if (state.current_index + 1 >= state.frames.size() && !state.loop_playback) {
+      state.is_playing = false;
+      return;
+    }
+    TryLoadFrame(state, (state.current_index + 1) % state.frames.size());
+  } else {
+    if (state.current_index == 0 && !state.loop_playback) {
+      return;
+    }
+    TryLoadFrame(state, state.current_index == 0 ? state.frames.size() - 1 : state.current_index - 1);
   }
+}
 
-  const std::size_t next = (state.current_index == 0) ? state.frames.size() - 1 : state.current_index - 1;
-  LoadFrameByIndex(state, next);
+bool PointerInScene(GLFWwindow * window, const ViewerState & state)
+{
+  double x = 0., y = 0.;
+  glfwGetCursorPos(window, &x, &y);
+  const auto & rect = state.ui_layout.viewport;
+  return x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h;
 }
 
 void MouseButtonCallback(GLFWwindow * window, int button, int action, int)
 {
   auto * state = static_cast<ViewerState *>(glfwGetWindowUserPointer(window));
-  if (!state) {
+  if (!state) return;
+  if (action == GLFW_RELEASE) {
+    if (button == GLFW_MOUSE_BUTTON_LEFT) state->camera.dragging_left = false;
+    if (button == GLFW_MOUSE_BUTTON_RIGHT) state->camera.dragging_right = false;
     return;
   }
-
-  if (button == GLFW_MOUSE_BUTTON_LEFT) {
-    double mouse_x = 0.0;
-    double mouse_y = 0.0;
-    glfwGetCursorPos(window, &mouse_x, &mouse_y);
-    if (action == GLFW_PRESS) {
-      const GridButton timeline = TimelineTrackRect();
-      if (IsInsideRect(mouse_x, mouse_y, timeline.x, timeline.y, timeline.w, timeline.h)) {
-        state->timeline_dragging = true;
-        ScrubToMouse(*state, mouse_x);
-        return;
-      }
-      const GridButton file_selector = FileSelectorRect();
-      if (IsInsideRect(mouse_x, mouse_y, file_selector.x, file_selector.y, file_selector.w, file_selector.h)) {
-        state->file_selector_open = !state->file_selector_open;
-        return;
-      }
-      if (state->file_selector_open) {
-        const GridButton list_rect = FileSelectorListRect();
-        if (IsInsideRect(mouse_x, mouse_y, list_rect.x, list_rect.y, list_rect.w, list_rect.h)) {
-          const int clicked_row = static_cast<int>((mouse_y - (list_rect.y + 4.0f)) / kFileSelectorListRowH);
-          if (clicked_row >= 0 && clicked_row < static_cast<int>(state->file_groups.size()) &&
-            clicked_row < kFileSelectorVisibleRows)
-          {
-            const auto & group = state->file_groups[static_cast<std::size_t>(clicked_row)];
-            state->file_selector_open = false;
-            LoadFrameByIndex(*state, group.first_index);
-            state->last_frame_advance_time = glfwGetTime();
-            return;
-          }
-        } else {
-          state->file_selector_open = false;
-        }
-      }
-      if (IsInsideRect(mouse_x, mouse_y, kPlayButtonX, kPlayButtonY, kPlayButtonW, kPlayButtonH)) {
-        state->is_playing = true;
-        state->last_frame_advance_time = glfwGetTime();
-        return;
-      }
-      if (IsInsideRect(mouse_x, mouse_y, kPauseButtonX, kPauseButtonY, kPauseButtonW, kPauseButtonH)) {
-        state->is_playing = false;
-        return;
-      }
-      const GridButton ground = GroundRemovalButton();
-      if (IsInsideRect(mouse_x, mouse_y, ground.x, ground.y, ground.w, ground.h)) {
-        state->ground_removal_enabled = !state->ground_removal_enabled;
-        ApplyCalibration(*state);
-        return;
-      }
-      const GridButton clustering = ClusteringButton();
-      if (IsInsideRect(mouse_x, mouse_y, clustering.x, clustering.y, clustering.w, clustering.h)) {
-        state->algorithm_config.clustering.enabled = !state->algorithm_config.clustering.enabled;
-        ApplyCalibration(*state);
-        return;
-      }
-      const GridButton detection = DetectionButton();
-      if (IsInsideRect(mouse_x, mouse_y, detection.x, detection.y, detection.w, detection.h)) {
-        state->algorithm_config.detection.enabled = !state->algorithm_config.detection.enabled;
-        ApplyCalibration(*state);
-        return;
-      }
-      const GridButton view2d = View2DButton();
-      if (IsInsideRect(mouse_x, mouse_y, view2d.x, view2d.y, view2d.w, view2d.h)) {
-        SetProjectionMode(*state, CameraState::ProjectionMode::View2D);
-        return;
-      }
-      const GridButton view3d = View3DButton();
-      if (IsInsideRect(mouse_x, mouse_y, view3d.x, view3d.y, view3d.w, view3d.h)) {
-        SetProjectionMode(*state, CameraState::ProjectionMode::View3D);
-        return;
-      }
-      const GridButton toggle = GridToggleButton();
-      if (IsInsideRect(mouse_x, mouse_y, toggle.x, toggle.y, toggle.w, toggle.h)) {
-        state->grid_settings.enabled = !state->grid_settings.enabled;
-        return;
-      }
-      const GridButton save = GridSaveButton();
-      if (IsInsideRect(mouse_x, mouse_y, save.x, save.y, save.w, save.h)) {
-        try {
-          SaveSettings(*state);
-          SetTransientStatus(*state, "SETTINGS SAVED");
-        } catch (const std::exception & e) {
-          std::cerr << e.what() << '\n';
-          SetTransientStatus(*state, "SAVE FAILED");
-        }
-        return;
-      }
-      for (int value_box = 0; value_box < 6; ++value_box) {
-        const GridButton box =
-          (value_box == 4) ? PointSizeValueBoxRect() :
-          (value_box == 5) ? GroundCellSizeValueBoxRect() :
-          CalibrationValueBoxRect(value_box);
-        if (IsInsideRect(mouse_x, mouse_y, box.x, box.y, box.w, box.h)) {
-          state->active_value_box = value_box;
-          state->value_input_buffer.clear();
-          return;
-        }
-      }
-      for (int slider = 0; slider < 6; ++slider) {
-        const GridButton slider_rect =
-          (slider == 4) ? PointSizeSliderRect() :
-          (slider == 5) ? GroundCellSizeSliderRect() :
-          CalibrationSliderRect(slider);
-        if (IsInsideRect(mouse_x, mouse_y, slider_rect.x, slider_rect.y, slider_rect.w, slider_rect.h)) {
-          state->active_value_box = -1;
-          state->value_input_buffer.clear();
-          state->active_slider = slider;
-          UpdateCalibrationFromMouse(*state, slider, mouse_x);
-          return;
-        }
-      }
-      for (int row = 0; row < 3; ++row) {
-        const GridButton minus = GridMinusButton(row);
-        const GridButton plus = GridPlusButton(row);
-        if (IsInsideRect(mouse_x, mouse_y, minus.x, minus.y, minus.w, minus.h)) {
-          if (row == 0) {
-            state->grid_settings.spacing -= 0.5f;
-          } else if (row == 1) {
-            state->grid_settings.thickness -= 1.0f;
-          } else {
-            state->grid_settings.count -= 1;
-          }
-          MarkGridDirty(*state);
-          return;
-        }
-        if (IsInsideRect(mouse_x, mouse_y, plus.x, plus.y, plus.w, plus.h)) {
-          if (row == 0) {
-            state->grid_settings.spacing += 0.5f;
-          } else if (row == 1) {
-            state->grid_settings.thickness += 1.0f;
-          } else {
-            state->grid_settings.count += 1;
-          }
-          MarkGridDirty(*state);
-          return;
-        }
-      }
-      state->active_value_box = -1;
-      state->value_input_buffer.clear();
-    }
-    if (action == GLFW_RELEASE) {
-      state->timeline_dragging = false;
-      state->active_slider = -1;
-    }
-    state->camera.dragging_left = (action == GLFW_PRESS);
-  } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
-    state->camera.dragging_right = (action == GLFW_PRESS);
-  }
-
+  if (!PointerInScene(window, *state) ||
+      (ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse)) return;
+  if (button == GLFW_MOUSE_BUTTON_LEFT) state->camera.dragging_left = true;
+  if (button == GLFW_MOUSE_BUTTON_RIGHT) state->camera.dragging_right = true;
   glfwGetCursorPos(window, &state->camera.last_x, &state->camera.last_y);
 }
 
 void CursorCallback(GLFWwindow * window, double x, double y)
 {
   auto * state = static_cast<ViewerState *>(glfwGetWindowUserPointer(window));
-  if (!state) {
-    return;
-  }
-
-  const double dx = x - state->camera.last_x;
-  const double dy = y - state->camera.last_y;
+  if (!state) return;
+  const double dx = x - state->camera.last_x, dy = y - state->camera.last_y;
   state->camera.last_x = x;
   state->camera.last_y = y;
-
-  if (state->timeline_dragging) {
-    ScrubToMouse(*state, x);
-    return;
-  }
-
-  if (state->active_slider >= 0) {
-    UpdateCalibrationFromMouse(*state, state->active_slider, x);
-    return;
-  }
-
+  if (!PointerInScene(window, *state) ||
+      (ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse)) return;
+  const float scale = std::max(kPanBaseScale * state->camera.distance, 0.01f);
   if (state->camera.dragging_left) {
     if (state->camera.projection_mode == CameraState::ProjectionMode::View2D) {
-      const float scale = std::max(kPanBaseScale * state->camera.distance, 0.01f);
-      state->camera.target.x -= static_cast<float>(dx) * scale;
-      state->camera.target.y += static_cast<float>(dy) * scale;
+      state->camera.target = lidar_viewer::PanTopView(
+        state->camera.target, state->camera.yaw, static_cast<float>(dx), static_cast<float>(dy), scale);
     } else {
-      // Turntable-style orbit: moving the mouse right rotates the view right,
-      // moving the mouse up tilts the camera upward.
       state->camera.yaw += static_cast<float>(dx) * kOrbitSensitivity;
-      state->camera.pitch += static_cast<float>(dy) * kOrbitSensitivity;
-      state->camera.pitch = std::clamp(state->camera.pitch, -1.5f, 1.5f);
+      state->camera.pitch = std::clamp(state->camera.pitch + static_cast<float>(dy) * kOrbitSensitivity, -1.5f, 1.5f);
     }
   }
-
   if (state->camera.dragging_right) {
-    const float scale = std::max(kPanBaseScale * state->camera.distance, 0.01f);
     if (state->camera.projection_mode == CameraState::ProjectionMode::View2D) {
-      state->camera.target.x -= static_cast<float>(dx) * scale;
-      state->camera.target.y += static_cast<float>(dy) * scale;
+      state->camera.yaw = lidar_viewer::RotateTopView(state->camera.yaw, static_cast<float>(dx) * kOrbitSensitivity);
     } else {
-      const Vec3 eye = CameraPosition(state->camera);
-      const Vec3 forward = Normalize(state->camera.target - eye);
-      const Vec3 right = Normalize(Cross(forward, {0.0f, 0.0f, 1.0f}));
+      const Vec3 forward = Normalize(state->camera.target - CameraPosition(state->camera));
+      const Vec3 right = Normalize(Cross(forward, {0., 0., 1.}));
       const Vec3 up = Normalize(Cross(right, forward));
       state->camera.target = state->camera.target - right * static_cast<float>(dx) * scale +
         up * static_cast<float>(dy) * scale;
@@ -1955,595 +1878,902 @@ void CursorCallback(GLFWwindow * window, double x, double y)
 void ScrollCallback(GLFWwindow * window, double, double yoffset)
 {
   auto * state = static_cast<ViewerState *>(glfwGetWindowUserPointer(window));
-  if (!state) {
-    return;
-  }
-
-  state->camera.distance *= (yoffset > 0.0) ? 0.9f : 1.1f;
-  state->camera.distance = std::clamp(state->camera.distance, 1.0f, 5000.0f);
+  if (!state || !PointerInScene(window, *state) ||
+      (ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse)) return;
+  state->camera.distance = std::clamp(
+    state->camera.distance * static_cast<float>(std::pow(0.9, yoffset)), 1.0f, 5000.0f);
 }
 
-void KeyCallback(GLFWwindow * window, int key, int, int action, int)
+void KeyCallback(GLFWwindow * window, int key, int, int action, int mods)
 {
-  if (action != GLFW_PRESS && action != GLFW_REPEAT) {
-    return;
-  }
-
+  if (action != GLFW_PRESS && action != GLFW_REPEAT) return;
   auto * state = static_cast<ViewerState *>(glfwGetWindowUserPointer(window));
-  if (!state) {
+  if (!state) return;
+  if (key == GLFW_KEY_O && (mods & GLFW_MOD_CONTROL) && action == GLFW_PRESS) {
+    StartBagPicker(*state);
     return;
   }
-
-  if (state->active_value_box >= 0) {
-    if (key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER) {
-      CommitCalibrationValueInput(*state);
-      return;
-    }
-    if (key == GLFW_KEY_ESCAPE) {
-      state->active_value_box = -1;
-      state->value_input_buffer.clear();
-      return;
-    }
-    if (key == GLFW_KEY_BACKSPACE && !state->value_input_buffer.empty()) {
-      state->value_input_buffer.pop_back();
-      return;
-    }
-    return;
-  }
-
+  if (ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureKeyboard) return;
   switch (key) {
-    case GLFW_KEY_ESCAPE:
-      glfwSetWindowShouldClose(window, GLFW_TRUE);
-      break;
+    case GLFW_KEY_ESCAPE: glfwSetWindowShouldClose(window, GLFW_TRUE); break;
     case GLFW_KEY_RIGHT:
-    case GLFW_KEY_N:
-      if (state->frames.size() > 1) {
-        AdvanceFrame(*state, 1);
-        state->last_frame_advance_time = glfwGetTime();
-      }
-      break;
+    case GLFW_KEY_N: AdvanceFrame(*state, 1); break;
     case GLFW_KEY_LEFT:
-    case GLFW_KEY_P:
-      if (state->frames.size() > 1) {
-        AdvanceFrame(*state, -1);
-        state->last_frame_advance_time = glfwGetTime();
-      }
+    case GLFW_KEY_P: AdvanceFrame(*state, -1); break;
+    case GLFW_KEY_F: state->fit_view_requested = true; break;
+    case GLFW_KEY_C: state->color_mode = (state->color_mode + 1) % 3; break;
+    case GLFW_KEY_Q:
+    case GLFW_KEY_E:
+      if (state->camera.projection_mode == CameraState::ProjectionMode::View2D)
+        state->camera.yaw = lidar_viewer::RotateTopView(state->camera.yaw, (key == GLFW_KEY_Q ? -1.f : 1.f) * kPi / 36);
       break;
-    case GLFW_KEY_F:
-      state->fit_view_requested = true;
-      break;
-    case GLFW_KEY_C:
-      state->color_mode = 1 - state->color_mode;
-      break;
-    case GLFW_KEY_LEFT_BRACKET:
-      state->camera.point_size = std::max(1.0f, state->camera.point_size - 1.0f);
-      break;
-    case GLFW_KEY_RIGHT_BRACKET:
-      state->camera.point_size = std::min(8.0f, state->camera.point_size + 1.0f);
-      break;
+    case GLFW_KEY_LEFT_BRACKET: state->camera.point_size = std::max(1.f, state->camera.point_size - 1.f); break;
+    case GLFW_KEY_RIGHT_BRACKET: state->camera.point_size = std::min(8.f, state->camera.point_size + 1.f); break;
     case GLFW_KEY_SPACE:
+      if (state->live_mode) {SetLivePaused(*state, !state->live_paused); break;}
+      if (state->frames.empty() || state->loading_bag_source) break;
       state->is_playing = !state->is_playing;
       state->last_frame_advance_time = glfwGetTime();
       break;
-    default:
-      break;
+    default: break;
   }
 }
 
-void CharCallback(GLFWwindow * window, unsigned int codepoint)
+void ConfigureInterface(GLFWwindow * window, ViewerState & state)
 {
-  auto * state = static_cast<ViewerState *>(glfwGetWindowUserPointer(window));
-  if (!state || state->active_value_box < 0 || state->value_input_buffer.size() >= 10) {
-    return;
+  IMGUI_CHECKVERSION();
+  ImGui::CreateContext();
+  auto & io = ImGui::GetIO();
+  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+  io.IniFilename = nullptr;
+  io.LogFilename = nullptr;
+  float sx = 1.f, sy = 1.f;
+  glfwGetWindowContentScale(window, &sx, &sy);
+  state.font_raster_scale = std::clamp(std::max(sx, sy), 1.f, 3.f);
+  bool font_loaded=false;
+  for (const auto * font : {"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "C:/Windows/Fonts/segoeui.ttf",
+      "/System/Library/Fonts/Supplemental/Arial.ttf"}) {
+    if (fs::is_regular_file(font)) {font_loaded=io.Fonts->AddFontFromFileTTF(font,17.f*state.font_raster_scale)!=nullptr; if(font_loaded) break;}
   }
-
-  const char ch = static_cast<char>(codepoint);
-  if ((ch >= '0' && ch <= '9') || ch == '.' || ch == '-') {
-    state->value_input_buffer.push_back(ch);
+  if (!font_loaded) io.Fonts->AddFontDefault();
+  const char * cjk = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc";
+  if (fs::exists(cjk)) {
+    ImFontConfig merged;
+    merged.MergeMode = true;
+    io.Fonts->AddFontFromFileTTF(cjk, 17.f * state.font_raster_scale, &merged, io.Fonts->GetGlyphRangesKorean());
+  }
+  auto & style = ImGui::GetStyle();
+  ImGui::StyleColorsDark(&style);
+  style.WindowPadding = {16, 16};
+  style.FramePadding = {10, 7};
+  style.ItemSpacing = {10, 10};
+  style.ItemInnerSpacing = {8, 6};
+  style.WindowRounding = 10;
+  style.FrameRounding = 6;
+  style.GrabRounding = 5;
+  style.PopupRounding = 8;
+  style.TabRounding = 6;
+  style.WindowBorderSize = 1;
+  style.FrameBorderSize = 0;
+  style.ScrollbarSize = 10;
+  style.Colors[ImGuiCol_Text] = {0.90f, 0.93f, 0.97f, 1};
+  style.Colors[ImGuiCol_TextDisabled] = {0.48f, 0.56f, 0.66f, 1};
+  style.Colors[ImGuiCol_WindowBg] = {0.075f, 0.092f, 0.12f, 1};
+  style.Colors[ImGuiCol_PopupBg] = {0.09f, 0.11f, 0.145f, 1};
+  style.Colors[ImGuiCol_Border] = {0.16f, 0.20f, 0.26f, 1};
+  style.Colors[ImGuiCol_FrameBg] = {0.12f, 0.15f, 0.195f, 1};
+  style.Colors[ImGuiCol_FrameBgHovered] = {0.17f, 0.22f, 0.285f, 1};
+  style.Colors[ImGuiCol_FrameBgActive] = {0.19f, 0.27f, 0.35f, 1};
+  style.Colors[ImGuiCol_Button] = {0.13f, 0.18f, 0.24f, 1};
+  style.Colors[ImGuiCol_ButtonHovered] = {0.19f, 0.29f, 0.39f, 1};
+  style.Colors[ImGuiCol_ButtonActive] = {0.23f, 0.37f, 0.49f, 1};
+  style.Colors[ImGuiCol_CheckMark] = {0.31f, 0.77f, 0.91f, 1};
+  style.Colors[ImGuiCol_SliderGrab] = {0.31f, 0.77f, 0.91f, 1};
+  style.Colors[ImGuiCol_SliderGrabActive] = {0.49f, 0.88f, 1.f, 1};
+  style.Colors[ImGuiCol_Header] = {0.12f, 0.28f, 0.37f, 1};
+  style.Colors[ImGuiCol_HeaderHovered] = {0.18f, 0.35f, 0.46f, 1};
+  style.Colors[ImGuiCol_Tab] = {0.10f, 0.135f, 0.18f, 1};
+  style.Colors[ImGuiCol_TabHovered] = {0.19f, 0.31f, 0.41f, 1};
+  style.Colors[ImGuiCol_TabSelected] = {0.16f, 0.29f, 0.39f, 1};
+  if (!ImGui_ImplGlfw_InitForOpenGL(window, true) || !ImGui_ImplOpenGL3_Init("#version 330")) {
+    throw std::runtime_error("Failed to initialize the interface");
   }
 }
 
-void BuildHudVertices(const ViewerState & state, std::vector<UiVertex> & vertices)
+void BeginPanel(const char * name, const lidar_viewer::UiRect & rect, bool scroll = true)
 {
-  vertices.clear();
+  ImGui::SetNextWindowPos({rect.x, rect.y});
+  ImGui::SetNextWindowSize({rect.w, rect.h});
+  ImGui::Begin(name, nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove |
+    ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoCollapse |
+    (scroll ? 0 : ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse));
+}
 
-  const Color panel_bg{0.05f, 0.07f, 0.10f, 0.82f};
-  const Color panel_border{0.26f, 0.33f, 0.41f, 0.95f};
-  const Color accent{0.26f, 0.70f, 0.96f, 1.0f};
-  const Color title{0.93f, 0.96f, 0.98f, 1.0f};
-  const Color text{0.72f, 0.79f, 0.86f, 1.0f};
-  const Color hotkey_bg{0.15f, 0.19f, 0.24f, 0.95f};
-  const Color hotkey_text{0.98f, 0.99f, 1.0f, 1.0f};
-  const Color success{0.18f, 0.74f, 0.46f, 0.95f};
-  const Color neutral{0.22f, 0.26f, 0.31f, 0.95f};
-  const Color paused{0.87f, 0.42f, 0.27f, 0.95f};
-  const Color value_bg{0.10f, 0.13f, 0.17f, 0.95f};
-  const Color subtext{0.55f, 0.63f, 0.72f, 1.0f};
-  const Color timeline_bg{0.05f, 0.07f, 0.10f, 0.80f};
-  const Color timeline_track{0.18f, 0.22f, 0.28f, 1.0f};
-  const Color timeline_fill{0.26f, 0.70f, 0.96f, 1.0f};
-  const Color timeline_handle{0.96f, 0.98f, 1.0f, 1.0f};
+void SectionTitle(const char * title)
+{
+  ImGui::Spacing();
+  ImGui::TextColored({0.62f, 0.73f, 0.85f, 1.f}, "%s", title);
+  ImGui::Separator();
+}
 
-  AppendRect(vertices, kTimelineX, kTimelineY, kTimelineX + kTimelineW, kTimelineY + kTimelineH, timeline_bg);
-  AppendRect(vertices, kTimelineX, kTimelineY, kTimelineX + kTimelineW, kTimelineY + 1.0f, panel_border);
-  AppendRect(vertices, kTimelineX, kTimelineY + kTimelineH - 1.0f, kTimelineX + kTimelineW, kTimelineY + kTimelineH, panel_border);
-  AppendRect(vertices, kTimelineX, kTimelineY, kTimelineX + 1.0f, kTimelineY + kTimelineH, panel_border);
-  AppendRect(vertices, kTimelineX + kTimelineW - 1.0f, kTimelineY, kTimelineX + kTimelineW, kTimelineY + kTimelineH, panel_border);
-  AppendText(vertices, kTimelineX + 16.0f, kTimelineY + 8.0f, 1.2f, "CURRENT FILE", subtext);
-  const std::string current_file_name = state.file_groups.empty()
-    ? std::string("NO FILE")
-    : state.file_groups[state.current_file_group].display_name;
-  AppendText(
-    vertices,
-    kTimelineX + 16.0f,
-    kTimelineY + 22.0f,
-    1.35f,
-    EllipsizeMiddle(current_file_name, 42),
-    title);
-  AppendText(vertices, kTimelineX + 16.0f, kTimelineY + 36.0f, 1.1f, "FRAME TIMELINE", subtext);
-  AppendRect(vertices, kTimelineTrackX, kTimelineTrackY, kTimelineTrackX + kTimelineTrackW, kTimelineTrackY + kTimelineTrackH, timeline_track);
-
-  float progress = 0.0f;
-  std::size_t local_frame_index = 0;
-  std::size_t local_frame_count = 1;
-  if (!state.file_groups.empty()) {
-    const auto & group = state.file_groups[state.current_file_group];
-    local_frame_index = state.current_index - group.first_index;
-    local_frame_count = group.last_index - group.first_index + 1;
-    progress = (local_frame_count <= 1)
-      ? 0.0f
-      : static_cast<float>(local_frame_index) / static_cast<float>(local_frame_count - 1);
-  }
-  const float fill_w = kTimelineTrackW * progress;
-  AppendRect(vertices, kTimelineTrackX, kTimelineTrackY, kTimelineTrackX + fill_w, kTimelineTrackY + kTimelineTrackH, timeline_fill);
-  const float handle_x = kTimelineTrackX + fill_w;
-  AppendRect(vertices, handle_x - 4.0f, kTimelineTrackY - 4.0f, handle_x + 4.0f, kTimelineTrackY + kTimelineTrackH + 4.0f, timeline_handle);
-
-  std::ostringstream timeline_label;
-  timeline_label << (local_frame_index + 1) << " / " << local_frame_count;
-  AppendText(vertices, kTimelineTrackX + kTimelineTrackW - 86.0f, kTimelineY + 36.0f, 1.1f, timeline_label.str(), subtext);
-
-  const GridButton file_selector = FileSelectorRect();
-  AppendText(vertices, file_selector.x, kTimelineY + 8.0f, 1.2f, "BIN FILE", subtext);
-  AppendRect(
-    vertices,
-    file_selector.x,
-    file_selector.y,
-    file_selector.x + file_selector.w,
-    file_selector.y + file_selector.h,
-    hotkey_bg);
-  AppendText(
-    vertices,
-    file_selector.x + 8.0f,
-    file_selector.y + 5.0f,
-    1.15f,
-    EllipsizeMiddle(current_file_name, 18),
-    hotkey_text);
-  AppendText(vertices, file_selector.x + file_selector.w - 18.0f, file_selector.y + 5.0f, 1.15f, "V", hotkey_text);
-
-  if (state.file_selector_open) {
-    const GridButton list_rect = FileSelectorListRect();
-    AppendRect(
-      vertices,
-      list_rect.x,
-      list_rect.y,
-      list_rect.x + list_rect.w,
-      list_rect.y + list_rect.h,
-      panel_bg);
-    AppendRect(vertices, list_rect.x, list_rect.y, list_rect.x + list_rect.w, list_rect.y + 1.0f, panel_border);
-    AppendRect(vertices, list_rect.x, list_rect.y + list_rect.h - 1.0f, list_rect.x + list_rect.w, list_rect.y + list_rect.h, panel_border);
-    AppendRect(vertices, list_rect.x, list_rect.y, list_rect.x + 1.0f, list_rect.y + list_rect.h, panel_border);
-    AppendRect(vertices, list_rect.x + list_rect.w - 1.0f, list_rect.y, list_rect.x + list_rect.w, list_rect.y + list_rect.h, panel_border);
-    const int visible_rows = std::min(static_cast<int>(state.file_groups.size()), kFileSelectorVisibleRows);
-    for (int row = 0; row < visible_rows; ++row) {
-      const float row_y = list_rect.y + 4.0f + static_cast<float>(row) * kFileSelectorListRowH;
-      const bool selected = static_cast<std::size_t>(row) == state.current_file_group;
-      AppendRect(
-        vertices,
-        list_rect.x + 4.0f,
-        row_y,
-        list_rect.x + list_rect.w - 4.0f,
-        row_y + kFileSelectorListRowH - 2.0f,
-        selected ? accent : value_bg);
-      AppendText(
-        vertices,
-        list_rect.x + 10.0f,
-        row_y + 4.0f,
-        1.05f,
-        EllipsizeMiddle(state.file_groups[static_cast<std::size_t>(row)].display_name, 20),
-        selected ? hotkey_text : text);
-    }
-  }
-
-  AppendRect(vertices, kHudPanelX, kHudPanelY, kHudPanelX + kHudPanelW, kHudPanelY + kHudPanelH, panel_bg);
-  AppendRect(vertices, kHudPanelX, kHudPanelY, kHudPanelX + kHudPanelW, kHudPanelY + 2.0f, panel_border);
-  AppendRect(vertices, kHudPanelX, kHudPanelY + kHudPanelH - 1.0f, kHudPanelX + kHudPanelW, kHudPanelY + kHudPanelH, panel_border);
-  AppendRect(vertices, kHudPanelX, kHudPanelY, kHudPanelX + 1.0f, kHudPanelY + kHudPanelH, panel_border);
-  AppendRect(vertices, kHudPanelX + kHudPanelW - 1.0f, kHudPanelY, kHudPanelX + kHudPanelW, kHudPanelY + kHudPanelH, panel_border);
-  AppendRect(vertices, kHudPanelX, kHudPanelY, kHudPanelX + 58.0f, kHudPanelY + 3.0f, accent);
-
-  const float title_scale = 2.1f;
-  const float body_scale = 1.8f;
-  const float small_scale = 1.4f;
-
-  AppendText(vertices, kHudPanelX + 16.0f, kHudPanelY + 14.0f, title_scale, "LIDAR VIEWER", title);
-  AppendText(vertices, kHudPanelX + 16.0f, kHudPanelY + 30.0f, 1.2f, "OPENGL POINT CLOUD INSPECTOR", subtext);
-  AppendText(vertices, kHudPanelX + 214.0f, kHudPanelY + 30.0f, 1.2f, "PROFILE " + state.dataset_profile, subtext);
-
-  std::ostringstream frame_stream;
-  frame_stream << "FRAME " << (state.current_index + 1) << "/" << state.frames.size();
-  AppendText(vertices, kHudPanelX + 16.0f, kHudPanelY + 48.0f, body_scale, frame_stream.str(), accent);
-
-  AppendRect(
-    vertices,
-    kPlayButtonX,
-    kPlayButtonY,
-    kPlayButtonX + kPlayButtonW,
-    kPlayButtonY + kPlayButtonH,
-    state.is_playing ? success : neutral);
-  AppendRect(
-    vertices,
-    kPauseButtonX,
-    kPauseButtonY,
-    kPauseButtonX + kPauseButtonW,
-    kPauseButtonY + kPauseButtonH,
-    state.is_playing ? neutral : paused);
-  AppendText(vertices, kPlayButtonX + 13.0f, kPlayButtonY + 4.0f, small_scale, "PLAY", hotkey_text);
-  AppendText(vertices, kPauseButtonX + 10.0f, kPauseButtonY + 4.0f, small_scale, "PAUSE", hotkey_text);
-  const GridButton ground = GroundRemovalButton();
-  AppendRect(
-    vertices,
-    ground.x,
-    ground.y,
-    ground.x + ground.w,
-    ground.y + ground.h,
-    state.ground_removal_enabled ? success : neutral);
-  AppendText(vertices, ground.x + 8.0f, ground.y + 4.0f, 1.2f, "GROUND", hotkey_text);
-  const GridButton clustering = ClusteringButton();
-  AppendRect(
-    vertices,
-    clustering.x,
-    clustering.y,
-    clustering.x + clustering.w,
-    clustering.y + clustering.h,
-    state.algorithm_config.clustering.enabled ? success : neutral);
-  AppendText(vertices, clustering.x + 7.0f, clustering.y + 4.0f, 1.15f, "CLUST", hotkey_text);
-  const GridButton detection = DetectionButton();
-  AppendRect(
-    vertices,
-    detection.x,
-    detection.y,
-    detection.x + detection.w,
-    detection.y + detection.h,
-    state.algorithm_config.detection.enabled ? paused : neutral);
-  AppendText(vertices, detection.x + 8.0f, detection.y + 4.0f, 1.15f, "DETECT", hotkey_text);
-  const GridButton view2d = View2DButton();
-  const GridButton view3d = View3DButton();
-  AppendRect(
-    vertices,
-    view2d.x,
-    view2d.y,
-    view2d.x + view2d.w,
-    view2d.y + view2d.h,
-    state.camera.projection_mode == CameraState::ProjectionMode::View2D ? accent : neutral);
-  AppendRect(
-    vertices,
-    view3d.x,
-    view3d.y,
-    view3d.x + view3d.w,
-    view3d.y + view3d.h,
-    state.camera.projection_mode == CameraState::ProjectionMode::View3D ? accent : neutral);
-  AppendText(vertices, view2d.x + 15.0f, view2d.y + 4.0f, 1.15f, "2D", hotkey_text);
-  AppendText(vertices, view3d.x + 15.0f, view3d.y + 4.0f, 1.15f, "3D", hotkey_text);
-
-  std::ostringstream status_stream;
-  status_stream << (state.is_playing ? "STATUS PLAYING " : "STATUS PAUSED ")
-                << std::fixed << std::setprecision(1) << state.playback_fps << " FPS";
-  AppendText(vertices, kHudPanelX + 142.0f, kHudPanelY + 84.0f, 1.2f, status_stream.str(), text);
-  std::ostringstream fps_stream;
-  fps_stream << "CUR FPS " << std::fixed << std::setprecision(1) << state.current_playback_fps;
-  if (state.input_fps_estimate.has_value()) {
-    fps_stream << " / INPUT " << std::fixed << std::setprecision(1) << *state.input_fps_estimate;
-  } else {
-    fps_stream << " / INPUT N/A";
-  }
-  AppendText(vertices, kHudPanelX + 142.0f, kHudPanelY + 98.0f, 1.2f, fps_stream.str(), subtext);
-  std::ostringstream render_fps_stream;
-  render_fps_stream << "RENDER " << std::fixed << std::setprecision(1) << state.current_view_fps;
-  AppendText(vertices, kHudPanelX + 142.0f, kHudPanelY + 112.0f, 1.15f, render_fps_stream.str(), subtext);
-  if (state.ground_removal_enabled) {
-    AppendText(
-      vertices,
-      kHudPanelX + 180.0f,
-      kHudPanelY + 84.0f,
-      1.2f,
-      "GROUND " + std::to_string(state.ground_removed_count),
-      text);
-  }
-  if (state.algorithm_config.clustering.enabled) {
-    AppendText(
-      vertices,
-      kHudPanelX + 180.0f,
-      kHudPanelY + 126.0f,
-      1.2f,
-      "CLUSTERS " + std::to_string(state.clusters.size()),
-      subtext);
-  }
-  if (state.algorithm_config.detection.enabled) {
-    AppendText(
-      vertices,
-      kHudPanelX + 16.0f,
-      kHudPanelY + 126.0f,
-      1.2f,
-      "DETECTIONS " + std::to_string(state.detections.size()),
-      subtext);
-    AppendText(vertices, kHudPanelX + 16.0f, kHudPanelY + 140.0f, 1.15f, "CLASSES", subtext);
-    const std::array<int, 7> legend_classes{{
-      lidar_viewer::algorithms::DetectionClassCar,
-      lidar_viewer::algorithms::DetectionClassBus,
-      lidar_viewer::algorithms::DetectionClassTruck,
-      lidar_viewer::algorithms::DetectionClassPerson,
-      lidar_viewer::algorithms::DetectionClassCyclist,
-      lidar_viewer::algorithms::DetectionClassTree,
-      lidar_viewer::algorithms::DetectionClassUnknown,
-    }};
-    AppendRect(
-      vertices,
-      kHudPanelX + 16.0f,
-      kHudPanelY + 154.0f,
-      kHudPanelX + kHudPanelW - 16.0f,
-      kHudPanelY + 216.0f,
-      value_bg);
-    for (std::size_t legend_index = 0; legend_index < legend_classes.size(); ++legend_index) {
-      const int class_id = legend_classes[legend_index];
-      const float legend_x = kHudPanelX + 28.0f + 118.0f * static_cast<float>(legend_index % 3);
-      const float legend_y = kHudPanelY + 164.0f + 16.0f * static_cast<float>(legend_index / 3);
-      const auto [fill_color, line_color] = DetectionClassColors(class_id);
-      AppendRect(vertices, legend_x, legend_y, legend_x + 12.0f, legend_y + 12.0f, line_color);
-      AppendText(vertices, legend_x + 18.0f, legend_y + 1.0f, 1.0f, DetectionClassLabel(class_id), text);
-    }
-  }
-
-  const float file_block_y = state.algorithm_config.detection.enabled ? (kHudPanelY + 228.0f) : (kHudPanelY + 140.0f);
-  AppendText(vertices, kHudPanelX + 16.0f, file_block_y, 1.2f, "CURRENT FILE", subtext);
-  AppendRect(vertices, kHudPanelX + 16.0f, file_block_y + 14.0f, kHudPanelX + kHudPanelW - 16.0f, file_block_y + 34.0f, value_bg);
-  AppendText(
-    vertices,
-    kHudPanelX + 22.0f,
-    file_block_y + 20.0f,
-    1.35f,
-    EllipsizeMiddle(state.frames[state.current_index].label, 38),
-    title);
-  AppendText(
-    vertices,
-    kHudPanelX + 16.0f,
-    file_block_y + 48.0f,
-    small_scale,
-    state.algorithm_config.detection.enabled ? "MODE DETECTION" :
-      (state.ground_removal_enabled ? "MODE GROUND MASK" : "MODE WHITE"),
-    text);
-  AppendText(
-    vertices,
-    kHudPanelX + 170.0f,
-    file_block_y + 48.0f,
-    small_scale,
-    "POINTS " + std::to_string(state.frame.points.size()),
-    text);
-
-  struct ControlRow
-  {
-    const char * key;
-    const char * action;
-  };
-
-  const std::array<ControlRow, 9> controls{{
-    {"SPACE", "PLAY / PAUSE"},
-    {"N", "NEXT FRAME"},
-    {"P", "PREV FRAME"},
-    {"F", "FIT VIEW"},
-    {"C", "COLOR MODE"},
-    {"2D/3D", "PROJECTION"},
-    {"[ ]", "POINT"},
-    {"ESC", "QUIT"},
-    {"LMB", "ORBIT"},
-  }};
-
-  const float controls_y = state.algorithm_config.detection.enabled ? (kHudPanelY + 274.0f) : (kHudPanelY + 186.0f);
-  AppendText(vertices, kHudPanelX + 16.0f, controls_y, 1.2f, "CONTROLS", subtext);
-
-  float row_y = controls_y + 16.0f;
-  for (const auto & row : controls) {
-    const float key_box_width = (std::string(row.key).size() > 3) ? 76.0f : 50.0f;
-    AppendRect(vertices, kHudPanelX + 16.0f, row_y - 2.0f, kHudPanelX + 16.0f + key_box_width, row_y + 13.0f, hotkey_bg);
-    AppendText(vertices, kHudPanelX + 23.0f, row_y + 1.0f, small_scale, row.key, hotkey_text);
-    AppendText(vertices, kHudPanelX + 16.0f + key_box_width + 12.0f, row_y + 1.0f, small_scale, row.action, text);
-    row_y += 15.0f;
-  }
-
-  AppendText(vertices, kHudPanelX + 16.0f, kHudPanelY + kHudPanelH - 16.0f, 1.3f, "RMB PAN  WHEEL ZOOM", subtext);
-
-  AppendRect(vertices, kGridPanelX, kGridPanelY, kGridPanelX + kGridPanelW, kGridPanelY + kGridPanelH, panel_bg);
-  AppendRect(vertices, kGridPanelX, kGridPanelY, kGridPanelX + kGridPanelW, kGridPanelY + 2.0f, panel_border);
-  AppendRect(vertices, kGridPanelX, kGridPanelY + kGridPanelH - 1.0f, kGridPanelX + kGridPanelW, kGridPanelY + kGridPanelH, panel_border);
-  AppendRect(vertices, kGridPanelX, kGridPanelY, kGridPanelX + 1.0f, kGridPanelY + kGridPanelH, panel_border);
-  AppendRect(vertices, kGridPanelX + kGridPanelW - 1.0f, kGridPanelY, kGridPanelX + kGridPanelW, kGridPanelY + kGridPanelH, panel_border);
-  AppendRect(vertices, kGridPanelX, kGridPanelY, kGridPanelX + 40.0f, kGridPanelY + 3.0f, accent);
-  AppendText(vertices, kGridPanelX + 16.0f, kGridPanelY + 14.0f, title_scale, "GRID", title);
-  AppendText(vertices, kGridPanelX + 16.0f, kGridPanelY + 30.0f, 1.2f, "WORLD REFERENCE", subtext);
-
-  const GridButton toggle = GridToggleButton();
-  AppendRect(vertices, toggle.x, toggle.y, toggle.x + toggle.w, toggle.y + toggle.h, state.grid_settings.enabled ? success : neutral);
-  AppendText(vertices, toggle.x + 17.0f, toggle.y + 4.0f, small_scale, state.grid_settings.enabled ? "ON" : "OFF", hotkey_text);
-
-  struct GridRow
-  {
-    const char * label;
-    std::string value;
-  };
-
-  std::ostringstream spacing_stream;
-  spacing_stream << std::fixed << std::setprecision(1) << state.grid_settings.spacing;
-  std::ostringstream thick_stream;
-  thick_stream << std::fixed << std::setprecision(0) << state.grid_settings.thickness;
-  std::ostringstream count_stream;
-  count_stream << state.grid_settings.count;
-
-  const std::array<GridRow, 3> grid_rows{{
-    {"SPACING", spacing_stream.str()},
-    {"THICK", thick_stream.str()},
-    {"COUNT", count_stream.str()},
-  }};
-
-  for (int row = 0; row < 3; ++row) {
-    const float row_y = kGridPanelY + 34.0f + 26.0f * static_cast<float>(row);
-    const GridButton minus = GridMinusButton(row);
-    const GridButton plus = GridPlusButton(row);
-    AppendText(vertices, kGridPanelX + 16.0f, row_y + 4.0f, small_scale, grid_rows[row].label, text);
-    AppendRect(vertices, kGridPanelX + 170.0f, row_y, kGridPanelX + 242.0f, row_y + 16.0f, value_bg);
-    AppendText(vertices, kGridPanelX + 188.0f, row_y + 4.0f, small_scale, grid_rows[row].value, title);
-    AppendRect(vertices, minus.x, minus.y, minus.x + minus.w, minus.y + minus.h, hotkey_bg);
-    AppendRect(vertices, plus.x, plus.y, plus.x + plus.w, plus.y + plus.h, hotkey_bg);
-    AppendText(vertices, minus.x + 6.0f, minus.y + 4.0f, small_scale, "-", hotkey_text);
-    AppendText(vertices, plus.x + 6.0f, plus.y + 4.0f, small_scale, "+", hotkey_text);
-  }
-
-  AppendText(vertices, kGridPanelX + 16.0f, kGridPanelY + 138.0f, 1.2f, "CALIBRATION", subtext);
-  struct CalibRow
-  {
-    const char * label;
-    float value;
-    int precision;
-  };
-  const std::array<CalibRow, 4> calib_rows{{
-    {"YAW", state.calibration.yaw_deg, 1},
-    {"PITCH", state.calibration.pitch_deg, 1},
-    {"ROLL", state.calibration.roll_deg, 1},
-    {"Z", state.calibration.z_m, 3},
-  }};
-  for (int row = 0; row < 4; ++row) {
-    const float row_y = kGridPanelY + 152.0f + 28.0f * static_cast<float>(row);
-    const GridButton slider = CalibrationSliderRect(row);
-    const GridButton value_box = CalibrationValueBoxRect(row);
-    const auto [min_value, max_value] = CalibrationRange(row);
-    const float normalized = std::clamp(
-      (calib_rows[row].value - min_value) / (max_value - min_value),
-      0.0f,
-      1.0f);
-    const float handle_x = slider.x + slider.w * normalized;
-    std::ostringstream value_stream;
-    if (state.active_value_box == row && !state.value_input_buffer.empty()) {
-      value_stream << state.value_input_buffer;
-    } else {
-      value_stream << std::fixed << std::setprecision(calib_rows[row].precision) << calib_rows[row].value;
-    }
-    AppendText(vertices, kGridPanelX + 16.0f, row_y + 2.0f, small_scale, calib_rows[row].label, text);
-    AppendRect(vertices, slider.x, slider.y + 4.0f, slider.x + slider.w, slider.y + 8.0f, hotkey_bg);
-    AppendRect(vertices, slider.x, slider.y + 4.0f, handle_x, slider.y + 8.0f, accent);
-    AppendRect(vertices, handle_x - 4.0f, slider.y, handle_x + 4.0f, slider.y + slider.h, title);
-    AppendRect(
-      vertices,
-      value_box.x,
-      value_box.y,
-      value_box.x + value_box.w,
-      value_box.y + value_box.h,
-      state.active_value_box == row ? hotkey_bg : value_bg);
-    AppendText(vertices, value_box.x + 7.0f, row_y + 2.0f, small_scale, value_stream.str(), title);
-  }
-
-  const float point_row_y = kGridPanelY + 270.0f;
-  const GridButton point_slider = PointSizeSliderRect();
-  const auto [point_min, point_max] = CalibrationRange(4);
-  const float point_normalized = std::clamp(
-    (state.camera.point_size - point_min) / (point_max - point_min),
-    0.0f,
-    1.0f);
-  const float point_handle_x = point_slider.x + point_slider.w * point_normalized;
-  std::ostringstream point_size_stream;
-  if (state.active_value_box == 4 && !state.value_input_buffer.empty()) {
-    point_size_stream << state.value_input_buffer;
-  } else {
-    point_size_stream << std::fixed << std::setprecision(1) << state.camera.point_size;
-  }
-  const GridButton point_value_box = PointSizeValueBoxRect();
-  AppendText(vertices, kGridPanelX + 16.0f, point_row_y + 2.0f, small_scale, "POINT", text);
-  AppendRect(vertices, point_slider.x, point_slider.y + 4.0f, point_slider.x + point_slider.w, point_slider.y + 8.0f, hotkey_bg);
-  AppendRect(vertices, point_slider.x, point_slider.y + 4.0f, point_handle_x, point_slider.y + 8.0f, accent);
-  AppendRect(vertices, point_handle_x - 4.0f, point_slider.y, point_handle_x + 4.0f, point_slider.y + point_slider.h, title);
-  AppendRect(
-    vertices,
-    point_value_box.x,
-    point_value_box.y,
-    point_value_box.x + point_value_box.w,
-    point_value_box.y + point_value_box.h,
-    state.active_value_box == 4 ? hotkey_bg : value_bg);
-  AppendText(vertices, kGridPanelX + 241.0f, point_row_y + 2.0f, small_scale, point_size_stream.str(), title);
-
-  const float ground_cell_row_y = kGridPanelY + 294.0f;
-  const GridButton ground_cell_slider = GroundCellSizeSliderRect();
-  const auto [cell_min, cell_max] = CalibrationRange(5);
-  const float cell_normalized = std::clamp(
-    (state.algorithm_config.ground_removal.candidate_grid_cell_m - cell_min) / (cell_max - cell_min),
-    0.0f,
-    1.0f);
-  const float cell_handle_x = ground_cell_slider.x + ground_cell_slider.w * cell_normalized;
-  std::ostringstream ground_cell_stream;
-  if (state.active_value_box == 5 && !state.value_input_buffer.empty()) {
-    ground_cell_stream << state.value_input_buffer;
-  } else {
-    ground_cell_stream << std::fixed << std::setprecision(2) << state.algorithm_config.ground_removal.candidate_grid_cell_m;
-  }
-  const GridButton ground_cell_value_box = GroundCellSizeValueBoxRect();
-  AppendText(vertices, kGridPanelX + 16.0f, ground_cell_row_y + 2.0f, small_scale, "CELL", text);
-  AppendRect(vertices, ground_cell_slider.x, ground_cell_slider.y + 4.0f, ground_cell_slider.x + ground_cell_slider.w, ground_cell_slider.y + 8.0f, hotkey_bg);
-  AppendRect(vertices, ground_cell_slider.x, ground_cell_slider.y + 4.0f, cell_handle_x, ground_cell_slider.y + 8.0f, accent);
-  AppendRect(vertices, cell_handle_x - 4.0f, ground_cell_slider.y, cell_handle_x + 4.0f, ground_cell_slider.y + ground_cell_slider.h, title);
-  AppendRect(
-    vertices,
-    ground_cell_value_box.x,
-    ground_cell_value_box.y,
-    ground_cell_value_box.x + ground_cell_value_box.w,
-    ground_cell_value_box.y + ground_cell_value_box.h,
-    state.active_value_box == 5 ? hotkey_bg : value_bg);
-  AppendText(vertices, kGridPanelX + 237.0f, ground_cell_row_y + 2.0f, small_scale, ground_cell_stream.str(), title);
-
-  const float axis_y = kGridPanelY + 318.0f;
-  AppendText(vertices, kGridPanelX + 16.0f, axis_y, 1.2f, "AXES", subtext);
-  AppendRect(vertices, kGridPanelX + 66.0f, axis_y - 1.0f, kGridPanelX + 76.0f, axis_y + 9.0f, {0.94f, 0.29f, 0.26f, 1.0f});
-  AppendText(vertices, kGridPanelX + 82.0f, axis_y, small_scale, "X", title);
-  AppendRect(vertices, kGridPanelX + 106.0f, axis_y - 1.0f, kGridPanelX + 116.0f, axis_y + 9.0f, {0.21f, 0.82f, 0.46f, 1.0f});
-  AppendText(vertices, kGridPanelX + 122.0f, axis_y, small_scale, "Y", title);
-  AppendRect(vertices, kGridPanelX + 146.0f, axis_y - 1.0f, kGridPanelX + 156.0f, axis_y + 9.0f, {0.30f, 0.62f, 0.98f, 1.0f});
-  AppendText(vertices, kGridPanelX + 162.0f, axis_y, small_scale, "Z", title);
-
-  const GridButton save = GridSaveButton();
-  AppendRect(vertices, save.x, save.y, save.x + save.w, save.y + save.h, accent);
-  AppendText(vertices, save.x + 12.0f, save.y + 4.0f, small_scale, "SAVE", hotkey_text);
-  if (!state.transient_status.empty()) {
-    AppendText(vertices, kGridPanelX + 16.0f, kGridPanelY + kGridPanelH - 22.0f, 1.1f, state.transient_status, subtext);
+void Metric(const char * label, const std::string & value)
+{
+  if (ImGui::BeginTable(label, 2, ImGuiTableFlags_SizingStretchProp)) {
+    ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthStretch, .52f);
+    ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch, .48f);
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0); ImGui::TextDisabled("%s", label);
+    ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(value.c_str());
+    ImGui::EndTable();
   }
 }
 
-void RenderHud(const ViewerState & state, int viewport_w, int viewport_h)
+void Tip(const char * value)
 {
-  std::vector<UiVertex> vertices;
-  BuildHudVertices(state, vertices);
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", value);
+}
 
-  glUseProgram(state.ui.program);
-  glUniform2f(state.ui.viewport_loc, static_cast<float>(viewport_w), static_cast<float>(viewport_h));
-  glBindVertexArray(state.ui.vao);
-  glBindBuffer(GL_ARRAY_BUFFER, state.ui.vbo);
-  glBufferData(
-    GL_ARRAY_BUFFER,
-    static_cast<GLsizeiptr>(vertices.size() * sizeof(UiVertex)),
-    vertices.data(),
-    GL_DYNAMIC_DRAW);
+std::string BagLabel(const BagSource & source)
+{
+  return (source.recording_date.empty() ? "Unknown date" :
+    source.recording_date + "  " + source.recording_time) + "  |  " + source.display_name;
+}
 
-  glDisable(GL_DEPTH_TEST);
+void BuildSourceSelector(ViewerState & state, float width)
+{
+  const auto * group = state.file_groups.empty() ? nullptr : &state.file_groups[state.current_file_group];
+  const auto preview = state.live_mode ? std::string("LIVE | ") + state.live_points_topic.data() :
+    state.current_bag_source ? BagLabel(state.bag_sources[*state.current_bag_source]) :
+    (group ? group->display_name : "No bag loaded");
+  ImGui::SetNextItemWidth(width);
+  const float popup_width = std::min(720.f * state.ui_layout.scale, ImGui::GetIO().DisplaySize.x - 32.f);
+  ImGui::SetNextWindowSizeConstraints({popup_width, 0}, {popup_width, 600.f * state.ui_layout.scale});
+  ImGui::BeginDisabled(state.loading_bag_source.has_value() || state.folder_scan_future.valid() ||
+    state.bag_picker.Active() || state.live.Active() || (!group && state.bag_sources.empty()));
+  if (ImGui::BeginCombo("##Source", preview.c_str(), ImGuiComboFlags_HeightLarge)) {
+    if (!state.bag_sources.empty()) {
+      ImGui::TextUnformatted("Recorded bags");
+      ImGui::TextDisabled("%zu bags  |  Dates from recording names", state.bag_sources.size());
+      std::vector<std::string> dates;
+      for (const auto & source : state.bag_sources) {
+        const auto date = source.recording_date.empty() ? "Unknown date" : source.recording_date;
+        if (std::find(dates.begin(), dates.end(), date) == dates.end()) dates.push_back(date);
+      }
+      ImGui::SetNextItemWidth(175.f * state.ui_layout.scale);
+      if (ImGui::BeginCombo("##BagDate", state.bag_date_filter.empty() ? "All dates" : state.bag_date_filter.c_str())) {
+        if (ImGui::Selectable("All dates", state.bag_date_filter.empty())) state.bag_date_filter.clear();
+        for (const auto & date : dates)
+          if (ImGui::Selectable(date.c_str(), state.bag_date_filter == date)) state.bag_date_filter = date;
+        ImGui::EndCombo();
+      }
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(-1);
+      ImGui::InputTextWithHint("##BagSearch", "Find bag name...", state.bag_search.data(), state.bag_search.size());
+      ImGui::Separator();
+      std::string needle = state.bag_search.data();
+      auto lower = [](unsigned char c) { return static_cast<char>(std::tolower(c)); };
+      std::transform(needle.begin(), needle.end(), needle.begin(), lower);
+      std::size_t shown = 0;
+      for (std::size_t i = 0; i < state.bag_sources.size(); ++i) {
+        const auto & source = state.bag_sources[i];
+        const auto date = source.recording_date.empty() ? "Unknown date" : source.recording_date;
+        if (!state.bag_date_filter.empty() && date != state.bag_date_filter) continue;
+        std::string searchable = source.display_name;
+        std::transform(searchable.begin(), searchable.end(), searchable.begin(), lower);
+        if (!needle.empty() && searchable.find(needle) == std::string::npos) continue;
+        ++shown;
+        const bool selected = state.current_bag_source && *state.current_bag_source == i;
+        ImGui::PushID(static_cast<int>(i));
+        if (ImGui::Selectable(BagLabel(source).c_str(), selected)) OpenBagSource(state, i);
+        Tip(source.path.string().c_str());
+        ImGui::PopID();
+      }
+      if (!shown) ImGui::TextDisabled("No bags match this date or name.");
+    }
+    if (!state.current_bag_source && !state.frames.empty() && state.frames.front().format != InputFormat::Ros2Bag) {
+      if (!state.bag_sources.empty()) {
+        ImGui::Separator();
+        ImGui::TextDisabled("Current BIN sequence");
+      }
+      for (std::size_t i = 0; i < state.file_groups.size(); ++i) {
+        const bool selected = i == state.current_file_group;
+        if (ImGui::Selectable(state.file_groups[i].display_name.c_str(), selected)) {
+          state.is_playing = false;
+          TryLoadFrame(state, state.file_groups[i].first_index);
+        }
+      }
+    }
+    ImGui::Separator();
+    ImGui::TextDisabled("Open bag: select a recording. Add folder: register a collection.");
+    ImGui::EndCombo();
+  }
+  ImGui::EndDisabled();
+  if (group) Tip(group->path.string().c_str());
+}
+
+void BuildFolderPicker(ViewerState & state)
+{
+  if (state.open_folder_picker) {
+    state.open_folder_picker = false;
+    fs::path initial = !state.frames.empty() ? state.frames.front().path.parent_path() :
+      (!state.data_folders.empty() ? state.data_folders.front() : ExpandFolderPath("~"));
+    BrowseFolder(state, initial);
+    ImGui::OpenPopup("Add data folder");
+  }
+  const auto display = ImGui::GetIO().DisplaySize;
+  ImGui::SetNextWindowPos({display.x * .5f, display.y * .5f}, ImGuiCond_Appearing, {.5f, .5f});
+  ImGui::SetNextWindowSize({std::min(700.f * state.ui_layout.scale, display.x - 32.f),
+    std::min(560.f * state.ui_layout.scale, display.y - 32.f)}, ImGuiCond_Appearing);
+  if (!ImGui::BeginPopupModal("Add data folder", nullptr, ImGuiWindowFlags_NoSavedSettings)) return;
+  bool scanning = state.folder_scan_future.valid();
+  if (scanning && state.folder_scan_future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+    try {
+      auto found = state.folder_scan_future.get();
+      if (found.sources.empty()) throw std::runtime_error("No ROS 2 bags found in this folder or its subfolders");
+      auto folders = state.data_folders;
+      if (std::find(folders.begin(), folders.end(), found.folder) == folders.end()) folders.push_back(found.folder);
+      auto merged = MergeBagSources(state.bag_sources, found.sources);
+      std::optional<fs::path> current;
+      if (state.current_bag_source) current = state.bag_sources[*state.current_bag_source].path;
+      fs::create_directories(state.data_folders_config.parent_path());
+      SaveBagFolders(state.data_folders_config, folders);
+      const auto added = merged.size() - state.bag_sources.size();
+      state.data_folders = std::move(folders);
+      state.bag_sources = std::move(merged);
+      if (current) {
+        for (std::size_t i = 0; i < state.bag_sources.size(); ++i)
+          if (state.bag_sources[i].path == *current) state.current_bag_source = i;
+      }
+      state.bag_date_filter.clear();
+      state.bag_search.fill('\0');
+      SetTransientStatus(state, std::to_string(added) + " bags added to the list");
+      std::cout << "Data folder added: " << found.folder << " | " << state.bag_sources.size()
+                << " bags in library" << std::endl;
+      ImGui::CloseCurrentPopup();
+    } catch (const std::exception & error) {
+      state.folder_error = error.what();
+    }
+    scanning = false;
+  }
+  ImGui::TextWrapped("Choose a folder containing ROS 2 bags. Subfolders are included; recordings stay in place.");
+  ImGui::BeginDisabled(scanning);
+  ImGui::SetNextItemWidth(-85.f * state.ui_layout.scale);
+  const bool entered = ImGui::InputText("##FolderPath", state.folder_path_input.data(),
+    state.folder_path_input.size(), ImGuiInputTextFlags_EnterReturnsTrue);
+  ImGui::SameLine();
+  if (ImGui::Button("Open") || entered) BrowseFolder(state, ExpandFolderPath(state.folder_path_input.data()));
+  if (ImGui::Button("Up")) BrowseFolder(state, state.browsing_folder.parent_path());
+  ImGui::SameLine();
+  if (ImGui::Button("Home")) BrowseFolder(state, ExpandFolderPath("~"));
+  const float reserve = 118.f * state.ui_layout.scale;
+  ImGui::BeginChild("Folders", {0, std::max(40.f, ImGui::GetContentRegionAvail().y - reserve)}, true);
+  fs::path navigate;
+  for (const auto & folder : state.folder_children) {
+    if (ImGui::Selectable((folder.filename().string() + " /").c_str(), false,
+      ImGuiSelectableFlags_AllowDoubleClick) && ImGui::IsMouseDoubleClicked(0)) navigate = folder;
+  }
+  if (state.folder_children.empty()) ImGui::TextDisabled("No subfolders");
+  ImGui::EndChild();
+  if (!navigate.empty()) BrowseFolder(state, navigate);
+  ImGui::TextDisabled("Double-click a folder to open it.");
+  ImGui::EndDisabled();
+  if (!state.folder_error.empty()) ImGui::TextColored({1.f, .56f, .48f, 1}, "%s", state.folder_error.c_str());
+  if (scanning) ImGui::TextUnformatted("Searching for recordings...");
+  ImGui::BeginDisabled(scanning);
+  if (ImGui::Button("Add this folder")) {
+    try {
+      const auto folder = fs::canonical(ExpandFolderPath(state.folder_path_input.data()));
+      if (!fs::is_directory(folder)) throw std::runtime_error("Choose an existing directory");
+      state.folder_error.clear();
+      state.folder_scan_future = std::async(std::launch::async, [folder]() {
+        return ViewerState::FolderScanResult{folder, DiscoverBagSources(folder)};
+      });
+    } catch (const std::exception & error) { state.folder_error = error.what(); }
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+  ImGui::EndDisabled();
+  ImGui::EndPopup();
+}
+
+void BuildLiveDialog(ViewerState & state)
+{
+  const auto display = ImGui::GetIO().DisplaySize;
+  ImGui::SetNextWindowPos({display.x * .5f, display.y * .5f}, ImGuiCond_Appearing, {.5f, .5f});
+  ImGui::SetNextWindowSize({std::min(650.f * state.ui_layout.scale, display.x - 32.f), 0}, ImGuiCond_Appearing);
+  if (!ImGui::BeginPopupModal("Live sensors", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) return;
+  const bool available = lidar_viewer::LiveSession::Available();
+  const bool connected = state.live.Active();
+  ImGui::TextWrapped("Subscribe to existing ROS 2 sensor topics. Sensor drivers are started separately.");
+  if (!available) ImGui::TextWrapped("This build has no live ROS 2 backend. Reconfigure after sourcing ROS 2.");
+  ImGui::BeginDisabled(connected || !available);
+  ImGui::TextUnformatted("LiDAR PointCloud2 topic");
+  ImGui::SetNextItemWidth(-1); ImGui::InputText("##LivePointsTopic", state.live_points_topic.data(), state.live_points_topic.size());
+  ImGui::TextUnformatted("IMU topic (optional)");
+  ImGui::SetNextItemWidth(-1); ImGui::InputText("##LiveImuTopic", state.live_imu_topic.data(), state.live_imu_topic.size());
+  ImGui::EndDisabled();
+  ImGui::BeginDisabled(state.live_stats.record_busy);
+  ImGui::TextUnformatted("Recording parent folder");
+  ImGui::SetNextItemWidth(-1); ImGui::InputText("##LiveRecordingFolder", state.live_record_folder.data(), state.live_record_folder.size());
+  ImGui::EndDisabled();
+  ImGui::TextWrapped("Pause freezes the display only. Receiving and raw recording continue. Play returns to the latest frame.");
+  if (state.live_mode) {
+    ImGui::Text("Received: %llu clouds / %llu IMU samples", static_cast<unsigned long long>(state.live_stats.clouds),
+      static_cast<unsigned long long>(state.live_stats.imu_samples));
+    ImGui::Text("LiDAR: %.1f Hz / age %.0f ms", state.live_stats.cloud_hz, state.live_stats.cloud_age_ms);
+    if (!state.live_stats.error.empty()) ImGui::TextWrapped("Receive error: %s", state.live_stats.error.c_str());
+    if (!state.live_stats.recording_path.empty()) ImGui::TextWrapped("Bag: %s", state.live_stats.recording_path.c_str());
+    ImGui::Text("Recorded: %llu messages / %.1f MiB / %llu dropped",
+      static_cast<unsigned long long>(state.live_stats.recorded_messages), state.live_stats.recorded_bytes / 1048576.,
+      static_cast<unsigned long long>(state.live_stats.record_dropped));
+    if (!state.live_stats.record_error.empty()) ImGui::TextColored({1,.56f,.48f,1}, "%s", state.live_stats.record_error.c_str());
+  }
+  ImGui::Separator();
+  ImGui::BeginDisabled(!available);
+  if (ImGui::Button(connected ? "Disconnect" : "Connect", {130.f * state.ui_layout.scale, 0})) {
+    try {
+      if (connected) {
+        state.live.Disconnect(); state.live_stats=state.live.Stats();
+        std::cout << "Live disconnected" << std::endl;
+      } else ConnectLive(state);
+      state.ui_error.clear();
+      ImGui::CloseCurrentPopup();
+    } catch (const std::exception & error) {state.ui_error=error.what();}
+  }
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  if (ImGui::Button("Close")) ImGui::CloseCurrentPopup();
+  if (!state.ui_error.empty()) ImGui::TextWrapped("%s", state.ui_error.c_str());
+  ImGui::EndPopup();
+}
+
+bool BuildRoiEditor(ViewerState & state)
+{
+  bool changed = false;
+  SectionTitle("3D region of interest");
+  changed |= ImGui::Checkbox("Show only ROI points", &state.roi.enabled);
+  ImGui::Checkbox("Draw ROI boxes", &state.roi.show_boxes);
+  ImGui::TextWrapped("Raw LiDAR coordinates (metres). Multiple enabled boxes are combined.");
+  ImGui::TextDisabled("Retained %zu / %zu points", state.frame.points.size(), state.base_frame.points.size());
+  const auto active = std::count_if(state.roi.boxes.begin(), state.roi.boxes.end(),
+    [](const auto & box) {return box.enabled;});
+  if (state.roi.enabled && active == 0)
+    ImGui::TextWrapped("No active boxes: no points pass.");
+
+  ImGui::BeginDisabled(state.roi.boxes.size() >= lidar_viewer::kMaxRoiBoxes);
+  if (ImGui::Button("Add box")) {
+    lidar_viewer::RoiBox box;
+    box.name = "ROI " + std::to_string(state.roi.boxes.size() + 1);
+    state.roi.boxes.push_back(std::move(box));
+    state.selected_roi = state.roi.boxes.size() - 1;
+    state.roi.enabled = true;
+    changed = true;
+  }
+  Tip("Add a 20 x 20 x 6 m box at the LiDAR origin.");
+  ImGui::EndDisabled();
+  if (!state.roi.boxes.empty()) {
+    state.selected_roi = std::min(state.selected_roi, state.roi.boxes.size() - 1);
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::BeginListBox("##RoiList", {-1, 90.f * state.ui_layout.scale})) {
+      for (std::size_t i = 0; i < state.roi.boxes.size(); ++i) {
+        const auto & box = state.roi.boxes[i];
+        ImGui::PushID(static_cast<int>(i));
+        const std::string label = std::string(box.enabled ? "[on] " : "[off] ") +
+          (box.name.empty() ? "Unnamed box" : box.name);
+        if (ImGui::Selectable(label.c_str(), i == state.selected_roi)) state.selected_roi = i;
+        ImGui::PopID();
+      }
+      ImGui::EndListBox();
+    }
+    ImGui::PushID(static_cast<int>(state.selected_roi));
+    auto box = state.roi.boxes[state.selected_roi];
+    std::array<char, 128> name{};
+    std::copy(box.name.begin(), box.name.end(), name.begin());
+    bool edited = ImGui::Checkbox("Box enabled", &box.enabled);
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::InputText("##RoiName", name.data(), name.size())) {box.name = name.data(); edited = true;}
+    float center[]{box.center.x, box.center.y, box.center.z};
+    float size[]{box.size.x, box.size.y, box.size.z};
+    ImGui::TextUnformatted("Center X / Y / Z (m)");
+    ImGui::SetNextItemWidth(-1);
+    edited |= ImGui::DragFloat3("##RoiCenter", center, .05f, -1e6f, 1e6f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::TextUnformatted("Full size X / Y / Z (m)");
+    ImGui::SetNextItemWidth(-1);
+    edited |= ImGui::DragFloat3("##RoiSize", size, .05f, .001f, 1e6f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Yaw (deg)");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::InputFloat("##RoiYawInput", &box.yaw_deg, 0, 0, "%.2f")) {
+      if (std::isfinite(box.yaw_deg)) box.yaw_deg = std::clamp(box.yaw_deg, -180.f, 180.f);
+      edited = true;
+    }
+    Tip("Type yaw in degrees (-180 to 180). Positive yaw rotates X toward Y about the LiDAR Z axis.");
+    ImGui::TextDisabled("Center/size: Ctrl+click to type.");
+    box.center = {center[0], center[1], center[2]};
+    box.size = {size[0], size[1], size[2]};
+    if (edited) {
+      try {
+        lidar_viewer::ValidateRoiBox(box);
+        state.roi.boxes[state.selected_roi] = box;
+        changed = true;
+      } catch (const std::exception & error) {state.ui_error = error.what();}
+    }
+    if (ImGui::Button("Fit selected box", {-1, 0})) {
+      state.camera.target = state.roi_frame.Transform(state.roi.boxes[state.selected_roi].center);
+      state.camera.distance = std::clamp(1.8f * std::max({box.size.x, box.size.y, box.size.z}), 1.f, 5000.f);
+    }
+    ImGui::BeginDisabled(state.roi.boxes.size() >= lidar_viewer::kMaxRoiBoxes);
+    if (ImGui::Button("Duplicate")) {
+      auto copy = state.roi.boxes[state.selected_roi];
+      copy.name = "ROI " + std::to_string(state.roi.boxes.size() + 1);
+      state.roi.boxes.push_back(std::move(copy));
+      state.selected_roi = state.roi.boxes.size() - 1;
+      changed = true;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    const bool remove = ImGui::Button("Delete");
+    if (ImGui::CollapsingHeader("8 corners (raw LiDAR)")) {
+      const auto corners = lidar_viewer::RoiCorners(state.roi.boxes[state.selected_roi]);
+      std::ostringstream out;
+      out << std::setprecision(std::numeric_limits<float>::max_digits10);
+      for (std::size_t i = 0; i < corners.size(); ++i) {
+        const auto p = corners[i];
+        ImGui::Text("%zu: %.3f, %.3f, %.3f", i + 1, p.x, p.y, p.z);
+        out << p.x << ", " << p.y << ", " << p.z << '\n';
+      }
+      if (ImGui::Button("Copy 8 corners")) ImGui::SetClipboardText(out.str().c_str());
+    }
+    if (remove) {
+      state.roi.boxes.erase(state.roi.boxes.begin() + static_cast<std::ptrdiff_t>(state.selected_roi));
+      if (state.selected_roi) --state.selected_roi;
+      changed = true;
+    }
+    ImGui::PopID();
+  }
+  if (changed) {state.is_playing = false; SetLivePaused(state, true);}
+  return changed;
+}
+
+void BuildViewerInterface(ViewerState & state, GLFWwindow *)
+{
+  const auto layout = state.ui_layout;
+  const float s = layout.scale;
+  bool reprocess = false;
+  const bool has_input = state.live_mode ? state.live_has_frame : !state.frames.empty();
+  BeginPanel("Header", layout.header, false);
+  ImGui::SetCursorPosY(15.f * s);
+  ImGui::TextColored({.35f, .82f, .96f, 1.f}, "LiDAR");
+  ImGui::SameLine();
+  ImGui::TextUnformatted("Studio");
+  if (!layout.compact) {
+    ImGui::SameLine(190.f * s);
+    ImGui::TextDisabled("Point cloud inspection");
+  }
+  const float header_right = std::max(320.f * s, layout.header.w - 360.f * s);
+  ImGui::SameLine(header_right);
+  ImGui::TextColored(!state.ui_error.empty() ? ImVec4(1.f, .56f, .48f, 1) :
+    (state.loading_bag_source ? ImVec4(.44f, .76f, 1, 1) :
+      (state.is_playing ? ImVec4(.42f, .85f, .65f, 1) : ImVec4(.76f, .81f, .88f, 1))),
+    "%s", !state.ui_error.empty() ? "ERROR" :
+      (state.live_mode ? (state.live_stats.connected ? (state.live_paused ? "FROZEN" : "LIVE") : "DISCONNECTED") :
+      (state.loading_bag_source ? "OPENING BAG" :
+        (has_input ? (state.is_playing ? "PLAYING" : "PAUSED") : "READY"))));
+  ImGui::SameLine();
+  ImGui::TextDisabled("  %s", state.dataset_profile.c_str());
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Help")) ImGui::OpenPopup("Shortcuts");
+  if (ImGui::BeginPopup("Shortcuts")) {
+    ImGui::TextUnformatted("Keyboard & mouse");
+    ImGui::Separator();
+    ImGui::TextUnformatted("Ctrl+O       Open bag file chooser\nSpace        Play / pause\nN / P        Next / previous frame\nF            Fit all points\nC            Cycle point colors\n[ / ]        Point size\nQ / E        Rotate 2D view\nLeft drag    Orbit (3D) / pan (2D)\nRight drag   Pan (3D) / rotate (2D)\nWheel        Zoom");
+    ImGui::EndPopup();
+  }
+  ImGui::End();
+
+  BeginPanel("Inspector", layout.sidebar, false);
+  ImGui::TextUnformatted("Inspector");
+  ImGui::SameLine();
+  ImGui::TextDisabled("  %s", state.live_mode ? "LIVE ROS 2" : has_input ?
+    (state.frames.front().format == InputFormat::Ros2Bag ? "ROS 2 BAG" : "BIN") : "NO DATA");
+  ImGui::Spacing();
+  ImGui::BeginChild("InspectorBody", {0, std::max(1.f, ImGui::GetContentRegionAvail().y - 84.f * s)});
+  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {1.f * s, 6.f * s});
+  const bool tabs_open = ImGui::BeginTabBar("InspectorTabs");
+  ImGui::PopStyleVar();
+  const auto begin_tab = [s](const char * label) {
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {1.f * s, 6.f * s});
+    const bool open = ImGui::BeginTabItem(label);
+    ImGui::PopStyleVar();
+    return open;
+  };
+  if (tabs_open) {
+    if (begin_tab("Scene")) {
+      SectionTitle("Camera");
+      const bool is2d = state.camera.projection_mode == CameraState::ProjectionMode::View2D;
+      if (ImGui::Selectable("3D perspective", !is2d)) SetProjectionMode(state, CameraState::ProjectionMode::View3D);
+      if (ImGui::Selectable("2D top view", is2d)) SetProjectionMode(state, CameraState::ProjectionMode::View2D);
+      ImGui::BeginDisabled(!has_input);
+      if (ImGui::Button("Fit all points", {-1, 0})) ResetCameraToFrame(state);
+      Tip("Fit the currently visible points. This changes the camera, never point coordinates.");
+      ImGui::EndDisabled();
+      if (ImGui::Button("Sensor view", {-1, 0})) {
+        state.camera.target = {0, 0, 0};
+        state.camera.distance = 35;
+        state.camera.pitch = .55f;
+        state.camera.yaw = -.8f;
+        if (state.camera.projection_mode == CameraState::ProjectionMode::View2D) {
+          state.camera.pitch = -1.5707f;
+          state.camera.yaw = 0;
+        }
+        StoreCurrentProjectionView(state.camera);
+      }
+      if (state.camera.projection_mode == CameraState::ProjectionMode::View2D) {
+        ImGui::SetNextItemWidth(-1);
+        ImGui::SliderAngle("##TopRotation", &state.camera.yaw, -180, 180, "2D rotation: %.1f deg");
+        if (ImGui::Button("Reset 2D rotation", {-1, 0})) state.camera.yaw = 0;
+        Tip("Left drag: pan. Right drag or Q/E: rotate. Wheel: zoom.");
+      }
+      SectionTitle("Point appearance");
+      ImGui::SetNextItemWidth(-1);
+      ImGui::Combo("##Color", &state.color_mode, "Intensity\0Height\0Uniform\0");
+      ImGui::SetNextItemWidth(-1);
+      ImGui::SliderFloat("##PointSize", &state.camera.point_size, 1, 8, "Point size: %.1f px", ImGuiSliderFlags_AlwaysClamp);
+      if (state.color_mode == 1) {
+        ImGui::TextDisabled("Height color range (m)");
+        ImGui::SetNextItemWidth(-1);
+        ImGui::DragFloatRange2("##HeightRange", &state.height_color_min, &state.height_color_max, .05f, -100, 100, "%.2f", "%.2f");
+        if (!std::isfinite(state.height_color_min)) state.height_color_min = -1;
+        if (!std::isfinite(state.height_color_max)) state.height_color_max = 4;
+        state.height_color_max = std::max(state.height_color_min + .01f, state.height_color_max);
+      }
+      SectionTitle("Reference grid");
+      ImGui::Checkbox("Show grid", &state.grid_settings.enabled);
+      bool grid_dirty = false;
+      ImGui::SetNextItemWidth(-1);
+      grid_dirty |= ImGui::SliderFloat("##Spacing", &state.grid_settings.spacing, .5f, 20.f, "Spacing: %.1f m", ImGuiSliderFlags_AlwaysClamp);
+      ImGui::SetNextItemWidth(-1);
+      grid_dirty |= ImGui::SliderInt("##Extent", &state.grid_settings.count, 2, 100, "Grid count: %d", ImGuiSliderFlags_AlwaysClamp);
+      ImGui::SetNextItemWidth(-1);
+      grid_dirty |= ImGui::SliderFloat("##GridLines", &state.grid_settings.thickness, 1, 4, "Line width: %.1f", ImGuiSliderFlags_AlwaysClamp);
+      if (grid_dirty) MarkGridDirty(state);
+      SectionTitle("Interface");
+      ImGui::SetNextItemWidth(-1);
+      ImGui::SliderFloat("##UiScale", &state.ui_scale, .75f, 1.5f, "UI size: %.2fx", ImGuiSliderFlags_AlwaysClamp);
+      Tip("Relative to system DPI; automatically limited to keep the viewport usable.");
+      ImGui::EndTabItem();
+    }
+    if (begin_tab("Processing")) {
+      auto & ground = state.algorithm_config.ground_removal;
+      SectionTitle("Ground segmentation");
+      reprocess |= ImGui::Checkbox("Highlight ground", &state.ground_removal_enabled);
+      ImGui::TextDisabled("Ground points are shown in red.");
+      const char * modes[] = {"fast_grid", "gseg3d", "patchworkpp", "grid", "ransac"};
+      const char * labels[] = {"Fast grid", "GSeg3D (reference CPU)", "Patchwork++", "Grid", "RANSAC"};
+      int mode = 0;
+      for (int i = 0; i < 5; ++i) if (ground.mode == modes[i]) mode = i;
+      ImGui::SetNextItemWidth(-1);
+      if (ImGui::Combo("##GroundMethod", &mode, labels, 5)) {
+        ground.mode = modes[mode];
+        reprocess = true;
+      }
+      if (ground.mode == "gseg3d" || ground.mode == "fast_grid") {
+        float cell = ground.gseg3d_cell_size_x_m;
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::SliderFloat("##GsegCells", &cell, .2f, 3.f, "XY cell: %.2f m", ImGuiSliderFlags_AlwaysClamp)) {
+          ground.gseg3d_cell_size_x_m = ground.gseg3d_cell_size_y_m = cell;
+          reprocess = true;
+        }
+        if (ground.mode == "fast_grid") {
+          ImGui::SetNextItemWidth(-1);
+          reprocess |= ImGui::SliderFloat("##SeedCells", &ground.gseg3d_cuda_cell_size_m, .25f, 2.f, "Fine cell: %.2f m", ImGuiSliderFlags_AlwaysClamp);
+        }
+        ImGui::SetNextItemWidth(-1);
+        reprocess |= ImGui::SliderFloat("##Inliers", &ground.gseg3d_ground_inlier_threshold_m, .02f, .6f, "Inlier limit: %.2f m", ImGuiSliderFlags_AlwaysClamp);
+      } else {
+        ImGui::SetNextItemWidth(-1);
+        reprocess |= ImGui::SliderFloat("##GroundCells", &ground.candidate_grid_cell_m, .1f, 3.f, "Cell size: %.2f m", ImGuiSliderFlags_AlwaysClamp);
+      }
+#ifdef LIDAR_VIEWER_HAS_CUDA
+      ImGui::BeginDisabled(ground.mode == "gseg3d");
+      reprocess |= ImGui::Checkbox("Use CUDA when supported", &ground.use_cuda);
+      ImGui::EndDisabled();
+#else
+      ImGui::TextDisabled("CPU backend");
+#endif
+      Metric("Ground points", std::to_string(state.ground_removed_count));
+      SectionTitle("Object analysis");
+      if (ImGui::Checkbox("Cluster obstacles", &state.algorithm_config.clustering.enabled)) {
+        reprocess = true;
+        if (!state.algorithm_config.clustering.enabled) state.algorithm_config.detection.enabled = false;
+      }
+      ImGui::BeginDisabled(!state.algorithm_config.clustering.enabled);
+      reprocess |= ImGui::Checkbox("Geometric labels (experimental)", &state.algorithm_config.detection.enabled);
+      ImGui::EndDisabled();
+      if (!state.algorithm_config.clustering.enabled) ImGui::TextDisabled("Requires obstacle clustering.");
+      ImGui::TextWrapped("Labels are shape-based heuristics, not trained object recognition.");
+      Metric("Clusters", std::to_string(state.clusters.size()));
+      Metric("Labels", std::to_string(state.detections.size()));
+      ImGui::EndTabItem();
+    }
+    if (begin_tab("Alignment")) {
+      SectionTitle("IMU leveling");
+      reprocess |= ImGui::Checkbox("IMU auto level", &state.imu_level_enabled);
+      const auto available = lidar_viewer::ComputeImuLeveling(state.base_frame.imu, state.imu_mount);
+      ImGui::TextWrapped("%s", state.imu_level_enabled ? state.imu_level_result.status.c_str() : available.status.c_str());
+      Tip("Align gravity with +Z before ground segmentation. Yaw and sensor height remain adjustable.");
+      if (state.base_frame.imu && !state.base_frame.imu->topic.empty()) {
+        const auto & imu = *state.base_frame.imu;
+        ImGui::TextWrapped("Topic: %s", imu.topic.c_str());
+        if (imu.up) ImGui::TextDisabled("Sample offset: %.1f ms", imu.skew_ms);
+        ImGui::TextDisabled("Clock: %s received", state.live_mode ? "live" : "bag");
+        if (ImGui::CollapsingHeader("IMU mounting rotation")) {
+          ImGui::TextWrapped("%s -> %s", imu.imu_frame.c_str(), imu.lidar_frame.c_str());
+          if (ImGui::Checkbox("Use profile mount rotation", &state.imu_mount.confirmed)) {
+            if (state.imu_mount.confirmed) {
+              state.imu_mount.imu_frame = imu.imu_frame;
+              state.imu_mount.lidar_frame = imu.lidar_frame;
+            }
+            reprocess = true;
+          }
+          ImGui::SetNextItemWidth(-1);
+          reprocess |= ImGui::SliderFloat("##ImuMountRoll", &state.imu_mount.roll_deg, -180, 180, "Mount roll: %.1f deg", ImGuiSliderFlags_AlwaysClamp);
+          ImGui::SetNextItemWidth(-1);
+          reprocess |= ImGui::SliderFloat("##ImuMountPitch", &state.imu_mount.pitch_deg, -180, 180, "Mount pitch: %.1f deg", ImGuiSliderFlags_AlwaysClamp);
+          ImGui::SetNextItemWidth(-1);
+          reprocess |= ImGui::SliderFloat("##ImuMountYaw", &state.imu_mount.yaw_deg, -180, 180, "Mount yaw: %.1f deg", ImGuiSliderFlags_AlwaysClamp);
+          Tip("Static TF takes priority. Profile rotation is used only for the configured frame pair.");
+        }
+      }
+      if (state.imu_level_result.applied)
+        ImGui::TextDisabled("Roll %.2f deg / Pitch %.2f deg", state.imu_level_result.roll_deg, state.imu_level_result.pitch_deg);
+      SectionTitle("Display transform");
+      ImGui::TextWrapped("Adjust the view frame only. The original dataset is never changed.");
+      ImGui::SetNextItemWidth(-1);
+      reprocess |= ImGui::SliderFloat("##Yaw", &state.calibration.yaw_deg, -180, 180, "Yaw: %.2f deg", ImGuiSliderFlags_AlwaysClamp);
+      ImGui::BeginDisabled(state.imu_level_enabled);
+      ImGui::SetNextItemWidth(-1);
+      reprocess |= ImGui::SliderFloat("##Pitch", &state.calibration.pitch_deg, -180, 180, "Pitch: %.2f deg", ImGuiSliderFlags_AlwaysClamp);
+      ImGui::SetNextItemWidth(-1);
+      reprocess |= ImGui::SliderFloat("##Roll", &state.calibration.roll_deg, -180, 180, "Roll: %.2f deg", ImGuiSliderFlags_AlwaysClamp);
+      ImGui::EndDisabled();
+      ImGui::SetNextItemWidth(-1);
+      reprocess |= ImGui::SliderFloat("##Z", &state.calibration.z_m, -5, 5, "Z offset: %.3f m", ImGuiSliderFlags_AlwaysClamp);
+      ImGui::TextDisabled("Ctrl+click a slider to enter a value.");
+      if (ImGui::Button("Reset alignment", {-1, 0})) {
+        state.calibration = {0, 0, 0, 0};
+        reprocess = true;
+      }
+      ImGui::EndTabItem();
+    }
+    if (begin_tab("ROI")) {
+      reprocess |= BuildRoiEditor(state);
+      ImGui::EndTabItem();
+    }
+    ImGui::EndTabBar();
+  }
+  if (!state.ui_error.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, .56f, .48f, 1));
+    ImGui::TextWrapped("%s", state.ui_error.c_str());
+    ImGui::PopStyleColor();
+    if (ImGui::SmallButton("Dismiss error")) state.ui_error.clear();
+  }
+  ImGui::EndChild();
+  ImGui::Separator();
+  if (ImGui::Button("Save profile", {-1, 0})) {
+    try {
+      SaveSettings(state);
+      SetTransientStatus(state, "Profile saved");
+      state.ui_error.clear();
+    } catch (const std::exception & error) {
+      state.ui_error = std::string("Profile was not saved: ") + error.what();
+    }
+  }
+  ImGui::TextDisabled("Saved per dataset profile");
+  ImGui::End();
+
+  BeginPanel("Transport", layout.transport, false);
+  const auto * group = !state.live_mode && has_input ? &state.file_groups[state.current_file_group] : nullptr;
+  const std::size_t first_index = group ? group->first_index : 0;
+  const std::size_t frame_count = group ? group->last_index - group->first_index + 1 : 0;
+  const bool multiple = frame_count > 1;
+  ImGui::BeginDisabled(!has_input || state.loading_bag_source.has_value() || (state.live_mode && !state.live_stats.connected));
+  ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(.15f, .37f, .46f, 1));
+  const bool showing_motion = state.live_mode ? !state.live_paused : state.is_playing;
+  if (ImGui::Button(showing_motion ? "Pause" : "Play", {88.f * s, 0})) {
+    if (state.live_mode) SetLivePaused(state, !state.live_paused);
+    else {state.is_playing = !state.is_playing; state.last_frame_advance_time = glfwGetTime();}
+  }
+  ImGui::PopStyleColor();
+  ImGui::SameLine();
+  ImGui::BeginDisabled(!multiple);
+  if (ImGui::Button("<")) {state.is_playing = false; AdvanceFrame(state, -1);}
+  Tip("Previous frame  [P]");
+  ImGui::SameLine();
+  if (ImGui::Button(">")) {state.is_playing = false; AdvanceFrame(state, 1);}
+  Tip("Next frame  [N]");
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  ImGui::BeginDisabled(state.live_mode);
+  ImGui::Checkbox("Loop", &state.loop_playback);
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(92.f * s);
+  ImGui::DragScalar("##Speed", ImGuiDataType_Double, &state.playback_fps, .1f, nullptr, nullptr, "%.1f fps");
+  state.playback_fps = std::isfinite(state.playback_fps) ? std::clamp(state.playback_fps, .1, 120.) : 10.;
+  if (layout.transport.w > 800.f * s) {
+    ImGui::SameLine();
+    if (state.live_mode) ImGui::TextDisabled("Live frame %llu", static_cast<unsigned long long>(state.live_display_sequence));
+    else ImGui::TextDisabled("Frame %zu / %zu", has_input ? state.current_index - first_index + 1 : 0, frame_count);
+  }
+  ImGui::EndDisabled();
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  BuildSourceSelector(state, std::max(80.f * s, ImGui::GetContentRegionAvail().x));
+  ImGui::BeginDisabled(state.live.Active() || state.loading_bag_source.has_value() || state.folder_scan_future.valid() || state.bag_picker.Active());
+  if (ImGui::Button("Open bag", {115.f * s, 0})) StartBagPicker(state);
+  Tip("Open the system file chooser. Select metadata.yaml, .db3 or .mcap.  [Ctrl+O]");
+  ImGui::SameLine();
+  if (ImGui::Button("Add folder", {115.f * s, 0})) state.open_folder_picker = true;
+  ImGui::EndDisabled();
+  Tip("Register a folder of bag recordings. The folder is remembered next time.");
+  ImGui::SameLine();
+  ImGui::BeginDisabled(state.loading_bag_source.has_value() || state.folder_scan_future.valid() || state.bag_picker.Active());
+  if (ImGui::Button("Live...", {90.f * s, 0})) ImGui::OpenPopup("Live sensors");
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  if (state.live_mode) {
+    ImGui::BeginDisabled(!state.live_stats.connected || state.live_stats.record_stopping);
+    ImGui::PushStyleColor(ImGuiCol_Button, state.live_stats.record_busy ? ImVec4(.6f,.16f,.16f,1) : ImVec4(.32f,.18f,.2f,1));
+    const char * label = state.live_stats.record_stopping ? "Saving..." : (state.live_stats.record_busy ? "Stop REC" : "Record");
+    if (ImGui::Button(label, {110.f * s, 0})) {
+      try {ToggleLiveRecording(state); state.ui_error.clear();}
+      catch (const std::exception & error) {state.ui_error=error.what();}
+    }
+    ImGui::PopStyleColor(); ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled("Rx %llu | IMU %llu | %.1f Hz", static_cast<unsigned long long>(state.live_stats.clouds),
+      static_cast<unsigned long long>(state.live_stats.imu_samples), state.live_stats.cloud_hz);
+  } else {
+  if (!state.timeline_dragging) state.seek_draft = static_cast<int>(state.current_index - first_index);
+  ImGui::SetNextItemWidth(-1);
+  ImGui::BeginDisabled(!multiple || state.loading_bag_source.has_value());
+  const std::string timeline_label = "Frame " + std::to_string(has_input ? state.seek_draft + 1 : 0) + " / " +
+    std::to_string(frame_count);
+  ImGui::SliderInt("##Timeline", &state.seek_draft, 0, frame_count ? static_cast<int>(frame_count - 1) : 0,
+    timeline_label.c_str(), ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_NoInput);
+  if (ImGui::IsItemActivated()) {
+    state.timeline_dragging = true;
+    state.is_playing = false;
+  }
+  if (ImGui::IsItemDeactivated()) {
+    if (ImGui::IsItemDeactivatedAfterEdit())
+      TryLoadFrame(state, first_index + static_cast<std::size_t>(state.seek_draft));
+    state.timeline_dragging = false;
+  }
+  ImGui::EndDisabled();
+  }
+  BuildFolderPicker(state);
+  BuildLiveDialog(state);
+  ImGui::End();
+
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {16.f * s, 4.f * s});
+  BeginPanel("Status", layout.status, false);
+  ImGui::PushClipRect(
+    {layout.status.x, layout.status.y},
+    {layout.status.w > 700.f * s ? layout.status.w - 380.f * s : layout.status.w, layout.status.y + layout.status.h}, true);
+  if (!state.ui_error.empty()) ImGui::TextColored({1.f, .56f, .48f, 1}, "%s", state.ui_error.c_str());
+  else if (state.loading_bag_source) ImGui::TextColored({.44f, .76f, 1.f, 1}, "Opening %s...",
+    state.bag_sources[*state.loading_bag_source].display_name.c_str());
+  else if (!state.transient_status.empty()) ImGui::TextColored({.44f, .86f, .68f, 1}, "%s", state.transient_status.c_str());
+  else if (state.live_mode) ImGui::TextDisabled("%zu points | display %llu / received %llu | %s", state.frame.points.size(),
+    static_cast<unsigned long long>(state.live_display_sequence), static_cast<unsigned long long>(state.live_stats.clouds),
+    !state.live_stats.connected ? "disconnected" : (state.live_paused ? "frozen" : (state.live_stats.cloud_age_ms > 1000 ? "stream stale" : "live")));
+  else if (!has_input) ImGui::TextDisabled("No data loaded. Click Open bag or Live.");
+  else ImGui::TextDisabled("%zu points   |   %s", state.frame.points.size(), state.frames[state.current_index].label.c_str());
+  ImGui::PopClipRect();
+  if (layout.status.w > 700.f * s) {
+    ImGui::SameLine(std::max(450.f * s, layout.status.w - 360.f * s));
+    ImGui::TextDisabled("Data %.1f fps   /   Render %.0f fps", state.current_playback_fps, state.current_view_fps);
+  }
+  ImGui::End();
+  ImGui::PopStyleVar();
+
+  auto * draw = ImGui::GetForegroundDrawList();
+  const auto & view = layout.viewport;
+  const ImU32 muted = IM_COL32(131, 151, 174, 255);
+  draw->AddText({view.x + 14.f * s, view.y + 12.f * s}, muted,
+    state.camera.projection_mode == CameraState::ProjectionMode::View2D ? "TOP VIEW  /  XY" : "PERSPECTIVE  /  XYZ");
+  if (!has_input) {
+    const char * title = state.live_mode ? "Waiting for live LiDAR" : (state.loading_bag_source ? "Opening bag..." : "No bag loaded");
+    const char * hint = state.live_mode ? state.live_points_topic.data() : (state.loading_bag_source ?
+      "The first frame will appear when loading finishes." : "Click Open bag or Live below to select an input.");
+    const auto title_size = ImGui::CalcTextSize(title);
+    const auto hint_size = ImGui::CalcTextSize(hint);
+    const float center_x = view.x + view.w * .5f;
+    const float center_y = view.y + view.h * .5f;
+    draw->AddRectFilled({center_x - hint_size.x * .5f - 24.f * s, center_y - 24.f * s},
+      {center_x + hint_size.x * .5f + 24.f * s, center_y + 52.f * s}, IM_COL32(18, 24, 32, 235), 8.f * s);
+    draw->AddText({center_x - title_size.x * .5f, center_y - 10.f * s}, IM_COL32(210, 222, 235, 255), title);
+    draw->AddText({center_x - hint_size.x * .5f, center_y + 20.f * s}, muted, hint);
+  }
+  if (has_input && state.imu_level_enabled) {
+    const bool applied = state.imu_level_result.applied;
+    const bool estimated = state.base_frame.imu &&
+      state.base_frame.imu->source == lidar_viewer::ImuGravitySource::AccelGyro;
+    draw->AddText({view.x + 14.f * s, view.y + 34.f * s},
+      applied ? IM_COL32(105, 215, 167, 255) : IM_COL32(242, 179, 96, 255),
+      applied ? (estimated ? "IMU level: estimated" : "IMU level: active") : "IMU level: unavailable");
+  }
+  if (state.live_mode && state.live_stats.record_busy) {
+    draw->AddText({view.x + view.w - 160.f*s, view.y + 12.f*s}, IM_COL32(255,100,100,255),
+      state.live_stats.record_stopping ? "Saving bag..." : "REC  raw sensors");
+  }
+  if (state.live_mode && (!state.live_stats.record_error.empty() || state.live_stats.record_dropped))
+    draw->AddText({view.x + 14.f*s, view.y + view.h - 48.f*s}, IM_COL32(255,120,100,255), "Recording error - open Live for details");
+  if (has_input && state.ground_removal_enabled) {
+    draw->AddCircleFilled({view.x + 18.f * s, view.y + view.h - 18.f * s}, 4.f * s, IM_COL32(255, 75, 65, 255));
+    draw->AddText({view.x + 30.f * s, view.y + view.h - 26.f * s}, muted, "Ground");
+  }
+  if (has_input && state.roi.enabled) {
+    const auto text = "ROI: " + std::to_string(state.frame.points.size()) + " / " +
+      std::to_string(state.base_frame.points.size()) + " points";
+    draw->AddText({view.x + 14.f * s, view.y + (state.imu_level_enabled ? 56.f : 34.f) * s},
+      IM_COL32(105, 215, 225, 255), text.c_str());
+  }
+  {
+    auto bounded = [&](float & value, float low, float high, float fallback) {
+      if (!std::isfinite(value)) {value = fallback; state.ui_error = "A non-finite value was rejected.";}
+      value = std::clamp(value, low, high);
+    };
+    bounded(state.calibration.yaw_deg, -180, 180, 0);
+    bounded(state.calibration.pitch_deg, -180, 180, 0);
+    bounded(state.calibration.roll_deg, -180, 180, 0);
+    bounded(state.calibration.z_m, -5, 5, 0);
+    auto & ground = state.algorithm_config.ground_removal;
+    bounded(ground.gseg3d_cell_size_x_m, .1f, 5, 1);
+    bounded(ground.gseg3d_cell_size_y_m, .1f, 5, 1);
+    bounded(ground.gseg3d_cuda_cell_size_m, .1f, 5, .5f);
+    bounded(ground.gseg3d_ground_inlier_threshold_m, .02f, 1, .2f);
+    bounded(ground.candidate_grid_cell_m, .1f, 5, .8f);
+    bounded(state.camera.point_size, 1, 8, 2);
+    bounded(state.grid_settings.spacing, .5f, 50, 2);
+    bounded(state.grid_settings.thickness, 1, 6, 1);
+    bounded(state.ui_scale, .75f, 1.5f, 1);
+  }
+  if (reprocess) {
+    try { ApplyCalibration(state); state.ui_error.clear(); }
+    catch (const std::exception & error) { state.is_playing = false; state.ui_error = error.what(); }
+  }
+}
+
+void RenderRoiBoxes(ViewerState & state, const Mat4 & mvp)
+{
+  auto & renderer = state.roi_renderer;
+  if (!state.roi.show_boxes || renderer.vertices.empty()) return;
+  glUseProgram(state.grid.program);
+  glUniformMatrix4fv(state.grid.mvp_loc, 1, GL_FALSE, mvp.m.data());
+  glBindVertexArray(renderer.vao);
+  if (renderer.dirty) {
+    glBindBuffer(GL_ARRAY_BUFFER, renderer.vbo);
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(renderer.vertices.size() * sizeof(Vec3)),
+      renderer.vertices.data(), GL_DYNAMIC_DRAW);
+    renderer.dirty = false;
+  }
+  glDepthMask(GL_FALSE);
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-  glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(vertices.size()));
+  glLineWidth(2.f);
+  for (std::size_t i = 0; i < std::min(state.roi.boxes.size(), renderer.vertices.size() / 24); ++i) {
+    if (i == state.selected_roi) glUniform4f(state.grid.color_loc, 1.f, .8f, .25f, .95f);
+    else if (state.roi.enabled && state.roi.boxes[i].enabled) glUniform4f(state.grid.color_loc, .25f, .85f, .95f, .85f);
+    else glUniform4f(state.grid.color_loc, .55f, .6f, .65f, .5f);
+    glDrawArrays(GL_LINES, static_cast<GLint>(i * 24), 24);
+  }
+  glLineWidth(1.f);
+  glDepthMask(GL_TRUE);
   glDisable(GL_BLEND);
-  glEnable(GL_DEPTH_TEST);
+  glBindVertexArray(0);
 }
 
 void RenderGrid(const ViewerState & state, const Mat4 & mvp)
@@ -2672,21 +2902,171 @@ void RenderAxes(ViewerState & state, const Mat4 & mvp)
 int RunViewer(int argc, char ** argv)
 {
   try {
-    fs::path input_path = kDefaultInputPath;
-    if (argc >= 2) {
-      input_path = argv[1];
+    fs::path input_path = lidar_viewer::ProjectResourcePath(kDefaultInputPath);
+    std::string bag_topic = "/b2/points";
+    std::string imu_topic;
+    bool input_selected = false;
+    bool inspect = false;
+    bool autoplay = false;
+    bool imu_level = false;
+    bool start_2d = false;
+    bool start_live = false;
+    fs::path record_folder = lidar_viewer::ProjectResourcePath("recordings");
+#ifdef LIDAR_VIEWER_USER_SETTINGS
+    record_folder=lidar_viewer::UserHome()/"Documents/LiDARViewer/recordings";
+#endif
+    std::optional<float> sensor_height;
+    for (int i = 1; i < argc; ++i) {
+      const std::string arg = argv[i];
+      if (arg == "--help" || arg == "-h") {
+        std::cout << "Usage: lidar_viewer [INPUT] [--live] [--topic /b2/points] [--sensor-height METRES] [--imu-level] [--imu-topic TOPIC] [--2d] [--play] [--inspect] [--record-folder DIR]\n"
+                  << "INPUT: .bin file/directory, bag collection folder, ROS 2 bag, .mcap, .db3 or metadata.yaml.\n"
+                  << "Without INPUT, show an empty viewer. Click Open bag to select a recording.\n"
+                  << "Open bag (Ctrl+O) selects another recording; Add folder remembers bag collections.\n"
+                  << "--live: subscribe to live LiDAR/IMU. Pause freezes the display; Play returns to the latest frame.\n"
+                  << "--record-folder: parent folder for recordings started explicitly with Record.\n"
+                  << "--sensor-height: explicit display Z translation (0..5 m); no automatic bag leveling.\n"
+                  << "--imu-level: gravity-align roll/pitch using recorded IMU and a known mount rotation.\n"
+                  << "--imu-topic: select an IMU topic; otherwise choose one from recorded topics.\n"
+                  << "--2d: open top view; right-drag or Q/E rotates, left-drag pans.\n"
+                  << "--inspect: index and load the first frame without opening a window.\n"
+                  << "ROS 2 bag backend: " << (RosbagInputAvailable() ? "enabled" : "not built") << '\n';
+        return 0;
+      } else if (arg == "--topic" || arg == "--sensor-height" || arg == "--imu-topic" || arg == "--record-folder") {
+        if (++i >= argc) {
+          throw std::runtime_error("Missing value for " + arg);
+        }
+        if (arg == "--record-folder") {
+          record_folder=argv[i];
+          if (record_folder.empty()) throw std::runtime_error("Recording folder must not be empty");
+        } else if (arg == "--imu-topic") {
+          imu_topic = argv[i];
+          if (imu_topic.empty()) throw std::runtime_error("IMU topic must not be empty");
+        } else if (arg == "--topic") {
+          bag_topic = argv[i];
+          if (bag_topic.empty()) {
+            throw std::runtime_error("Bag topic must not be empty");
+          }
+        } else {
+          std::size_t consumed = 0;
+          const std::string value = argv[i];
+          const float height = std::stof(value, &consumed);
+          if (consumed != value.size() || !std::isfinite(height) || height < 0 || height > 5) {
+            throw std::runtime_error("Sensor height must be a finite value in 0..5 metres");
+          }
+          sensor_height = height;
+        }
+      } else if (arg == "--inspect") {
+        inspect = true;
+      } else if (arg == "--play") {
+        autoplay = true;
+      } else if (arg == "--imu-level") {
+        imu_level = true;
+      } else if (arg == "--2d") {
+        start_2d = true;
+      } else if (arg == "--live") {
+        start_live = true;
+      } else if (!arg.empty() && arg.front() == '-') {
+        throw std::runtime_error("Unknown option: " + arg);
+      } else if (input_selected) {
+        throw std::runtime_error("Only one input path is supported");
+      } else {
+        input_path = arg;
+        input_selected = true;
+      }
     }
 
+    if (start_live && (input_selected || inspect)) throw std::runtime_error("Use --live without INPUT or --inspect");
     ViewerState state;
-    state.dataset_profile = DetectDatasetProfile(input_path);
+    const auto copy_text = [](const std::string & value, auto & buffer) {
+      if (value.size() >= buffer.size()) throw std::runtime_error("Live setting is too long");
+      std::copy(value.begin(), value.end(), buffer.begin());
+    };
+    copy_text(bag_topic, state.live_points_topic);
+    copy_text(imu_topic.empty() ? "/vn100/imu/data_ned" : imu_topic, state.live_imu_topic);
+    copy_text(record_folder.string(), state.live_record_folder);
+    state.bag_topic = bag_topic;
+    state.bag_imu_topic = imu_topic;
+    state.imu_level_cli_override = imu_level;
+    state.bag_sensor_height_override = sensor_height;
+    try {
+      state.data_folders_config = DataFoldersConfigPath();
+      state.data_folders = LoadBagFolders(state.data_folders_config);
+      for (const auto & folder : state.data_folders)
+        state.bag_sources = MergeBagSources(std::move(state.bag_sources), DiscoverBagSources(folder));
+    } catch (const std::exception & error) {
+      state.ui_error = std::string("Saved data folders could not be loaded: ") + error.what();
+    }
+    const bool load_initial_input = input_selected || inspect;
+    if (input_selected) {
+      const auto supplied = DiscoverBagSources(input_path);
+      if (!supplied.empty()) {
+        input_path = supplied.front().path;
+        state.bag_sources = MergeBagSources(std::move(state.bag_sources), supplied);
+      }
+    } else if (inspect && !state.bag_sources.empty()) {
+      input_path = state.bag_sources.front().path;
+    }
+    if (load_initial_input && IsRos2BagInput(input_path)) {
+      const auto canonical = fs::canonical(input_path);
+      for (std::size_t i = 0; i < state.bag_sources.size(); ++i)
+        if (state.bag_sources[i].path == canonical) state.current_bag_source = i;
+    }
+    state.dataset_profile = load_initial_input ? DetectDatasetProfile(input_path) : "rosbag";
     state.algorithm_config = lidar_viewer::LoadPipelineConfig(AlgorithmsConfigPath());
     LoadSettings(state);
-    state.frames = ResolveInputFrames(input_path);
+    if (imu_level) state.imu_level_enabled = true;
+    if (start_2d) SetProjectionMode(state, CameraState::ProjectionMode::View2D);
+    if (sensor_height) {
+      state.calibration.z_m = *sensor_height;
+    }
+    if (inspect && !input_selected && !state.bag_sources.empty()) {
+      // A disconnected or damaged recording must not hide other registered bags.
+      for (std::size_t i = 0; i < state.bag_sources.size(); ++i) {
+        try {
+          auto frames = ResolveInputFrames(state.bag_sources[i].path, bag_topic, imu_topic);
+          if (frames.empty()) continue;
+          auto first = LoadFrame(frames.front());
+          state.frames = std::move(frames);
+          StoreFrameInCache(state, 0, std::move(first));
+          input_path = state.bag_sources[i].path;
+          state.current_bag_source = i;
+          break;
+        } catch (const std::exception & error) {
+          std::cerr << "Skipping unavailable bag " << state.bag_sources[i].path << ": " << error.what() << '\n';
+        }
+      }
+      if (state.frames.empty()) throw std::runtime_error("No registered bag can be opened. Run with a different bag or collection folder.");
+    } else if (load_initial_input) {
+      state.frames = ResolveInputFrames(input_path, bag_topic, imu_topic);
+    }
     state.input_fps_estimate = EstimateInputFps(state);
     SyncPlaybackFpsToInput(state);
     BuildFileGroups(state);
-    LoadFrameByIndex(state, 0);
+    if (!state.frames.empty()) LoadFrameByIndex(state, 0);
     state.last_frame_advance_time = 0.0;
+    state.is_playing = autoplay && !state.frames.empty();
+    if (state.frames.empty()) {
+      std::cout << "No bag loaded. Click Open bag to select a recording." << std::endl;
+    } else {
+      std::cout << "Input: " << input_path << " | " << state.frames.size()
+                << " frames | first frame " << state.base_frame.points.size()
+                << " points | profile " << state.dataset_profile;
+      if (state.input_fps_estimate) {
+        std::cout << " | recorded median " << *state.input_fps_estimate << " Hz";
+      }
+      std::cout << std::endl;
+    }
+    if (!state.bag_sources.empty()) {
+      std::cout << "Bag list: " << state.bag_sources.size() << " recordings" << std::endl;
+      for (const auto & source : state.bag_sources) std::cout << "  " << BagLabel(source) << '\n';
+    }
+    if (inspect) {
+      std::cout << "ROI: " << (state.roi.enabled ? "on" : "off") << " | " << state.roi.boxes.size()
+                << " boxes | retained " << state.frame.points.size() << " / " << state.base_frame.points.size() << " points\n";
+      if (state.imu_level_enabled) std::cout << "IMU leveling: " << state.imu_level_result.status << '\n';
+      return 0;
+    }
 
     if (!glfwInit()) {
       throw std::runtime_error("Failed to initialize GLFW");
@@ -2695,6 +3075,9 @@ int RunViewer(int argc, char ** argv)
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+#ifdef __APPLE__
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
+#endif
 
     GLFWwindow * window = glfwCreateWindow(kWindowWidth, kWindowHeight, "LiDAR OpenGL Viewer", nullptr, nullptr);
     if (!window) {
@@ -2704,6 +3087,7 @@ int RunViewer(int argc, char ** argv)
 
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
+    glfwSetWindowSizeLimits(window, 800, 600, GLFW_DONT_CARE, GLFW_DONT_CARE);
 
     glewExperimental = GL_TRUE;
     if (glewInit() != GLEW_OK) {
@@ -2717,7 +3101,8 @@ int RunViewer(int argc, char ** argv)
     glfwSetCursorPosCallback(window, CursorCallback);
     glfwSetScrollCallback(window, ScrollCallback);
     glfwSetKeyCallback(window, KeyCallback);
-    glfwSetCharCallback(window, CharCallback);
+    ConfigureInterface(window, state);
+    const ImGuiStyle base_ui_style = ImGui::GetStyle();
 
     glGenVertexArrays(1, &state.vao);
     glGenBuffers(1, &state.vbo);
@@ -2729,16 +3114,6 @@ int RunViewer(int argc, char ** argv)
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, sizeof(KittiPoint), reinterpret_cast<void *>(offsetof(KittiPoint, intensity)));
 
-    state.ui.program = CreateUiProgram();
-    state.ui.viewport_loc = glGetUniformLocation(state.ui.program, "u_viewport");
-    glGenVertexArrays(1, &state.ui.vao);
-    glGenBuffers(1, &state.ui.vbo);
-    glBindVertexArray(state.ui.vao);
-    glBindBuffer(GL_ARRAY_BUFFER, state.ui.vbo);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(UiVertex), reinterpret_cast<void *>(0));
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, sizeof(UiVertex), reinterpret_cast<void *>(offsetof(UiVertex, r)));
 
     state.grid.program = CreateGridProgram();
     state.grid.mvp_loc = glGetUniformLocation(state.grid.program, "u_mvp");
@@ -2755,6 +3130,13 @@ int RunViewer(int argc, char ** argv)
     glGenBuffers(1, &state.cluster_boxes.line_vbo);
     glBindVertexArray(state.cluster_boxes.vao);
     glBindBuffer(GL_ARRAY_BUFFER, state.cluster_boxes.fill_vbo);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vec3), reinterpret_cast<void *>(0));
+
+    glGenVertexArrays(1, &state.roi_renderer.vao);
+    glGenBuffers(1, &state.roi_renderer.vbo);
+    glBindVertexArray(state.roi_renderer.vao);
+    glBindBuffer(GL_ARRAY_BUFFER, state.roi_renderer.vbo);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vec3), reinterpret_cast<void *>(0));
 
@@ -2778,8 +3160,31 @@ int RunViewer(int argc, char ** argv)
     state.fps_measurement_started_at = glfwGetTime();
     state.playback_measurement_started_at = state.fps_measurement_started_at;
 
+    if (start_live) ConnectLive(state);
+
     while (!glfwWindowShouldClose(window)) {
       glfwPollEvents();
+      CompleteBagPicker(state, window);
+      CompleteBagLoad(state);
+      UpdateLiveFrame(state);
+      int fb_width = 0, fb_height = 0, window_width = 0, window_height = 0;
+      glfwGetFramebufferSize(window, &fb_width, &fb_height);
+      glfwGetWindowSize(window, &window_width, &window_height);
+      if (fb_width <= 0 || fb_height <= 0 || window_width <= 0 || window_height <= 0) {
+        glfwWaitEventsTimeout(.05);
+        continue;
+      }
+      state.ui_layout = lidar_viewer::ComputeUiLayout(
+        static_cast<float>(window_width), static_cast<float>(window_height),
+        state.ui_scale * state.font_raster_scale / std::max(
+          static_cast<float>(fb_width) / window_width, static_cast<float>(fb_height) / window_height));
+      ImGui::GetStyle() = base_ui_style;
+      ImGui::GetStyle().ScaleAllSizes(state.ui_layout.scale);
+      ImGui::GetIO().FontGlobalScale = state.ui_layout.scale / state.font_raster_scale;
+      ImGui_ImplOpenGL3_NewFrame();
+      ImGui_ImplGlfw_NewFrame();
+      ImGui::NewFrame();
+      BuildViewerInterface(state, window);
       const double frame_begin_time = glfwGetTime();
       bool advanced_frame = false;
 
@@ -2806,13 +3211,23 @@ int RunViewer(int argc, char ** argv)
         state.fit_view_requested = false;
       }
 
-      int fb_width = 0;
-      int fb_height = 0;
-      glfwGetFramebufferSize(window, &fb_width, &fb_height);
       glViewport(0, 0, fb_width, fb_height);
+      glDisable(GL_SCISSOR_TEST);
+      glClearColor(.045f, .058f, .079f, 1.f);
       glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-      const float aspect = (fb_height > 0) ? static_cast<float>(fb_width) / static_cast<float>(fb_height) : 1.0f;
+      const auto & canvas = state.ui_layout.viewport;
+      const float sx = static_cast<float>(fb_width) / static_cast<float>(window_width);
+      const float sy = static_cast<float>(fb_height) / static_cast<float>(window_height);
+      const int canvas_x = static_cast<int>(std::lround(canvas.x * sx));
+      const int canvas_y = fb_height - static_cast<int>(std::lround((canvas.y + canvas.h) * sy));
+      const int canvas_w = std::max(1, static_cast<int>(std::lround(canvas.w * sx)));
+      const int canvas_h = std::max(1, static_cast<int>(std::lround(canvas.h * sy)));
+      glViewport(canvas_x, canvas_y, canvas_w, canvas_h);
+      glEnable(GL_SCISSOR_TEST);
+      glScissor(canvas_x, canvas_y, canvas_w, canvas_h);
+      glClearColor(.035f, .045f, .063f, 1.f);
+      glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+      const float aspect = static_cast<float>(canvas_w) / static_cast<float>(canvas_h);
       const Vec3 eye =
         (state.camera.projection_mode == CameraState::ProjectionMode::View2D)
         ? Vec3{state.camera.target.x, state.camera.target.y, state.camera.target.z + std::max(state.camera.distance, 10.0f)}
@@ -2829,7 +3244,7 @@ int RunViewer(int argc, char ** argv)
         : Perspective(45.0f * kPi / 180.0f, aspect, 0.1f, 10000.0f);
       const Vec3 up =
         (state.camera.projection_mode == CameraState::ProjectionMode::View2D)
-        ? Vec3{0.0f, 1.0f, 0.0f}
+        ? lidar_viewer::TopViewUp(state.camera.yaw)
         : Vec3{0.0f, 0.0f, 1.0f};
       const Mat4 view = LookAt(eye, state.camera.target, up);
       const Mat4 mvp = Multiply(projection, view);
@@ -2838,8 +3253,8 @@ int RunViewer(int argc, char ** argv)
       glUniformMatrix4fv(mvp_loc, 1, GL_FALSE, mvp.m.data());
       glUniform1f(point_size_loc, state.camera.point_size);
       glUniform1i(color_mode_loc, state.color_mode);
-      glUniform1f(min_height_loc, state.frame.min_z);
-      glUniform1f(max_height_loc, state.frame.max_z);
+      glUniform1f(min_height_loc, state.height_color_min);
+      glUniform1f(max_height_loc, state.height_color_max);
       if (state.grid.dirty) {
         RebuildGrid(state);
       }
@@ -2847,8 +3262,11 @@ int RunViewer(int argc, char ** argv)
       glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(state.frame.points.size()));
       RenderGrid(state, mvp);
       RenderClusterBoxes(state, mvp);
+      RenderRoiBoxes(state, mvp);
       RenderAxes(state, mvp);
-      RenderHud(state, fb_width, fb_height);
+      glDisable(GL_SCISSOR_TEST);
+      ImGui::Render();
+      ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
       glfwSwapBuffers(window);
 
@@ -2873,18 +3291,21 @@ int RunViewer(int argc, char ** argv)
       }
     }
 
+    state.live.Disconnect();
     glDeleteProgram(program);
-    glDeleteProgram(state.ui.program);
     glDeleteProgram(state.grid.program);
     glDeleteBuffers(1, &state.vbo);
-    glDeleteBuffers(1, &state.ui.vbo);
     glDeleteBuffers(1, &state.grid.vbo);
     glDeleteBuffers(1, &state.cluster_boxes.fill_vbo);
     glDeleteBuffers(1, &state.cluster_boxes.line_vbo);
+    glDeleteBuffers(1, &state.roi_renderer.vbo);
     glDeleteVertexArrays(1, &state.vao);
-    glDeleteVertexArrays(1, &state.ui.vao);
     glDeleteVertexArrays(1, &state.grid.vao);
     glDeleteVertexArrays(1, &state.cluster_boxes.vao);
+    glDeleteVertexArrays(1, &state.roi_renderer.vao);
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
     glfwDestroyWindow(window);
     glfwTerminate();
     return 0;

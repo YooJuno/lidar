@@ -9,7 +9,7 @@ namespace lidar_viewer::algorithms
 {
 struct CudaCellAssignment
 {
-  std::int64_t key{0};
+  std::uint64_t key{0};
   std::size_t point_index{0};
 };
 
