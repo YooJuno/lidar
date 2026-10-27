@@ -148,7 +148,7 @@ jobs:
         run: |
           $package = Get-ChildItem build/packages/*.zip | Select-Object -First 1
           Expand-Archive -Path $package.FullName -DestinationPath build/package-smoke
-          $viewer = Get-ChildItem build/package-smoke/lidar_viewer.exe -Recurse | Select-Object -First 1
+          $viewer = Get-ChildItem build/package-smoke -Filter lidar_viewer.exe -Recurse -File | Select-Object -First 1
           if (!$viewer) { throw 'Packaged viewer executable is missing' }
           foreach ($library in @('vcomp140.dll', 'vcruntime140.dll', 'msvcp140.dll')) {
             if (!(Test-Path (Join-Path $viewer.DirectoryName $library))) { throw "Missing runtime: $library" }
