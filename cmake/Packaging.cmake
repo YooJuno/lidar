@@ -30,6 +30,7 @@ elseif(WIN32)
   endif()
   # Include the redistributable runtime beside the executable.
   set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION .)
+  set(CMAKE_INSTALL_OPENMP_LIBRARIES TRUE)
   include(InstallRequiredSystemLibraries)
   set(CPACK_GENERATOR ZIP)
 else()
