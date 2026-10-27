@@ -18,6 +18,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--viewer", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--connect-with-dialog", action="store_true")
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[1]
     args.output.mkdir(parents=True, exist_ok=True)
@@ -56,13 +57,18 @@ def main():
         with (output / "publisher.log").open("wb") as publog, log_path.open("wb") as log:
             publisher = subprocess.Popen(["/usr/bin/python3", str(repo / "tests/live_fixture.py")],
                 env=env, stdout=publog, stderr=subprocess.STDOUT)
-            process = subprocess.Popen([str(viewer), "--live", "--topic", "/fixture/points",
+            live_args=[] if args.connect_with_dialog else ["--live"]
+            process = subprocess.Popen([str(viewer), *live_args, "--topic", "/fixture/points",
                 "--imu-topic", "/fixture/imu", "--2d", "--imu-level", "--sensor-height", ".57",
                 "--record-folder", str(output / "recordings")], cwd=private, env=env,
                 stdout=log, stderr=subprocess.STDOUT)
             wait_for(x11.viewer_window)
             window = x11.viewer_window()
             x11.focus(window); x11.resize(window, 1600, 960)
+            if args.connect_with_dialog:
+                x11.click(window,660,878)
+                shot("00_live_dialog")
+                x11.click(window,555,638)
             wait_for(lambda: "Live first frame:" in log_path.read_text(errors="replace"))
             time.sleep(.3)
             moving_a = shot("01_live")

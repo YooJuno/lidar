@@ -69,9 +69,14 @@ int main()
     sample.header.frame_id="test_imu"; sample.orientation_covariance[0]=-1; sample.linear_acceleration.z=9.80665;
     auto publish_imu=[&] {sample.header.stamp=node->now(); imu->publish(sample);};
     for (int i=0;i<15;++i) {publish_imu(); std::this_thread::sleep_for(std::chrono::milliseconds(5));}
-    points->publish(Cloud(1));
     std::unique_ptr<lidar_viewer::LiveFrame> frozen;
-    Wait([&] {if (auto next=live.TakeLatest()) frozen=std::move(next); return frozen!=nullptr;});
+    Wait([&] {
+      publish_imu(); points->publish(Cloud(1));
+      if (auto next=live.TakeLatest()) {
+        if (lidar_viewer::ComputeImuLeveling(next->frame.imu,{}).applied) frozen=std::move(next);
+      }
+      return frozen!=nullptr;
+    });
     Check(frozen->frame.points.size()==2 && frozen->frame.points[0].intensity==0 && frozen->frame.points[1].intensity==1,
       "Live PointCloud2 decode/normalization failed");
     Check(lidar_viewer::ComputeImuLeveling(frozen->frame.imu, {}).applied, "Live IMU/static TF alignment missing");
