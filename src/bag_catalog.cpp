@@ -35,7 +35,7 @@ fs::path Canonical(const fs::path & path)
 
 fs::path AbsoluteIdentity(const fs::path & path)
 {
-  const auto text = path.string();
+  const auto text = path.u8string();
   if (text.empty() || text.find_first_of("\r\n") != std::string::npos ||
       text.find('\0') != std::string::npos) {
     throw std::invalid_argument("Data folder paths must not be empty or contain line breaks/NUL");
@@ -124,7 +124,7 @@ std::vector<BagSource> DiscoverBagSources(const std::filesystem::path & input)
   if (!selected_bag.empty() || !is_directory) {
     BagSource source;
     source.path = selected_bag.empty() ? selected : selected_bag;
-    source.display_name = source.path.filename().string();
+    source.display_name = source.path.filename().u8string();
     ReadFilenameDate(source);
     return {std::move(source)};
   }
@@ -143,7 +143,7 @@ std::vector<BagSource> DiscoverBagSources(const std::filesystem::path & input)
     if (canonical.empty() || !seen_sources.insert(canonical).second) return;
     BagSource source;
     source.path = canonical;
-    source.display_name = canonical.filename().string();
+    source.display_name = canonical.filename().u8string();
     ReadFilenameDate(source);
     sources.push_back(std::move(source));
   };
@@ -212,10 +212,10 @@ std::vector<std::filesystem::path> LoadBagFolders(const std::filesystem::path & 
       throw std::runtime_error("Malformed data folder library at line " + std::to_string(number));
     }
     fields >> std::ws;
-    if (!fields.eof() || !fs::path(value).is_absolute()) {
+    if (!fields.eof() || !fs::u8path(value).is_absolute()) {
       throw std::runtime_error("Invalid data folder path at line " + std::to_string(number));
     }
-    folders.emplace_back(value);
+    folders.push_back(fs::u8path(value));
   }
   if (input.bad()) throw std::runtime_error("Failed to read data folder library: " + config.string());
   return NormalizeFolders(folders);
@@ -229,7 +229,7 @@ void SaveBagFolders(
   const auto normalized = NormalizeFolders(folders);
   std::ostringstream contents;
   contents << "# LiDAR Studio data folders v1\n";
-  for (const auto & folder : normalized) contents << "folder " << std::quoted(folder.string()) << '\n';
+  for (const auto & folder : normalized) contents << "folder " << std::quoted(folder.u8string()) << '\n';
   if (config.has_parent_path()) fs::create_directories(config.parent_path());
   lidar_viewer::settings::AtomicWriteText(config, contents.str());
 }

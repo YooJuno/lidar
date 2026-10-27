@@ -7,7 +7,9 @@
 #include <iostream>
 #include <iterator>
 #include <stdexcept>
+#ifndef _WIN32
 #include <sys/resource.h>
+#endif
 
 namespace
 {
@@ -50,13 +52,17 @@ fs::path Bag(const fs::path & root, const char * name)
 void TestLibrary(const fs::path & root)
 {
   const auto config = root / "config" / "data_folders.cfg";
+#ifdef _WIN32
+  const auto folder = root / "folder with spaces";
+#else
   const auto folder = root / "folder with spaces and \"quotes\" \\ slash";
+#endif
   fs::create_directory(folder);
   const auto offline = root / "disconnected" / "bag folder";
   Check(LoadBagFolders(config).empty(), "Missing library should return an empty list");
   SaveBagFolders(config, {folder, offline, folder / "."});
   const auto loaded = LoadBagFolders(config);
-  Check(loaded.size() == 2 && loaded[0] == fs::canonical(folder) && loaded[1] == offline,
+  Check(loaded.size() == 2 && loaded[0] == fs::canonical(folder) && loaded[1] == fs::weakly_canonical(offline),
     "Library lost quoted/offline paths or did not deduplicate");
   const auto previous = Read(config);
   Throws([&] {SaveBagFolders(config, {folder, fs::path("bad\nfolder")});},
@@ -70,6 +76,7 @@ void TestLibrary(const fs::path & root)
     Throws([&] {LoadBagFolders(config);}, "Malformed library entry was accepted");
   }
   SaveBagFolders(config, {folder});
+#ifndef _WIN32
   const auto before_failure = Read(config);
   struct rlimit previous_limit{};
   Check(::getrlimit(RLIMIT_FSIZE, &previous_limit) == 0, "Cannot inspect file size limit");
@@ -83,6 +90,7 @@ void TestLibrary(const fs::path & root)
   std::signal(SIGXFSZ, previous_signal);
   Check(restored == 0 && failed, "Atomic write failure was not reported");
   Check(Read(config) == before_failure, "Partial library write corrupted the prior complete file");
+#endif
   for (const auto & entry : fs::directory_iterator(config.parent_path())) {
     Check(entry.path().filename().string().find(".tmp-") == std::string::npos,
       "Failed library save leaked a temporary file");

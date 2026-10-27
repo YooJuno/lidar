@@ -2684,7 +2684,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   const ImU32 muted = IM_COL32(131, 151, 174, 255);
   draw->AddText({view.x + 14.f * s, view.y + 12.f * s}, muted,
     state.camera.projection_mode == CameraState::ProjectionMode::View2D ? "TOP VIEW  /  XY" : "PERSPECTIVE  /  XYZ");
-  if (!has_input) {
+  if (!has_input && !ImGui::IsPopupOpen(nullptr,ImGuiPopupFlags_AnyPopup)) {
     const char * title = state.live_mode ? "Waiting for live LiDAR" : (state.loading_bag_source ? "Opening bag..." : "No bag loaded");
     const char * hint = state.live_mode ? state.live_points_topic.data() : (state.loading_bag_source ?
       "The first frame will appear when loading finishes." : "Click Open bag or Live below to select an input.");

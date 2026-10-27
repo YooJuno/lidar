@@ -29,7 +29,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build libglfw3-dev libglew-dev libpcl-dev libnanoflann-dev \
             ros-jazzy-rosbag2-cpp ros-jazzy-sensor-msgs ros-jazzy-tf2-msgs ros-jazzy-rclcpp \
-            ros-jazzy-rclpy ros-jazzy-rmw-fastrtps-cpp ros-jazzy-rosbag2-storage-mcap \
+            ros-jazzy-rclpy ros-jazzy-rmw-fastrtps-cpp ros-jazzy-rosbag2-storage-mcap ros-jazzy-rosbag2-storage-sqlite3 \
             zenity xvfb xauth ffmpeg python3-pil python3-yaml libgl1-mesa-dri dpkg-dev
       - name: Configure
         run: |
@@ -157,6 +157,12 @@ jobs:
             build/Testing/Temporary/
             .vcpkg/buildtrees/**/*.log
             build/CMakeFiles/CMakeConfigureLog.yaml
+      - name: Preserve Windows dependency cache after a failed build
+        if: failure() && runner.os == 'Windows'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-windows-release-${{ hashFiles('vcpkg.json', 'cmake/triplets/*') }}
 
   release:
     name: Publish GitHub release
