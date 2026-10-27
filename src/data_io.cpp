@@ -1,4 +1,5 @@
 #include "lidar_viewer/data_io.hpp"
+#include "lidar_viewer/bag_io.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -38,6 +39,12 @@ constexpr std::array<float, kOusterLegacyChannels> kOs1_64AzimuthOffsetDeg{{
 
 void FinalizeFrame(FrameData & frame)
 {
+  // Match the bag decoder's handling of invalid samples before bounds,
+  // percentile selection and spatial hashing see any NaN/Inf coordinates.
+  frame.points.erase(std::remove_if(frame.points.begin(), frame.points.end(), [](KittiPoint & point) {
+    if (!std::isfinite(point.intensity)) point.intensity = 0.0f;
+    return !std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z);
+  }), frame.points.end());
   if (frame.points.empty()) {
     frame.center = {0.0f, 0.0f, 0.0f};
     frame.radius = 10.0f;
@@ -273,11 +280,15 @@ FrameData LoadOusterLegacyFrame(const FrameHandle & handle)
 }
 }  // namespace
 
-std::vector<FrameHandle> ResolveInputFrames(const fs::path & input)
+std::vector<FrameHandle> ResolveInputFrames(
+  const fs::path & input, const std::string & bag_topic, const std::string & imu_topic)
 {
+  if (IsRos2BagInput(input)) {
+    return ResolveBagFrames(input, bag_topic, imu_topic);
+  }
   if (fs::is_regular_file(input)) {
     if (input.extension() != ".bin") {
-      throw std::runtime_error("Expected .bin file: " + input.string());
+      throw std::runtime_error("Expected .bin, .mcap, .db3 or a ROS 2 bag directory: " + input.string());
     }
     return ResolveFramesFromFile(input);
   }
@@ -308,6 +319,11 @@ std::vector<FrameHandle> ResolveInputFrames(const fs::path & input)
 
 FrameData LoadFrame(const FrameHandle & handle)
 {
+  if (handle.format == InputFormat::Ros2Bag) {
+    auto frame = LoadBagFrame(handle);
+    FinalizeFrame(frame);
+    return frame;
+  }
   if (handle.format == InputFormat::OusterLegacyContainer) {
     return LoadOusterLegacyFrame(handle);
   }

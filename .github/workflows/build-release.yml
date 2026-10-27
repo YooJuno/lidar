@@ -1,0 +1,187 @@
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  ubuntu:
+    name: Ubuntu 24.04 / ROS 2 Jazzy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+      - uses: ros-tooling/setup-ros@649ef6bcd696da05bc27ceb3fab69d810c0daeab # 0.7.19
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libglfw3-dev libglew-dev libpcl-dev libnanoflann-dev \
+            ros-jazzy-rosbag2-cpp ros-jazzy-sensor-msgs ros-jazzy-tf2-msgs ros-jazzy-rclcpp \
+            ros-jazzy-rclpy ros-jazzy-rmw-fastrtps-cpp ros-jazzy-rosbag2-storage-mcap \
+            zenity xvfb xauth ffmpeg python3-pil python3-yaml libgl1-mesa-dri dpkg-dev
+      - name: Configure
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          args=()
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then args+=(-DCPACK_PACKAGE_VERSION="${GITHUB_REF_NAME#v}"); fi
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
+            -DLIDAR_VIEWER_ENABLE_CUDA=OFF -DLIDAR_VIEWER_ENABLE_ROSBAG=ON \
+            -DLIDAR_VIEWER_USER_SETTINGS=ON "${args[@]}"
+      - name: Build and test
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          cmake --build build --parallel 2
+          ctest --test-dir build --output-on-failure
+      - name: Live pause, resume and recording GUI test
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_live_smoke.py \
+            --viewer build/lidar_viewer --output build/test_artifacts/live
+      - name: Package Ubuntu
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          cpack --config build/CPackConfig.cmake
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packages-Ubuntu
+          path: |
+            build/packages/*.deb
+            build/packages/*.tar.gz
+          if-no-files-found: error
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: diagnostics-Ubuntu
+          path: |
+            build/Testing/Temporary/
+            build/test_artifacts/
+
+  portable:
+    name: ${{ matrix.name }} / CPU
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            name: Windows x64
+          - os: macos-14
+            name: macOS
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-binary-cache
+      VCPKG_MAX_CONCURRENCY: '2'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          submodules: recursive
+      - name: Get pinned vcpkg
+        if: runner.os == 'Windows'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: microsoft/vcpkg
+          ref: 5363acb796e576328288fae60c25304e227e9839
+          path: .vcpkg
+      - name: Prepare Windows cache
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: runner.os == 'Windows'
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-windows-release-${{ hashFiles('vcpkg.json', 'cmake/triplets/*') }}
+          restore-keys: vcpkg-windows-release-
+      - name: Bootstrap vcpkg
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./.vcpkg/bootstrap-vcpkg.bat -disableMetrics
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install pcl glfw glew nanoflann ninja
+      - name: Configure Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $versionArgs = @()
+          if ($env:GITHUB_REF.StartsWith('refs/tags/v')) { $versionArgs += "-DCPACK_PACKAGE_VERSION=$($env:GITHUB_REF_NAME.Substring(1))" }
+          cmake -S . -B build -G 'Visual Studio 17 2022' -A x64 `
+            -DCMAKE_TOOLCHAIN_FILE="$env:GITHUB_WORKSPACE/.vcpkg/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_OVERLAY_TRIPLETS="$env:GITHUB_WORKSPACE/cmake/triplets" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-release `
+            -DLIDAR_VIEWER_ENABLE_CUDA=OFF -DLIDAR_VIEWER_ENABLE_ROSBAG=OFF `
+            -DLIDAR_VIEWER_USER_SETTINGS=ON @versionArgs
+      - name: Configure macOS
+        if: runner.os == 'macOS'
+        run: |
+          args=()
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then args+=(-DCPACK_PACKAGE_VERSION="${GITHUB_REF_NAME#v}"); fi
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix)" -DLIDAR_VIEWER_ENABLE_CUDA=OFF \
+            -DLIDAR_VIEWER_ENABLE_ROSBAG=OFF -DLIDAR_VIEWER_USER_SETTINGS=ON "${args[@]}"
+      - name: Build
+        run: cmake --build build --config Release --parallel 2
+      - name: Test
+        run: ctest --test-dir build --build-config Release --output-on-failure
+      - name: Package
+        run: cpack --config build/CPackConfig.cmake -C Release
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: packages-${{ runner.os }}
+          path: |
+            build/packages/*.zip
+            build/packages/*.dmg
+          if-no-files-found: error
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: diagnostics-${{ runner.os }}
+          path: |
+            build/Testing/Temporary/
+            .vcpkg/buildtrees/**/*.log
+            build/CMakeFiles/CMakeConfigureLog.yaml
+
+  release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [ubuntu, portable]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: packages-*
+          merge-multiple: true
+          path: release-assets
+      - name: Checksums and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          cd release-assets
+          sha256sum ./*.deb ./*.tar.gz ./*.zip ./*.dmg > SHA256SUMS
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+              --title "LiDAR Viewer $RELEASE_TAG" --generate-notes \
+              --notes 'Ubuntu 24.04: ROS 2 Jazzy live LiDAR/IMU, display pause/resume and raw MCAP recording. Windows/macOS: native CPU viewer for BIN point clouds, yaw ROI and ground segmentation; these packages do not bundle ROS 2. macOS bundles use ad-hoc signing and are not notarized. See README for runtime dependencies and installation.'
+          fi
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" ./* --clobber

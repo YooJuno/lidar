@@ -1,9 +1,13 @@
 #pragma once
 
+#include "lidar_viewer/imu_alignment.hpp"
+
 #include <array>
 #include <cstdint>
+#include <cstddef>
 #include <filesystem>
 #include <optional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -43,6 +47,7 @@ enum class InputFormat
 {
   KittiXyzi,
   OusterLegacyContainer,
+  Ros2Bag,
 };
 
 struct FrameHandle
@@ -52,6 +57,10 @@ struct FrameHandle
   std::uint64_t payload_offset{0};
   std::uint32_t payload_size{0};
   std::string label;
+  std::string bag_topic{};
+  std::int64_t bag_timestamp_ns{0};
+  std::size_t bag_duplicate_index{0};
+  std::shared_ptr<const lidar_viewer::ImuTimeline> imu_timeline{};
 };
 
 struct FrameData
@@ -62,7 +71,10 @@ struct FrameData
   float min_z{0.0f};
   float max_z{0.0f};
   float ground_z{0.0f};
+  std::string frame_id;
+  std::optional<lidar_viewer::FrameImuData> imu;
 };
 
-std::vector<FrameHandle> ResolveInputFrames(const fs::path & input);
+std::vector<FrameHandle> ResolveInputFrames(
+  const fs::path & input, const std::string & bag_topic = "/b2/points", const std::string & imu_topic = "");
 FrameData LoadFrame(const FrameHandle & handle);

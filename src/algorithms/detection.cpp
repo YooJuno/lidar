@@ -57,10 +57,10 @@ std::vector<Detection> RunDetectionPlaceholder(
 
     const float length = cluster.oriented_bounds.valid
       ? (cluster.oriented_bounds.half_length * 2.0f)
-      : (cluster.bounds.max.x - cluster.bounds.min.x);
+      : std::max(cluster.bounds.max.x - cluster.bounds.min.x, cluster.bounds.max.y - cluster.bounds.min.y);
     const float width = cluster.oriented_bounds.valid
       ? (cluster.oriented_bounds.half_width * 2.0f)
-      : (cluster.bounds.max.y - cluster.bounds.min.y);
+      : std::min(cluster.bounds.max.x - cluster.bounds.min.x, cluster.bounds.max.y - cluster.bounds.min.y);
     const float height = cluster.bounds.max.z - cluster.bounds.min.z;
     const float footprint = length * width;
     const float aspect = length / std::max(width, 1e-4f);

@@ -43,4 +43,13 @@ bool ClassifyGroundPointsGridCuda(
   const std::vector<float> & accepted_ground_z_grid,
   const std::vector<unsigned char> & accepted_ground_valid_grid,
   std::vector<unsigned char> & is_ground_mask);
+
+// CUDA backend for the fast_grid mode, separate from reference GSeg3D.
+// GPU-native two-phase grid segmentation. Unlike the legacy
+// CUDA helpers above, the grid seeding, expansion, refinement, and final
+// point mask all remain on the device.
+bool ClassifyGroundPointsGSeg3DCuda(
+  const std::vector<KittiPoint> & input,
+  const GroundRemovalParams & params,
+  std::vector<unsigned char> & is_ground_mask);
 }  // namespace lidar_viewer::algorithms

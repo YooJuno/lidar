@@ -9,4 +9,5 @@ namespace lidar_viewer
 namespace fs = std::filesystem;
 
 algorithms::PipelineConfig LoadPipelineConfig(const fs::path & path);
+fs::path ProjectResourcePath(const fs::path & relative);
 }  // namespace lidar_viewer

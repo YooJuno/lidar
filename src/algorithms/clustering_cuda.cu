@@ -1,4 +1,5 @@
 #include "lidar_viewer/algorithms/clustering_cuda.hpp"
+#include "cuda_workspace.cuh"
 
 #include <cuda_runtime.h>
 
@@ -19,9 +20,10 @@ struct DevicePoint
   float intensity;
 };
 
-__device__ std::int64_t DeviceGridKey(int x, int y)
+__device__ std::uint64_t DeviceGridKey(int x, int y)
 {
-  return (static_cast<std::int64_t>(x) << 32) ^ static_cast<std::uint32_t>(y);
+  return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(x)) << 32) |
+    static_cast<std::uint32_t>(y);
 }
 
 __global__ void BuildAssignmentsKernel(
@@ -60,26 +62,18 @@ bool BuildCellAssignmentsCuda(
   }
 
   const float cell_size = std::max(params.grid_cell_m, 0.05f);
-  DevicePoint * device_points = nullptr;
-  CudaCellAssignment * device_assignments = nullptr;
+  thread_local CudaBuffer<DevicePoint> points_buffer;
+  thread_local CudaBuffer<CudaCellAssignment> assignments_buffer;
   const std::size_t points_bytes = input.size() * sizeof(DevicePoint);
   const std::size_t assignments_bytes = input.size() * sizeof(CudaCellAssignment);
 
-  cudaError_t error = cudaMalloc(&device_points, points_bytes);
-  if (error != cudaSuccess) {
+  if (!points_buffer.Reserve(input.size()) || !assignments_buffer.Reserve(input.size())) {
     return false;
   }
-
-  error = cudaMalloc(&device_assignments, assignments_bytes);
+  auto * device_points = points_buffer.Get();
+  auto * device_assignments = assignments_buffer.Get();
+  cudaError_t error = cudaMemcpy(device_points, input.data(), points_bytes, cudaMemcpyHostToDevice);
   if (error != cudaSuccess) {
-    cudaFree(device_points);
-    return false;
-  }
-
-  error = cudaMemcpy(device_points, input.data(), points_bytes, cudaMemcpyHostToDevice);
-  if (error != cudaSuccess) {
-    cudaFree(device_assignments);
-    cudaFree(device_points);
     return false;
   }
 
@@ -91,19 +85,12 @@ bool BuildCellAssignmentsCuda(
     input.size(),
     cell_size);
   error = cudaGetLastError();
-  if (error == cudaSuccess) {
-    error = cudaDeviceSynchronize();
-  }
   if (error != cudaSuccess) {
-    cudaFree(device_assignments);
-    cudaFree(device_points);
     return false;
   }
 
   assignments.resize(input.size());
   error = cudaMemcpy(assignments.data(), device_assignments, assignments_bytes, cudaMemcpyDeviceToHost);
-  cudaFree(device_assignments);
-  cudaFree(device_points);
   if (error != cudaSuccess) {
     assignments.clear();
     return false;
