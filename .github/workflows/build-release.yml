@@ -30,7 +30,8 @@ jobs:
           sudo apt-get install -y ninja-build libglfw3-dev libglew-dev libpcl-dev libnanoflann-dev \
             ros-jazzy-rosbag2-cpp ros-jazzy-sensor-msgs ros-jazzy-tf2-msgs ros-jazzy-rclcpp \
             ros-jazzy-rclpy ros-jazzy-rmw-fastrtps-cpp ros-jazzy-rosbag2-storage-mcap ros-jazzy-rosbag2-storage-sqlite3 \
-            zenity xvfb xauth ffmpeg python3-pil python3-yaml libgl1-mesa-dri dpkg-dev
+            zenity xvfb xauth x11-utils x11-xserver-utils libxtst6 ffmpeg \
+            python3-pil python3-yaml libgl1-mesa-dri dpkg-dev
       - name: Configure
         run: |
           source /opt/ros/jazzy/setup.bash

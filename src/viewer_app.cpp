@@ -1387,6 +1387,7 @@ fs::path ExpandFolderPath(std::string path)
 void SetLivePaused(ViewerState & state, bool paused)
 {
   if (!state.live.Active() || state.live_paused == paused) return;
+  if (paused && !state.live_has_frame) return;
   state.live_paused = paused;
   std::cout << "Live display " << (paused ? "paused" : "resumed") << " at frame "
             << state.live_display_sequence << " | receiver remains active" << std::endl;
