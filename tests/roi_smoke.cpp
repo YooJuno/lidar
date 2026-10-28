@@ -73,6 +73,10 @@ int main()
     const auto drag=RoiFromDrag({5,7,0},{-3,1,0},-2,4,"drawn");
     Check(drag.center.x==1 && drag.center.y==4 && drag.center.z==-2 && drag.size.x==8 && drag.size.y==6,
       "reversed drag changed ROI dimensions");
+    const float root=std::sqrt(.5f);
+    const auto rotated_drag=RoiFromDrag({0,0,0},{2*root,6*root,0},-2,4,"rotated",45);
+    Check(std::abs(rotated_drag.size.x-4)<1e-4f && std::abs(rotated_drag.size.y-2)<1e-4f &&
+      rotated_drag.yaw_deg==45,"drawn ROI ignored view orientation");
     RoiSettings edited{true,true,{drag}};
     const auto duplicate=DuplicateRoi(drag,edited);
     Check(!PreparedRoi(edited).Contains(duplicate.center),"duplicate overlaps source center");

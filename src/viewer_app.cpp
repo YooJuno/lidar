@@ -1905,8 +1905,12 @@ void MouseButtonCallback(GLFWwindow * window, int button, int action, int)
       const auto point=RoiPointerPoint(*state,x,y,state->roi_new_z);
       if (!point) {state->ui_error="Cannot draw on the LiDAR XY plane at this tilt."; return;}
       gesture.start=*point;
+      const auto right_point=RoiPointerPoint(*state,x+10,y,state->roi_new_z);
+      if (!right_point) return;
+      const auto right=*right_point-*point;
+      const float yaw=std::atan2(right.y,right.x)*180.f/kPi;
       auto box=lidar_viewer::RoiFromDrag(*point,*point,state->roi_new_z,state->roi_new_height,
-        lidar_viewer::NextRoiName(state->roi));
+        lidar_viewer::NextRoiName(state->roi),yaw);
       state->roi.boxes.push_back(box); state->selected_roi=state->roi.boxes.size()-1;
       state->roi.enabled=true; state->roi.show_boxes=true; gesture.original=box;
     } else {
@@ -1942,7 +1946,8 @@ void CursorCallback(GLFWwindow * window, double x, double y)
       auto box=state->roi.boxes[state->selected_roi];
       try {
         if (state->roi_tool==ViewerState::RoiTool::Draw)
-          box=lidar_viewer::RoiFromDrag(state->roi_gesture.start,*point,box.center.z,box.size.z,box.name);
+          box=lidar_viewer::RoiFromDrag(state->roi_gesture.start,*point,box.center.z,box.size.z,box.name,
+            state->roi_gesture.original.yaw_deg);
         else box.center=state->roi_gesture.original.center+(*point-state->roi_gesture.start);
         lidar_viewer::ValidateRoiBox(box);
         state->roi.boxes[state->selected_roi]=box; RebuildRoiGeometry(*state);

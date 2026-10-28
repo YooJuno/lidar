@@ -63,10 +63,14 @@ inline RoiBox DuplicateRoi(const RoiBox & source, const RoiSettings & settings)
   return result;
 }
 
-inline RoiBox RoiFromDrag(Vec3 a, Vec3 b, float center_z, float height, const std::string & name)
+inline RoiBox RoiFromDrag(Vec3 a, Vec3 b, float center_z, float height, const std::string & name,
+  float yaw_deg=0)
 {
+  const float yaw=yaw_deg*kPi/180.f;
+  const auto delta=b-a;
   RoiBox box{name, true, {(a.x+b.x)*.5f, (a.y+b.y)*.5f, center_z},
-    {std::max(.05f,std::abs(b.x-a.x)),std::max(.05f,std::abs(b.y-a.y)),height},0};
+    {std::max(.05f,std::abs(delta.x*std::cos(yaw)+delta.y*std::sin(yaw))),
+     std::max(.05f,std::abs(-delta.x*std::sin(yaw)+delta.y*std::cos(yaw))),height},yaw_deg};
   ValidateRoiBox(box); return box;
 }
 
