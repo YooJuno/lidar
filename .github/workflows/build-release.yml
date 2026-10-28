@@ -53,6 +53,14 @@ jobs:
           source /opt/ros/jazzy/setup.bash
           xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_live_smoke.py \
             --viewer build/lidar_viewer --output build/test_artifacts/live
+      - name: ROI drawing, editing, undo and cached segmentation GUI test
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_roi_smoke.py \
+            --viewer build/lidar_viewer --output build/test_artifacts/roi
       - name: Package Ubuntu
         run: |
           source /opt/ros/jazzy/setup.bash

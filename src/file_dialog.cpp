@@ -23,10 +23,10 @@ void FileDialog::OpenBag(const std::filesystem::path & initial_folder)
   std::string filename = initial_folder.string();
   if (!filename.empty() && filename.back() != '/') filename += '/';
 #ifdef __APPLE__
-  const std::string script="on run argv\ntry\nset picked to choose file with prompt \"Open LiDAR bag\" default location (POSIX file (item 1 of argv))\nreturn POSIX path of picked\non error detail number code\nif code is -128 then return \"\"\nerror detail number code\nend try\nend run";
+  const std::string script="on run argv\ntry\nset picked to choose file with prompt \"Open LiDAR data\" default location (POSIX file (item 1 of argv))\nreturn POSIX path of picked\non error detail number code\nif code is -128 then return \"\"\nerror detail number code\nend try\nend run";
   std::vector<std::string> arguments{"osascript","-e",script, filename.empty() ? "/" : filename};
 #else
-  std::vector<std::string> arguments{"zenity", "--file-selection", "--title=Open LiDAR bag",
+  std::vector<std::string> arguments{"zenity", "--file-selection", "--title=Open LiDAR data",
     "--file-filter=LiDAR data | metadata.yaml *.db3 *.mcap *.bin",
     "--file-filter=All files | *", "--filename=" + filename};
 #endif
@@ -95,7 +95,7 @@ std::optional<FileDialogResult> FileDialog::Poll()
     if (WIFEXITED(status) && WEXITSTATUS(status) == 1) return FileDialogResult{};
 #endif
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
-      return FileDialogResult{{}, "File chooser failed. Select Open bag to try again."};
+      return FileDialogResult{{}, "File chooser failed. Select Open file to try again."};
     if (!output_.empty() && output_.back() == '\n') output_.pop_back();
     if (output_.empty()) {
 #ifdef __APPLE__

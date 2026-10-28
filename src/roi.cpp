@@ -40,6 +40,13 @@ Vec3 RoiCoordinateFrame::Rotate(Vec3 p) const
     rotation[6]*p.x + rotation[7]*p.y + rotation[8]*p.z};
 }
 Vec3 RoiCoordinateFrame::Transform(Vec3 p) const {return Rotate(p) + translation;}
+Vec3 RoiCoordinateFrame::InverseTransform(Vec3 p) const
+{
+  p = p - translation;
+  return {rotation[0]*p.x + rotation[3]*p.y + rotation[6]*p.z,
+    rotation[1]*p.x + rotation[4]*p.y + rotation[7]*p.z,
+    rotation[2]*p.x + rotation[5]*p.y + rotation[8]*p.z};
+}
 
 void ValidateRoiBox(const RoiBox & box)
 {
@@ -78,7 +85,12 @@ PreparedRoi::PreparedRoi(const RoiSettings & settings, const RoiCoordinateFrame 
     if (!box.enabled) continue;
     auto axes = Axes(box.yaw_deg);
     for (auto & axis : axes) axis = frame.Rotate(axis);
-    boxes_.push_back({frame.Transform(box.center), box.size * .5f, axes});
+    const auto half = box.size * .5f;
+    const Vec3 extent{
+      std::abs(axes[0].x)*half.x + std::abs(axes[1].x)*half.y + std::abs(axes[2].x)*half.z,
+      std::abs(axes[0].y)*half.x + std::abs(axes[1].y)*half.y + std::abs(axes[2].y)*half.z,
+      std::abs(axes[0].z)*half.x + std::abs(axes[1].z)*half.y + std::abs(axes[2].z)*half.z};
+    boxes_.push_back({frame.Transform(box.center), half, extent, axes});
   }
 }
 
@@ -87,6 +99,9 @@ bool PreparedRoi::Contains(Vec3 p) const
   if (!enabled_) return true;
   for (const auto & box : boxes_) {
     const Vec3 d = p - box.center;
+    // Cheap broad phase before the three oriented-axis projections.
+    if (std::abs(d.x) > box.extent.x + 2e-5f || std::abs(d.y) > box.extent.y + 2e-5f ||
+        std::abs(d.z) > box.extent.z + 2e-5f) continue;
     if (std::abs(Dot(d, box.axes[0])) <= box.half_size.x + 1e-5f &&
         std::abs(Dot(d, box.axes[1])) <= box.half_size.y + 1e-5f &&
         std::abs(Dot(d, box.axes[2])) <= box.half_size.z + 1e-5f) return true;

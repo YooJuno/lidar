@@ -54,7 +54,7 @@ def main():
             time.sleep(.1)
 
     def chooser_window():
-        return next((w for w in x11.children(x11.root) if x11.title(w) == "Open LiDAR bag"), None)
+        return next((w for w in x11.children(x11.root) if x11.title(w) == "Open LiDAR data"), None)
 
     def event(key, down):
         code = x11.x.XKeysymToKeycode(x11.display, x11.x.XStringToKeysym(key.encode()))
@@ -134,7 +134,7 @@ def main():
             x11.key(window, "space"); x11.key(window, "n"); x11.key(window, "p")
             alive()
             result["checks"]["empty_playback_controls_are_safe"] = "Indexing ROS" not in log_path.read_text(errors="replace")
-            x11.click(window, 420, 878)
+            x11.click(window, 240, 30)
             wait_for(chooser_window)
             x11.key(chooser_window(), "Escape")
             wait_for(lambda: not chooser_window())
@@ -143,13 +143,13 @@ def main():
             result["checks"]["cancel_from_empty_keeps_viewer_open"] = "Opened bag:" not in log_path.read_text(errors="replace")
             result["stage"] = "first_bag_selection"
             x11.focus(window)
-            x11.click(window, 420, 878)
+            x11.click(window, 240, 30)
             choose(bag / "metadata.yaml", "01_button_chooser")
             wait_for(lambda: f'Opened bag: "{bag}"' in log_path.read_text(errors="replace"))
             capture(x11, window, output / "02_selected_bag.png")
             result["checks"]["selected_metadata_opens_bag"] = bag.name in log_path.read_text(errors="replace")
-            # The Open bag button opens the system chooser; cancellation is benign.
-            x11.click(window, 420, 878)
+            # The Open file button opens the system chooser; cancellation is benign.
+            x11.click(window, 240, 30)
             result["stage"] = "runtime_cancel"
             wait_for(chooser_window)
             x11.key(chooser_window(), "Escape")

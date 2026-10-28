@@ -90,7 +90,7 @@ def main():
             if "Bag list: 1 recordings" not in initial_log:
                 raise AssertionError("An explicit bag unexpectedly discovered sibling data")
             result["checks"]["explicit_bag_starts_with_one_source"] = True
-            x11.click(window, 540, 872)
+            x11.click(window, 420, 878)
             shot("02_add_folder_picker")
             # The picker initially browses the current recording's parent.
             # 700x560 centered modal at (450,200), with its footer below the

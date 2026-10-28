@@ -5,7 +5,7 @@ CMake + OpenGL 기반 LiDAR 뷰어입니다. `.bin`과 ROS 2 PointCloud2 bag을 
 ## Build
 
 ```bash
-cd ~/projects/lidar
+cd ~/workspace/lidar
 source /opt/ros/jazzy/setup.bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel 2
@@ -35,12 +35,14 @@ UI는 고정 버전의 [Dear ImGui](https://github.com/ocornut/imgui/tree/f5befd
 
 ## Run
 
-입력 경로를 생략하면 **빈 뷰어가 먼저 열립니다.** 하단 **Open bag** 버튼을 누르면 시스템 파일 탐색 창이 열립니다. bag 폴더 안의 `metadata.yaml` 또는 `.db3`·`.mcap` 파일을 선택하세요. 분할 파일을 골라도 같은 폴더의 기록 전체를 엽니다. 탐색 창을 취소해도 뷰어는 계속 열려 있습니다. bag을 열기 전에는 재생·프레임 이동·타임라인이 비활성화됩니다.
+입력 경로를 생략하면 **빈 뷰어가 먼저 열립니다.** 상단 **Open file** 버튼을 누르면 시스템 파일 탐색 창이 열립니다. bag 폴더 안의 `metadata.yaml` 또는 `.db3`·`.mcap` 파일을 선택하세요. 분할 파일을 골라도 같은 폴더의 기록 전체를 엽니다. 탐색 창을 취소해도 뷰어는 계속 열려 있습니다. bag을 열기 전에는 재생·프레임 이동·타임라인이 비활성화됩니다.
 
 ```bash
 source /opt/ros/jazzy/setup.bash
 ./build/lidar_viewer --sensor-height 0.57 --imu-level --2d
 ```
+
+BIN 파일이나 단일 bag 폴더를 뷰어에 드래그해 열 수도 있습니다. 하단은 소스 선택·폴더 등록·재생·타임라인에 사용하고, 캔버스 상단에서 2D/3D·전체 맞춤·ROI 도구를 바로 선택합니다.
 
 입력 경로를 직접 주면 해당 데이터를 열어 시작합니다.
 
@@ -50,7 +52,7 @@ source /opt/ros/jazzy/setup.bash
 
 ## 실시간 LiDAR · IMU
 
-프로그램을 먼저 실행한 뒤 하단 **Live... → Connect**를 누릅니다. 센서 드라이버는 별도로 실행돼 있어야 합니다. 기본 토픽은 XT32 `/b2/points`, IMU `/vn100/imu/data_ned`이며, 연결 창에서 변경할 수 있습니다. 뷰어가 센서 설정을 바꾸거나 로봇 구동 명령을 발행하지는 않습니다.
+프로그램을 먼저 실행한 뒤 상단 **Live... → Connect**를 누릅니다. 센서 드라이버는 별도로 실행돼 있어야 합니다. 기본 토픽은 XT32 `/b2/points`, IMU `/vn100/imu/data_ned`이며, 연결 창에서 변경할 수 있습니다. 뷰어가 센서 설정을 바꾸거나 로봇 구동 명령을 발행하지는 않습니다.
 
 ```bash
 source /opt/ros/jazzy/setup.bash
@@ -78,21 +80,21 @@ source /opt/ros/jazzy/setup.bash
 배포 파일은 CPU 빌드입니다. CUDA는 소스에서 선택적으로 켭니다. Windows/macOS 배포에는 ROS 2가 포함되지 않아 ROS bag·실시간 ROS 연결은 비활성화됩니다. macOS 번들은 ad-hoc 서명이며 Apple Developer ID 서명·공증은 포함하지 않습니다.
 
 - Ubuntu: ROS 2 Jazzy 저장소를 설정한 뒤 `sudo apt install ./LiDARViewer-*.deb`, 실행은 앱 메뉴의 **LiDAR Viewer** 또는 `lidar-viewer`입니다. 실행 스크립트가 Jazzy 환경을 읽습니다.
-- Windows: ZIP을 풀고 `lidar_viewer.exe`를 실행합니다. **Open bag**에서 `.bin`도 선택할 수 있습니다.
+- Windows: ZIP을 풀고 `lidar_viewer.exe`를 실행합니다. **Open file**에서 `.bin`도 선택할 수 있습니다.
 - macOS: DMG의 `lidar_viewer.app`을 Applications에 복사하거나 ZIP의 앱을 실행합니다.
 - 패키지 빌드는 `-DLIDAR_VIEWER_USER_SETTINGS=ON`을 사용해 사용자 설정을 Windows `%APPDATA%/LiDARViewer`, macOS `~/Library/Application Support/LiDARViewer`, Ubuntu `~/.config/lidar_viewer`에 저장합니다. 기본 설정은 배포 리소스에서 읽고 사용자 설정으로 덮어씁니다. 업데이트해도 사용자 ROI를 패키지 설정으로 덮어쓰지 않습니다. `XDG_CONFIG_HOME`도 지원합니다.
 - 소스 빌드는 기존처럼 프로젝트 `config/profiles`에 저장합니다. 사용자 경로를 쓰려면 위 CMake 옵션을 켭니다.
 
 Windows 소스 빌드는 저장소의 `vcpkg.json`과 `cmake/triplets/x64-windows-release.cmake`를 사용합니다. macOS 의존성은 `brew install pcl glfw glew nanoflann ninja`로 설치합니다. 두 플랫폼 모두 기본 CI 설정은 `-DLIDAR_VIEWER_ENABLE_CUDA=OFF -DLIDAR_VIEWER_ENABLE_ROSBAG=OFF`입니다.
 
-GitHub Actions의 **Build and release**는 PR·main push·수동 실행에서 세 플랫폼을 빌드하고 CTest와 Ubuntu 실시간 GUI 검사를 실행한 뒤 패키지를 아티팩트로 올립니다. **`v*` 태그를 push하면 모든 플랫폼이 통과한 후에만 GitHub Release에 패키지와 SHA256SUMS를 게시합니다.** 릴리스용 비밀 토큰은 추가로 필요하지 않고, 해당 작업의 `GITHUB_TOKEN`에만 `contents: write` 권한을 부여합니다.
+GitHub Actions의 **Build and release**는 PR·main push·수동 실행에서 세 플랫폼을 빌드하고 CTest와 Ubuntu 실시간 GUI 검사와 ROI 생성·편집·복구 검사를 실행한 뒤 패키지를 아티팩트로 올립니다. **`v*` 태그를 push하면 모든 플랫폼이 통과한 후에만 GitHub Release에 패키지와 SHA256SUMS를 게시합니다.** 릴리스용 비밀 토큰은 추가로 필요하지 않고, 해당 작업의 `GITHUB_TOKEN`에만 `contents: write` 권한을 부여합니다.
 
 ## 수집한 ROS 2 bag 열기
 
-실행 중에는 하단 **Open bag** 버튼 또는 **Ctrl+O**로 시스템 파일 선택 창을 열 수 있습니다. 선택하면 해당 bag을 열고 첫 프레임에서 정지합니다. 취소하거나 열기에 실패하면 현재 점군을 유지합니다. 단일 bag을 고르는 동작은 상위 폴더 전체를 등록하지 않습니다.
+실행 중에는 상단 **Open file** 버튼 또는 **Ctrl+O**로 시스템 파일 선택 창을 열 수 있습니다. 선택하면 해당 bag을 열고 첫 프레임에서 정지합니다. 취소하거나 열기에 실패하면 현재 점군을 유지합니다. 단일 bag을 고르는 동작은 상위 폴더 전체를 등록하지 않습니다.
 
 ```bash
-cd ~/projects/lidar
+cd ~/workspace/lidar
 source /opt/ros/jazzy/setup.bash
 ./build/lidar_viewer \
   ~/shalom_ws/data/bags/sensors_20261023_120204_157971 \
@@ -107,7 +109,7 @@ source /opt/ros/jazzy/setup.bash
 
 폴더는 하위 폴더까지 검색하며, 같은 bag의 분할 파일이나 중복 등록은 하나로 표시합니다. 날짜는 수집 파일명 기준이며, 날짜를 알 수 없는 이름은 `Unknown date`로 표시합니다. 등록할 때 현재 데이터는 유지하고, 다른 bag을 선택하면 해당 bag만 색인한 뒤 첫 프레임에서 정지합니다. 열기에 실패하면 이전 데이터를 유지합니다.
 
-등록 경로는 `~/.config/lidar_viewer/data_folders.cfg`에 저장합니다. `XDG_CONFIG_HOME`을 지정하면 해당 경로 아래에 저장합니다. 다음 실행 때 목록을 복원하지만 bag은 자동으로 열지 않습니다. **Open bag**을 누르면 등록 폴더에서 탐색을 시작합니다. 새로운 bag을 같은 폴더에 넣었다면 폴더를 다시 추가하거나 앱을 재실행하면 목록을 갱신합니다. `--inspect`만 지정한 창 없는 실행은 등록 폴더의 최신 bag을 확인합니다.
+등록 경로는 `~/.config/lidar_viewer/data_folders.cfg`에 저장합니다. `XDG_CONFIG_HOME`을 지정하면 해당 경로 아래에 저장합니다. 다음 실행 때 목록을 복원하지만 bag은 자동으로 열지 않습니다. **Open file**을 누르면 등록 폴더에서 탐색을 시작합니다. 새로운 bag을 같은 폴더에 넣었다면 폴더를 다시 추가하거나 앱을 재실행하면 목록을 갱신합니다. `--inspect`만 지정한 창 없는 실행은 등록 폴더의 최신 bag을 확인합니다.
 
 폴더를 명령행에서 일회성으로 열 수도 있습니다.
 
@@ -119,7 +121,7 @@ source /opt/ros/jazzy/setup.bash
 - 처음에는 선택한 토픽의 프레임 시각을 색인하고, 화면에 필요한 프레임만 읽습니다. 큰 bag은 최초 색인에 시간이 걸립니다.
 - `--play` 없이 실행하면 첫 프레임에서 일시정지합니다. `Space`로 재생/정지, 타임라인으로 이동합니다. 재생 FPS는 기록 시각 간격의 중앙값으로 초기화하며, 기록 중 긴 공백을 실시간 그대로 재현하는 플레이어는 아닙니다.
 - `--sensor-height 0.57`은 측정한 라이다 높이에 따른 **표시용 Z +0.57 m**입니다. 생략하면 별도 `rosbag` 프로파일의 보정값을 사용합니다(초기값 0). bag에는 기존 BIN의 자동 지면 높이 이동을 적용하지 않습니다.
-- `rosbag` 프로파일은 기존 Gangnam/KITTI의 회전·높이 설정을 사용하지 않습니다. 처음에는 노면 제거·클러스터링이 꺼져 있으므로 원시 점군을 본 뒤 `Processing` 탭에서 켜서 비교할 수 있습니다.
+- `rosbag` 프로파일은 기존 Gangnam/KITTI의 회전·높이 설정을 사용하지 않습니다. 처음에는 노면 제거·클러스터링이 꺼져 있으므로 원시 점군을 본 뒤 `Ground` 탭에서 켜서 비교할 수 있습니다.
 - PointCloud2의 필드 offset·26바이트 stride·행 padding·endian을 읽어 XYZI를 추출합니다. 반사 강도는 읽기 단계에서 기존 방식대로 프레임별 정규화하며, 색상 표현은 기존 뷰어 설정을 따릅니다. IMU/odom 기반 deskew·SLAM은 수행하지 않습니다.
 - ROS 노드나 DDS 통신 없이 오프라인으로 읽으므로 `ros2 bag play`, 센서 드라이버, RViz는 필요 없습니다.
 
@@ -127,7 +129,7 @@ source /opt/ros/jazzy/setup.bash
 
 ### IMU 자동 수평 보정
 
-왼쪽 **Alignment → IMU auto level**을 켜면 기록된 IMU의 중력 방향이 표시 좌표계의 +Z가 되도록 roll/pitch를 보정합니다. 보정한 점군을 지면 분할에도 사용하며 yaw와 센서 높이는 기존 설정을 유지합니다. 실제 경사로는 경사로로 남고, 지형을 평면에 강제로 맞추지는 않습니다.
+왼쪽 **Align → IMU auto level**을 켜면 기록된 IMU의 중력 방향이 표시 좌표계의 +Z가 되도록 roll/pitch를 보정합니다. 보정한 점군을 지면 분할에도 사용하며 yaw와 센서 높이는 기존 설정을 유지합니다. 실제 경사로는 경사로로 남고, 지형을 평면에 강제로 맞추지는 않습니다.
 
 ```bash
 ./build/lidar_viewer ~/shalom_ws/data/bags --topic /b2/points \
@@ -143,16 +145,16 @@ source /opt/ros/jazzy/setup.bash
 
 ## Controls
 
-- 왼쪽 `Scene`: 2D/3D, 전체 맞춤·센서 시점, 색상·점 크기, 격자, UI 배율
-- 왼쪽 `Processing`: 노면 분할 방식·해당 알고리즘의 셀 크기, 클러스터링, 실험용 형상 라벨
-- 왼쪽 `Alignment`: 표시용 yaw/pitch/roll/Z. 원본 데이터는 바꾸지 않습니다.
+- 왼쪽 `View`: 2D/3D, 전체 맞춤·센서 시점, 색상·점 크기, 격자, UI 배율
+- 왼쪽 `Ground`: 노면 분할 방식·해당 알고리즘의 셀 크기, 클러스터링, 실험용 형상 라벨
+- 왼쪽 `Align`: 표시용 yaw/pitch/roll/Z. 원본 데이터는 바꾸지 않습니다.
 - 왼쪽 `ROI`: 여러 3D 박스 추가·수정·복제·삭제, 박스 내부 점만 표시
 - 하단: 폴더 추가, 날짜·이름별 bag 선택, 재생·정지, 프레임 이동, 반복, 재생 FPS, 타임라인. 드래그 중 일시정지하며 놓을 때 선택한 프레임을 읽습니다.
 - `Save profile`: 현재 프로파일에 명시적으로 저장합니다. 저장 실패는 오류로 표시하고 기존 파일을 보존합니다.
 
 - `Left drag`: 3D orbit / 2D pan
 - `Right drag`: 3D pan / 2D rotation
-- `Q` / `E`: 2D 회전. `Scene`의 회전 슬라이더·초기화 버튼도 지원합니다. 2D/3D 시점은 각각 저장합니다.
+- `Q` / `E`: 2D 회전. `View`의 회전 슬라이더·초기화 버튼도 지원합니다. 2D/3D 시점은 각각 저장합니다.
 - `Wheel`: zoom
 - `N` or `Right`: next frame
 - `P` or `Left`: previous frame
@@ -165,14 +167,15 @@ source /opt/ros/jazzy/setup.bash
 
 ## 3D ROI
 
-`ROI` 탭에서 `Add box`를 누르고 **중심 XYZ(m), 전체 크기 XYZ(m), yaw(도)**를 입력합니다. 회전은 라이다 Z축 주위의 yaw만 지원하며, 양수는 X축에서 Y축 방향입니다. yaw는 숫자 칸에 직접 입력합니다(-180~180°). 중심·크기는 `Ctrl+click`으로 직접 입력할 수 있습니다. 새 박스는 라이다 원점 중심의 20 × 20 × 6m로 만들어집니다.
+- **화면에서 생성**: `R` 또는 캔버스의 **Draw box**를 누릅니다. 2D 시점으로 전환된 뒤 마우스로 XY 영역을 드래그하면 박스가 만들어집니다. `Creation settings`의 중심 Z·높이로 3D 범위를 정합니다. 반대 방향으로 드래그해도 됩니다. `Esc`는 그리기를 취소하며, 너무 작은 클릭은 박스로 만들지 않습니다.
+- **이동**: **Move** 또는 **Move in 2D**를 누르고 박스를 드래그합니다. 높이·yaw는 유지됩니다. **Navigate** 또는 `Esc`로 카메라 조작으로 돌아갑니다. 회전한 2D 시점과 IMU 수평 보정에서도 원본 라이다 좌표로 대응합니다.
+- **숫자로 생성·편집**: ROI 탭의 **+ Box**는 현재 시점 중심에 박스를 만듭니다. 중심 XYZ(m), 전체 크기 XYZ(m), yaw(도)를 각 칸에 바로 입력할 수 있습니다. yaw는 숫자 입력만 사용하며 **Reset**으로 0도로 돌립니다. `Creation settings`에서 20×20m·4×4m·센서 전방 12×8m 프리셋을 선택할 수 있습니다.
+- **목록·복제·복구**: 목록의 체크박스는 개별 박스를 켜고 끕니다. **Duplicate / Ctrl+D**는 선택 박스의 로컬 X 방향으로 0.5m 간격을 두고 복제합니다. **Delete / Delete 키**로 삭제하며 **Undo / Ctrl+Z**, **Redo / Ctrl+Y**로 최근 64개 편집을 복구할 수 있습니다. 숫자 한 번의 편집과 드래그 한 번을 하나의 작업으로 취급합니다. 텍스트 입력 중에는 해당 입력 칸의 실행 취소를 사용합니다.
+- **표시·저장**: **Crop points**는 활성 박스들의 합집합 안에 있는 점만 표시합니다. 겹친 점은 중복되지 않으며 활성 박스가 없으면 빈 점군이 됩니다. **Outlines**는 박스 외곽선을 표시하고 선택한 박스는 노란색입니다. **Focus box**로 선택한 박스에 시점을 맞춥니다. **Save profile / Ctrl+S**로 저장하며 저장하지 않은 ROI 변경은 하단에 표시됩니다. `Coordinates & corners`에서 8개 꼭짓점을 복사할 수 있습니다. 최대 128개 박스입니다.
 
-- `Show only ROI points`: 활성 박스 중 하나에 포함되는 점만 표시합니다. 박스가 겹쳐도 점은 중복되지 않습니다. 활성 박스가 없으면 표시되는 점도 없습니다. 끄면 전체 점군으로 돌아옵니다.
-- 목록에서 박스를 선택해 수정하고 `Box enabled`로 개별 사용 여부를 바꿉니다. `Duplicate`, `Delete`, `Fit selected box`도 지원합니다. 영역을 수정하면 재생이 일시정지됩니다.
-- `Draw ROI boxes`는 2D/3D 외곽선을 표시합니다. 선택한 박스는 노란색입니다. `8 corners (raw LiDAR)`에서 꼭짓점 좌표를 확인하고 복사할 수 있습니다.
-- 좌표는 **IMU·수동 회전·Z 보정 전 원본 라이다 좌표계** 기준입니다. IMU 보정을 켜면 점군과 박스에 같은 보정을 적용합니다. KITTI 자동 지면 높이 정렬에도 선택 영역이 유지됩니다.
-- 지면분리는 전체 프레임으로 계산한 뒤 ROI를 적용합니다. 클러스터링·형상 라벨은 ROI 안의 장애물 점만 사용합니다.
-- `Save profile`을 누르면 박스 목록·활성화·외곽선 표시 설정을 현재 데이터셋 프로파일에 저장하고 다음 실행 때 복원합니다. 최대 128개 박스를 지원합니다.
+좌표는 **IMU·수동 회전·Z 보정 전 원본 라이다 좌표계** 기준입니다. 박스를 드래그하는 동안에는 외곽선을 미리 보고 놓을 때 필터를 적용합니다. ROI를 수정하면 표시 재생을 정지하며, 실시간 구독과 녹화는 계속됩니다.
+
+지면분리는 전체 프레임으로 계산해 캐시합니다. ROI 편집은 캐시를 필터링하고 ROI 안의 장애물만 클러스터링하므로 주변 지면 정보와 분류 결과가 유지됩니다. 새 프레임이나 보정·지면분리 설정 변경 시에는 캐시를 다시 만듭니다. 상태 표시줄에서 전체 처리와 ROI 처리 시간을 확인할 수 있습니다. 격자와 좌표축도 별도 GPU 버퍼를 사용해 정지 화면에서 매 프레임 다시 전송하지 않습니다.
 
 ## Notes
 

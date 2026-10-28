@@ -100,7 +100,7 @@ class X11:
 
     def viewer_window(self):
         for window in self.children(self.root):
-            if self.title(window) == "LiDAR OpenGL Viewer":
+            if self.title(window) in ("LiDAR Studio", "LiDAR OpenGL Viewer"):
                 return window
         return None
 
@@ -280,7 +280,7 @@ def main():
                     raise RuntimeError("Viewer exited after resizing")
                 result["checks"][f"resize_{width}x{height}"] = True
             x11.resize(window, 1600, 960)
-            x11.click(window, 150 * ui_scale, 147 * ui_scale)
+            x11.click(window, 105 * ui_scale, 141 * ui_scale)
             shot("06_processing_1600")
             result["checks"]["settings_unchanged"] = before_settings == settings_inventory(repo)
             if not result["checks"]["settings_unchanged"]:
