@@ -1,4 +1,5 @@
 #include "lidar_viewer/roi.hpp"
+#include "lidar_viewer/roi_editor.hpp"
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -59,6 +60,28 @@ int main()
     }
     for (const auto & box : settings.boxes)
       for (auto p : RoiCorners(box)) Check(leveled.Contains(transform.Transform(p)), "leveled boundary rejected");
+    const Vec3 original{3,-4,2};
+    const auto recovered=transform.InverseTransform(transform.Transform(original));
+    Check(std::abs(original.x-recovered.x)<1e-4f && std::abs(original.y-recovered.y)<1e-4f &&
+      std::abs(original.z-recovered.z)<1e-4f,"inverse ROI frame changed coordinates");
+    const auto from_view=RoiPointFromTopView(.2f,-.3f,1.5f,20,{2,3,4},.7f,transform,-2);
+    Check(from_view && std::abs(from_view->z+2)<1e-4f,"top-view ray missed raw height plane");
+    const auto displayed=transform.Transform(*from_view);
+    const auto expected=Vec3{2,3,4}+Vec3{std::cos(.7f),std::sin(.7f),0}*6+TopViewUp(.7f)*-6;
+    Check(std::abs(displayed.x-expected.x)<1e-4f && std::abs(displayed.y-expected.y)<1e-4f,
+      "drawing ignored rotated top view or IMU tilt");
+    const auto drag=RoiFromDrag({5,7,0},{-3,1,0},-2,4,"drawn");
+    Check(drag.center.x==1 && drag.center.y==4 && drag.center.z==-2 && drag.size.x==8 && drag.size.y==6,
+      "reversed drag changed ROI dimensions");
+    RoiSettings edited{true,true,{drag}};
+    const auto duplicate=DuplicateRoi(drag,edited);
+    Check(!PreparedRoi(edited).Contains(duplicate.center),"duplicate overlaps source center");
+    RoiHistory history; history.Record(edited); edited.boxes.push_back(duplicate);
+    const auto after=edited;
+    Check(history.Undo(edited) && edited.boxes.size()==1 && history.Redo(edited) && SameRoi(edited,after),
+      "ROI undo/redo changed box data");
+    history.Undo(edited);history.Record(edited);edited.boxes.clear();
+    Check(!history.CanRedo(),"new ROI edit retained stale redo history");
 
     const auto serialized = SerializeRoiSettings(settings);
     const auto parsed = ParseRoiSettings("profile=default\n" + serialized);

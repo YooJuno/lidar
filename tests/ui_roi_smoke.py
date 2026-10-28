@@ -61,6 +61,19 @@ def main():
         x11.x.XSync(x11.display, False)
         time.sleep(.2)
 
+    def chord(key):
+        key_event("Control_L",True);key_event(key,True);key_event(key,False);key_event("Control_L",False)
+        x11.x.XSync(x11.display,False);time.sleep(.25)
+
+    def drag(x1,y1,x2,y2,cancel=False):
+        x11.move(window,x1,y1);x11.xt.XTestFakeButtonEvent(x11.display,1,True,0)
+        x11.x.XSync(x11.display,False);x11.move(window,x2,y2)
+        if cancel: x11.key(window,"Escape")
+        x11.xt.XTestFakeButtonEvent(x11.display,1,False,0);x11.x.XSync(x11.display,False);time.sleep(.25)
+
+    def roi_lines(text):
+        return [line for line in text.splitlines() if line.startswith("roi_")]
+
     def count(expected, label, boxes=None):
         x11.click(window, 170, 850)
         inspected = subprocess.run([str(viewer), str(fixture), "--inspect"], cwd=private,
@@ -84,49 +97,64 @@ def main():
                 window = x11.viewer_window()
                 time.sleep(.1)
             x11.focus(window); x11.resize(window, 1600, 960)
-            x11.click(window, 280, 141)
-            x11.click(window, 75, 380)  # first box
-            count(2205, "default_box_and_raw_Z_alignment")
+            x11.key(window,"r")  # Opens ROI editor without a fragile tab position.
+            x11.key(window,"Escape")  # Cancel drawing mode, keeping the editor open.
+            x11.click(window,75,300)  # Numeric/preset box at view center.
+            count(2205,"create_box_at_view_center",1)
             user_profile=Path(env["XDG_CONFIG_HOME"])/"lidar_viewer/profiles/default.cfg"
             if user_profile.is_file(): profile=user_profile
-            enter(260, 646, -2)
-            for x, value in [(75, 4), (170, 2), (260, 2)]: enter(x, 714, value)
-            enter(170, 756, 90)
-            count(45, "yaw_and_full_size_edit")
-            enter(267, 756, 45, ctrl_click=False)
-            count(21, "direct_yaw_input_without_ctrl_click")
-            enter(267, 756, 90, ctrl_click=False)
-            count(45, "direct_yaw_input_updates_geometry")
-            capture(x11, window, output / "01_yaw_roi.png")
-            x11.click(window, 75, 397)  # second box
-            enter(75, 646, 8); enter(260, 646, -2)
-            for x, value in [(75, 4), (170, 2), (260, 2)]: enter(x, 714, value)
-            count(90, "multiple_boxes_union")
-            capture(x11, window, output / "02_union.png")
-            x11.click(window, 46, 227)
-            count(3125, "master_off_restores_full_cloud")
-            x11.click(window, 46, 227)
-            count(90, "master_on_restores_union")
-            x11.click(window, 46, 537)
-            count(45, "individual_box_disabled")
-            # Both boxes disabled must give an empty crop, with no fall-through.
-            x11.click(window, 100, 437)
-            x11.click(window, 46, 537)
-            count(0, "all_boxes_disabled_is_empty")
-            capture(x11, window, output / "03_empty_roi.png")
-            # Restore and exercise delete/duplicate controls after scrolling.
-            x11.wheel(window, 250, 700, -5)
-            x11.click(window, 46, 432)
-            count(45, "restore_one_box")
-            x11.click(window, 75, 760)
-            count(45, "duplicate_does_not_duplicate_points", 3)
-            x11.click(window, 166, 760)
-            count(45, "delete_duplicate", 2)
-            x11.click(window, 166, 760)
-            count(45, "delete_disabled_box", 1)
-            capture(x11, window, output / "04_scrolled_editor.png")
-            x11.click(window, 166, 760)
-            count(0, "delete_last_box_and_restore_empty_list", 0)
+            enter(270,508,-2,False)
+            for x,value in [(75,4),(170,2),(270,2)]: enter(x,564,value,False)
+            enter(120,596,90,False)
+            count(45,"direct_center_size_and_yaw_input")
+            enter(120,596,45,False)
+            count(21,"yaw_edit_changes_crop")
+            enter(120,596,90,False)
+            count(45,"yaw_restore")
+            x11.click(window,170,300)  # Distinct, adjacent duplicate.
+            count(81,"duplicate_is_offset_and_keeps_dimensions",2)
+            enter(75,508,8,False);enter(170,508,0,False);enter(120,596,0,False)
+            count(90,"multiple_boxes_union",2)
+            capture(x11,window,output/"01_editor.png")
+            x11.click(window,270,300)
+            count(45,"delete_selected_box",1)
+            chord("z");count(90,"undo_delete",2)
+            chord("y");count(45,"redo_delete",1)
+            chord("z");count(90,"restore_union",2)
+            x11.click(window,46,212);count(3125,"crop_off_restores_full_cloud")
+            x11.click(window,46,212);count(90,"crop_on_restores_union")
+            # Draw a new footprint, preserving configured raw height and live freeze semantics.
+            x11.key(window,"r")
+            drag(800,300,1100,570)
+            x11.click(window,170,850)
+            text=profile.read_text();match=re.search(r"roi_count=(\d+)",text)
+            result["checks"]["canvas_drag_creates_third_box"]=bool(match and int(match[1])==3)
+            capture(x11,window,output/"02_drawn.png")
+            chord("z");count(90,"undo_draw",2)
+            chord("y")
+            x11.click(window,170,850)
+            before_move=profile.read_text()
+            # In top view the footprint is at (800,300)..(1100,570).
+            x11.click(window,620,102)  # Canvas Move tool.
+            drag(950,420,1000,450)
+            x11.click(window,170,850)
+            result["checks"]["canvas_move_changes_box_center"]=profile.read_text()!=before_move
+            chord("z");x11.click(window,170,850)
+            result["checks"]["undo_move_restores_exact_profile_roi"]=roi_lines(profile.read_text())==roi_lines(before_move)
+            # Esc during a gesture restores the complete previous ROI set.
+            x11.key(window,"r");drag(700,250,800,350,cancel=True)
+            x11.click(window,170,850)
+            result["checks"]["escape_cancels_draw"]=roi_lines(profile.read_text())==roi_lines(before_move)
+            # Ground runs once for this frame; subsequent ROI changes reuse it.
+            x11.click(window,105,140);x11.click(window,46,222)
+            x11.key(window,"r");x11.key(window,"Escape")
+            enter(75,508,1,False);x11.click(window,170,850)
+            enter(75,508,2,False);x11.click(window,170,850)
+            passes=re.findall(r"ROI applied: .*ground passes (\d+)",(output/"viewer.log").read_text())
+            result["checks"]["roi_edits_reuse_ground_segmentation"]=len(passes)>=2 and passes[-2:]==["1","1"]
+            capture(x11,window,output/"03_cached_ground.png")
+            # Check compact and HiDPI variants separately through ui_gl_smoke.
+            if not all(result["checks"].values()): raise AssertionError(str(result["checks"]))
             # Exercise the actual pipeline with nonzero dataset Z alignment and
             # all three display rotations, both before and after segmentation.
             base = profile.read_text()
@@ -143,6 +171,7 @@ def main():
                     "2 boxes | retained 90 / 3125 points" in inspected.stdout)
                 if not result["checks"][label]: raise AssertionError(label + '\n' + inspected.stdout)
             result["checks"]["original_profiles_unchanged"] = before == settings_inventory(repo)
+            if not all(result["checks"].values()): raise AssertionError(str(result["checks"]))
             result["status"] = "passed"
     except Exception as error:
         result.update(status="failed", error=str(error), traceback=traceback.format_exc())

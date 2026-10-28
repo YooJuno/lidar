@@ -37,7 +37,7 @@ void FileDialog::OpenBag(const std::filesystem::path & folder)
     OPENFILENAMEW options{}; options.lStructSize=sizeof(options);
     options.lpstrFilter=L"LiDAR data\0metadata.yaml;*.db3;*.mcap;*.bin\0All files\0*.*\0\0";
     options.lpstrFile=buffer.data(); options.nMaxFile=static_cast<DWORD>(buffer.size());
-    options.lpstrInitialDir=initial.c_str(); options.lpstrTitle=L"Open LiDAR bag";
+    options.lpstrInitialDir=initial.c_str(); options.lpstrTitle=L"Open LiDAR data";
     options.Flags=OFN_FILEMUSTEXIST|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR|OFN_EXPLORER|OFN_ENABLEHOOK;
     options.lpfnHook=NativeState::Hook; options.lCustData=reinterpret_cast<LPARAM>(state.get());
     const bool accepted=GetOpenFileNameW(&options)!=0;

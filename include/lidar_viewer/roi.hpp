@@ -33,6 +33,7 @@ struct RoiCoordinateFrame
   Vec3 translation{};
   Vec3 Rotate(Vec3 point) const;
   Vec3 Transform(Vec3 point) const;
+  Vec3 InverseTransform(Vec3 point) const;
 };
 
 void ValidateRoiBox(const RoiBox & box);
@@ -51,7 +52,7 @@ public:
   bool RejectsAll() const {return enabled_ && boxes_.empty();}
 
 private:
-  struct Box {Vec3 center, half_size; std::array<Vec3, 3> axes;};
+  struct Box {Vec3 center, half_size, extent; std::array<Vec3, 3> axes;};
   bool enabled_;
   std::vector<Box> boxes_;
 };

@@ -26,11 +26,16 @@ def main():
     private = output / "private_project"
     (private / "build").mkdir(parents=True)
     shutil.copytree(repo / "config", private / "config")
+    profile=private/"config/profiles/rosbag.cfg"
+    # User ROI and camera preferences must not alter the test fixture.
+    text='\n'.join(line for line in profile.read_text().splitlines()
+        if not line.startswith(("roi_","camera_","projection_mode=")))
+    text+='\nprojection_mode=3d\ncamera_yaw_rad=-0.8\ncamera_pitch_rad=0.55\ncamera_distance=30\n'
     if args.roi:
-        profile = private / "config/profiles/rosbag.cfg"
-        profile.write_text(profile.read_text() + '\nroi_enabled=1\nroi_show_boxes=1\nroi_count=2\n'
+        text+='roi_enabled=1\nroi_show_boxes=1\nroi_count=2\n'+(
             'roi_box=1 "Front area" 5 0 -0.5 12 9 4 25\n'
             'roi_box=1 "Rear area" -5 0 -0.5 5 6 4 -15\n')
+    profile.write_text(text)
     viewer = private / "build/lidar_viewer"
     shutil.copy2(args.viewer.resolve(), viewer)
     bag = args.bag.expanduser().resolve()
@@ -99,7 +104,7 @@ def main():
             # Seek beyond the beginning of the bag where IMU coverage starts.
             x11.click(window, 1000, 878)
             wait_for(lambda: "IMU leveling active:" in log_path.read_text(errors="replace"))
-            x11.click(window, 215, 141)
+            x11.click(window, 163, 141)
             time.sleep(.3)
             leveled = shot("05_imu_leveling_active")
             x11.click(window, 46, 222)

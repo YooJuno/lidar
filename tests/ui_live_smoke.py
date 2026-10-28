@@ -66,7 +66,7 @@ def main():
             window = x11.viewer_window()
             x11.focus(window); x11.resize(window, 1600, 960)
             if args.connect_with_dialog:
-                x11.click(window,660,878)
+                x11.click(window,350,30)
                 shot("00_live_dialog")
                 x11.click(window,555,638)
             wait_for(lambda: "Live first frame:" in log_path.read_text(errors="replace"))
@@ -82,12 +82,12 @@ def main():
             frozen_b = shot("04_still_frozen")
             result["checks"]["pause_freezes_geometry"] = changed_pixels(frozen_a, frozen_b, crop) == 0
             # Recording is independent of the paused display.
-            x11.click(window, 770, 878)
+            x11.click(window, 420, 878)
             wait_for(lambda: "Live recording:" in log_path.read_text(errors="replace"))
             time.sleep(.8)
             frozen_recording = shot("05_recording_while_frozen")
             result["checks"]["record_does_not_unfreeze_display"] = changed_pixels(frozen_a, frozen_recording, crop) == 0
-            x11.click(window, 770, 878)
+            x11.click(window, 420, 878)
             wait_for(lambda: len(list((output / "recordings").glob("*/metadata.yaml"))) == 1)
             metadata = next((output / "recordings").glob("*/metadata.yaml"))
             data = yaml.safe_load(metadata.read_text())["rosbag2_bagfile_information"]
