@@ -108,15 +108,21 @@ jobs:
           ref: 5363acb796e576328288fae60c25304e227e9839
           path: .vcpkg
       - name: Prepare Windows cache
+        id: windows-cache
         if: runner.os == 'Windows'
         shell: pwsh
-        run: New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE
+          $image = if ($env:ImageVersion) { $env:ImageVersion } else { 'windows-2022' }
+          "image=$image" >> $env:GITHUB_OUTPUT
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: runner.os == 'Windows'
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-windows-release-${{ hashFiles('vcpkg.json', 'cmake/triplets/*') }}
-          restore-keys: vcpkg-windows-release-
+          key: vcpkg-windows-release-${{ steps.windows-cache.outputs.image }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*') }}
+          restore-keys: |
+            vcpkg-windows-release-${{ steps.windows-cache.outputs.image }}-
+            vcpkg-windows-release-
       - name: Bootstrap vcpkg
         if: runner.os == 'Windows'
         shell: pwsh
@@ -184,7 +190,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-windows-release-${{ hashFiles('vcpkg.json', 'cmake/triplets/*') }}
+          key: vcpkg-windows-release-${{ steps.windows-cache.outputs.image }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*') }}
 
   release:
     name: Publish GitHub release

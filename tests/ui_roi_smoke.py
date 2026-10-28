@@ -145,6 +145,15 @@ def main():
             x11.key(window,"r");drag(700,250,800,350,cancel=True)
             x11.click(window,170,850)
             result["checks"]["escape_cancels_draw"]=roi_lines(profile.read_text())==roi_lines(before_move)
+            # A screen-aligned rectangle remains usable after rotating the top view.
+            x11.click(window,1300,700)
+            for _ in range(3): x11.key(window,"e")
+            x11.key(window,"r");drag(800,300,1100,570)
+            x11.click(window,170,850)
+            rotated_boxes=[line for line in profile.read_text().splitlines() if line.startswith("roi_box=")]
+            result["checks"]["drawing_follows_rotated_top_view"]=len(rotated_boxes)==4 and abs(float(rotated_boxes[-1].split()[-1])-15)<.1
+            chord("z");x11.click(window,170,850)
+            result["checks"]["undo_rotated_draw_preserves_original_boxes"]=roi_lines(profile.read_text())==roi_lines(before_move)
             # Ground runs once for this frame; subsequent ROI changes reuse it.
             x11.click(window,105,140);x11.click(window,46,222)
             x11.key(window,"r");x11.key(window,"Escape")
