@@ -99,12 +99,13 @@ int main(int argc, char ** argv)
         auto frame=LoadBagFrame(frames[index]);
         const lidar_viewer::ImuMountSettings mount{true,"vn100_link_ned","pandar_xt32",180,0,0};
         const auto level=lidar_viewer::ComputeImuLeveling(frame.imu,mount);
+        std::cout<<"# frame "<<index<<" alignment: "<<level.status<<" roll="<<level.roll_deg<<" pitch="<<level.pitch_deg<<'\n';
         const auto rotation=lidar_viewer::ImuRotationFromRpy(level.roll_deg*kPi/180,level.pitch_deg*kPi/180,0);
         for (auto & point : frame.points) {
           const auto p=lidar_viewer::RotateImuVector(rotation,{point.x,point.y,point.z});
           point.x=static_cast<float>(p.x);point.y=static_cast<float>(p.y);point.z=static_cast<float>(p.z)+height;
         }
-        for (const auto * mode : {"fast_grid","gseg3d","patchworkpp","grid","ransac"}) {
+        for (const auto * mode : {"fast_grid","gseg3d","patchworkpp","fugseg","grid","ransac"}) {
           GroundRemovalParams params;params.enabled=true;params.mode=mode;params.sensor_height_m=height;
           params.sequence_id=index+1000;
           const auto started=std::chrono::steady_clock::now();

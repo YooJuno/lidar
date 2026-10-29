@@ -195,6 +195,36 @@ void TestThreeDimensionalClusters()
   Check(Canonical(RunClustering(points,params))==Membership{{0},{1,2}},"XYZ clustering used separate per-axis limits instead of Euclidean distance");
 }
 
+void TestFugSegSensorContract()
+{
+  GroundRemovalParams params;params.enabled=true;params.mode="fugseg";params.sensor_height_m=.57f;
+  std::vector<KittiPoint> cloud;cloud.reserve(152000);
+  // Above the upstream KITTI 134400-point allocation, with arbitrary order.
+  for (int i=0;i<150000;++i) {
+    const float radius=4+(i%500)*.02f,angle=(i/500)*(2*kPi/300);
+    cloud.push_back({radius*std::cos(angle),radius*std::sin(angle),0,0});
+  }
+  for (int i=0;i<100;++i) cloud.push_back({.6f+i*.025f,0,0,0});
+  const auto truth_ground=cloud.size();
+  for (int i=0;i<500;++i) cloud.push_back({8+(i%20)*.05f,3+(i/20)*.05f,.6f,1});
+  cloud.push_back({201,0,0,1});cloud.push_back({.1f,0,0,1});
+  cloud.push_back({std::numeric_limits<float>::quiet_NaN(),0,0,1});
+  std::size_t count=0;
+  for (const float height:{.3f,.57f,1.73f}) {
+    params.sensor_height_m=height;
+    const auto result=RunGroundSegmentation(cloud,params);
+    Check(result.ground_points.size()+result.non_ground_points.size()==cloud.size(),"FugSeg dropped invalid/out-of-range or large-scan points");
+    for (const auto & p:result.ground_points) Check(p.intensity==0,"FugSeg marked raised/out-of-range points as ground");
+    Check(result.ground_points.size()>=truth_ground*.99,"FugSeg retained the KITTI vehicle crop or wrong sensor-height seed");
+    if (count) Check(result.ground_points.size()==count,"FugSeg changes flat ground when sensor mounting height changes");
+    count=result.ground_points.size();
+  }
+  params.gseg3d_ground_height_m=2;
+  for (auto & p:cloud) p.z+=2;
+  const auto translated=RunGroundSegmentation(cloud,params);
+  Check(translated.ground_points.size()==count,"FugSeg did not respect the calibrated ground Z reference");
+}
+
 void TestGroundQuality()
 {
   for (const float slope : {0.f,.12f}) {
@@ -211,7 +241,7 @@ void TestGroundQuality()
     }
     cloud.push_back(cloud.front());++truth_ground;
     cloud.push_back({std::numeric_limits<float>::quiet_NaN(),0,0,1});
-    for (const auto * mode : {"fast_grid","gseg3d","patchworkpp","grid","ransac"}) {
+    for (const auto * mode : {"fast_grid","gseg3d","patchworkpp","fugseg","grid","ransac"}) {
       GroundRemovalParams params;params.enabled=true;params.mode=mode;params.max_candidate_radius_m=40;
       params.max_candidate_z=4;params.patchwork_min_points_per_patch=6;
       params.patchwork_min_range_m=0;params.sequence_id=slope==0 ? 101 : 102;
@@ -235,6 +265,7 @@ void RunAlgorithmRegressionTests()
   TestThreeDimensionalClusters();
   TestFastGroundBackends();
   TestGroundQuality();
+  TestFugSegSensorContract();
   bool rejected=false;
   try {GroundRemovalParams invalid;invalid.mode="unknown";RunGroundSegmentation({},invalid);}
   catch (const std::invalid_argument &) {rejected=true;}

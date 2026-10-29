@@ -4,3 +4,6 @@
 [submodule "third_party/patchwork_plusplus"]
 	path = third_party/patchwork_plusplus
 	url = https://github.com/url-kaist/patchwork-plusplus.git
+[submodule "third_party/fugseg"]
+	path = third_party/fugseg
+	url = https://github.com/Leo-YuLi/FugSeg.git

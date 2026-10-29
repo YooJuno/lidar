@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 256 256">
+  <title>LiDAR Studio</title>
+  <desc>A cyan point-cloud volume above a scanning ring on a dark rounded tile.</desc>
+  <rect x="8" y="8" width="240" height="240" rx="54" fill="#101d2d"/>
+  <rect x="9" y="9" width="238" height="238" rx="53" fill="none" stroke="#20364b" stroke-width="2"/>
+  <path d="M30 165 C30 196 74 222 128 222 C182 222 226 196 226 165" fill="none" stroke="#28546b" stroke-width="11" stroke-linecap="round"/>
+  <path d="M30 165 C30 181 43 193 62 203" fill="none" stroke="#43d7ee" stroke-width="11" stroke-linecap="round"/>
+  <path d="M128 42 L196 81 L196 159 L128 198 L60 159 L60 81 Z" fill="none" stroke="#54dcf0" stroke-width="12" stroke-linejoin="round"/>
+  <path d="M60 81 L128 120 L196 81 M128 120 L128 198" fill="none" stroke="#54dcf0" stroke-width="12" stroke-linejoin="round"/>
+  <path d="M128 42 L196 81 L128 120 L60 81 Z" fill="#55dbf0" fill-opacity=".07"/>
+  <circle cx="88" cy="113" r="3.5" fill="#62e3f4"/>
+  <circle cx="104" cy="132" r="5" fill="#c0f6ff"/>
+  <circle cx="88" cy="153" r="4" fill="#62e3f4"/>
+  <circle cx="108" cy="171" r="3" fill="#c0f6ff"/>
+  <circle cx="117" cy="150" r="3.5" fill="#62e3f4"/>
+  <circle cx="151" cy="135" r="5" fill="#c0f6ff"/>
+  <circle cx="173" cy="112" r="3.5" fill="#62e3f4"/>
+  <circle cx="174" cy="147" r="4" fill="#62e3f4"/>
+  <circle cx="153" cy="168" r="4" fill="#c0f6ff"/>
+  <circle cx="140" cy="181" r="3" fill="#62e3f4"/>
+  <circle cx="113" cy="88" r="3" fill="#c0f6ff"/>
+  <circle cx="141" cy="79" r="4" fill="#62e3f4"/>
+</svg>

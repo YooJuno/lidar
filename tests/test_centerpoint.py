@@ -47,6 +47,9 @@ class PrePostTests(unittest.TestCase):
         self.assertAlmostEqual(rotated_iou(a,b),1/3,places=6)
         far=a.copy();far[0]=20
         self.assertEqual(len(suppress(np.stack([a,b,far]))),2)
+        low=a.copy();low[0]=10;low[7]=.2
+        candidates=np.stack([a,b,far,low]);cached=suppress(candidates)
+        np.testing.assert_array_equal(cached[cached[:,7]>=.35],suppress(candidates[candidates[:,7]>=.35]))
 
 def model_check(folder,cloud):
     import onnxruntime as ort

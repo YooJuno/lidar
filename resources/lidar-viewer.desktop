@@ -1,8 +1,9 @@
 [Desktop Entry]
 Type=Application
-Name=LiDAR Viewer
+Name=LiDAR Studio
 Comment=Point cloud viewer, ground segmentation and live ROS 2 sensors
 Exec=lidar-viewer
-Icon=applications-science
+Icon=lidar-viewer
+StartupWMClass=lidar-viewer
 Terminal=false
 Categories=Science;Graphics;
