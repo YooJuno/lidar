@@ -1,5 +1,6 @@
 #include "lidar_viewer/imu_alignment.hpp"
 #include "lidar_viewer/camera_2d.hpp"
+#include "lidar_viewer/display_alignment.hpp"
 
 #include <cmath>
 #include <iostream>
@@ -130,12 +131,47 @@ void TestTopView()
     "Panning a rotated 2D view did not follow screen coordinates");
   Check(Near(RotateTopView(kPi-.1f, .2f), -kPi+.1f), "2D rotation failed to wrap");
 }
+
+void TestDisplayAlignmentFallback()
+{
+  const DisplayAlignment manual{12,-7,5,.57f};
+  const auto missing=ComputeImuLeveling(std::nullopt,{});
+  auto resolved=ResolveDisplayAlignment(manual,true,missing);
+  Check(!resolved.imu_active && resolved.effective.roll_deg==5 && resolved.effective.pitch_deg==-7,
+    "Requested auto leveling locked out the manual fallback without usable IMU");
+  const ImuLevelingResult valid{true,2,-3,"fixture"};
+  resolved=ResolveDisplayAlignment(manual,true,valid);
+  Check(resolved.imu_active && resolved.effective.roll_deg==2 && resolved.effective.pitch_deg==-3 &&
+    resolved.effective.yaw_deg==12 && resolved.effective.z_m==manual.z_m,
+    "Auto leveling changed yaw/height or displayed stale manual angles");
+  resolved=ResolveDisplayAlignment(manual,false,valid);
+  Check(!resolved.imu_active && resolved.effective.roll_deg==manual.roll_deg,
+    "Disabling automatic leveling lost the saved manual angles");
+  auto reset=manual;bool enabled=true;
+  ResetDisplayRotation(reset,enabled);
+  Check(!enabled && reset.yaw_deg==0 && reset.pitch_deg==0 && reset.roll_deg==0 && reset.z_m==manual.z_m,
+    "Rotation reset left IMU enabled or discarded sensor height");
+  FrameImuData raw_ned;
+  raw_ned.imu_frame="vn100_link_ned";raw_ned.lidar_frame="pandar_xt32";raw_ned.up=ImuVector{0,0,-1};
+  ImuMountSettings incorrect{true,raw_ned.imu_frame,raw_ned.lidar_frame,.7f,0,0};
+  Check(std::abs(ComputeImuLeveling(raw_ned,incorrect).roll_deg)>170,
+    "Raw NED mounting regression fixture no longer reproduces a flip");
+  incorrect.roll_deg=180;
+  const auto converted=ComputeImuLeveling(raw_ned,incorrect);
+  Check(converted.applied && std::abs(converted.roll_deg)<1e-4f && std::abs(converted.pitch_deg)<1e-4f,
+    "NED-to-FLU axis conversion left an upright sensor upside down");
+  raw_ned.up=ImuVector{0,0,1};  // A prepared FLU vector must not be flipped a second time.
+  incorrect.roll_deg=0;
+  const auto prepared=ComputeImuLeveling(raw_ned,incorrect);
+  Check(prepared.applied && std::abs(prepared.roll_deg)<1e-4f,
+    "Prepared FLU vectors did not accept the identity mounting preset");
+}
 }  // namespace
 
 int main()
 {
   try {
-    TestLevelingGeometry(); TestStaticTransforms(); TestEstimationAndTime(); TestTopView();
+    TestLevelingGeometry(); TestStaticTransforms(); TestEstimationAndTime(); TestTopView(); TestDisplayAlignmentFallback();
     std::cout << "IMU leveling and 2D camera checks passed\n";
     return 0;
   } catch (const std::exception & error) { std::cerr << error.what() << '\n'; return 1; }
