@@ -331,6 +331,16 @@ python3 tests/test_centerpoint.py
 
 점군·3D ROI 박스·스캔 링을 표현한 `resources/icons/lidar-studio.svg`가 아이콘 원본입니다. Windows 실행 파일에는 다중 해상도 ICO, macOS 앱 번들에는 ICNS, Ubuntu에는 hicolor PNG/SVG 및 desktop 연결을 포함합니다. 체크아웃에서 직접 실행할 때에도 창/작업 표시줄 아이콘을 지정합니다. 생성한 파일을 저장소에 포함하므로 일반 빌드에는 이미지 변환 도구가 필요 없습니다. 아이콘을 수정한 후에는 `uv run --with pillow --with cairosvg tools/generate_app_icons.py`로 다시 생성할 수 있습니다.
 
+소스의 `build/lidar_viewer`를 직접 실행할 때 Ubuntu 독·앱 메뉴의 아이콘을 연결하려면 한 번 등록합니다. 창 아이콘과 별도로 GNOME이 사용하는 `lidar-viewer.desktop` 항목이 필요합니다.
+
+```bash
+cmake --build build --target install-user-desktop
+# 다른 빌드 폴더를 사용할 때
+python3 tools/install_linux_desktop.py --binary /absolute/path/to/lidar_viewer
+```
+
+등록은 sudo 없이 사용자 `~/.local/bin/lidar-viewer`와 `~/.local/share/applications/lidar-viewer.desktop`, 사용자 아이콘 폴더에만 기록합니다. `XDG_DATA_HOME`도 따릅니다. 이후 앱 메뉴의 **LiDAR Studio** 또는 기존 `build/lidar_viewer` 실행 모두 같은 아이콘에 연결됩니다. 이미 실행 중인 창은 앱을 다시 켜면 새 등록을 사용합니다. 배포 패키지는 시스템 desktop 항목을 함께 설치합니다.
+
 ## FugSeg 지면분리
 
 **Ground → Method → FugSeg**에서 [FugSeg 원본 구현](https://github.com/Leo-YuLi/FugSeg)을 선택할 수 있습니다. [IEEE TITS 2026 논문](https://doi.org/10.1109/TITS.2026.3682176)의 불확실성 기반 극좌표 격자 방식으로, 반사 잡음·가림 구간을 고려해 지면 높이를 전파한 뒤 점 단위로 분리합니다. CPU에서 실행하며 별도 학습 모델이나 GPU는 필요 없습니다. 기존 방식을 포함해 총 6종을 선택할 수 있습니다.
