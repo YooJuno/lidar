@@ -120,7 +120,9 @@ target_link_libraries(lidar_viewer_gseg3d INTERFACE ${PCL_LIBRARIES} nanoflann::
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/patchwork_plusplus/cpp/patchworkpp/src/patchworkpp.cpp")
   message(FATAL_ERROR "Missing Patchwork++ submodule. Run: git submodule update --init --recursive")
 endif()
-find_package(Eigen3 3.3 REQUIRED NO_MODULE)
+# PCL may provide Eigen 3 or Eigen 5 under the same Eigen3 package/target.
+# A requested 3.x version rejects compatible Eigen 5 installations.
+find_package(Eigen3 REQUIRED NO_MODULE)
 add_library(lidar_viewer_patchworkpp STATIC
   third_party/patchwork_plusplus/cpp/patchworkpp/src/patchworkpp.cpp
   third_party/patchwork_plusplus/cpp/common/src/plane_fit.cpp)
