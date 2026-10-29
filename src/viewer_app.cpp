@@ -16,6 +16,7 @@
 #include "lidar_viewer/camera_2d.hpp"
 #include "lidar_viewer/roi.hpp"
 #include "lidar_viewer/roi_editor.hpp"
+#include "lidar_viewer/display_alignment.hpp"
 #include "lidar_viewer/file_dialog.hpp"
 #include "lidar_viewer/live_io.hpp"
 #include "lidar_viewer/platform.hpp"
@@ -344,13 +345,7 @@ struct GridSettings
   int count{20};
 };
 
-struct CalibrationSettings
-{
-  float yaw_deg{0.0f};
-  float pitch_deg{0.0f};
-  float roll_deg{0.0f};
-  float z_m{0.0f};
-};
+using CalibrationSettings=lidar_viewer::DisplayAlignment;
 
 std::string FileDisplayName(const fs::path & path)
 {
@@ -903,14 +898,13 @@ void ApplyCalibration(ViewerState & state, const FrameData * source = nullptr,
 {
   const auto started=std::chrono::steady_clock::now();
   FrameData frame=source ? *source : state.base_frame;
-  auto calibration=state.calibration;
   lidar_viewer::ImuLevelingResult leveling;
   leveling.status="Off";
   if (state.imu_level_enabled) {
     leveling=lidar_viewer::ComputeImuLeveling(frame.imu,state.imu_mount);
-    if (leveling.applied) {calibration.roll_deg=leveling.roll_deg; calibration.pitch_deg=leveling.pitch_deg;}
   }
-  const auto transform=BuildCalibrationTransform(calibration);
+  const auto resolved=lidar_viewer::ResolveDisplayAlignment(state.calibration,state.imu_level_enabled,leveling);
+  const auto transform=BuildCalibrationTransform(resolved.effective);
   lidar_viewer::RoiCoordinateFrame coordinates;
   coordinates.rotation=transform.rotation;
   coordinates.translation=coordinates.Rotate({0,0,-source_ground_offset.value_or(state.global_ground_offset)})+
@@ -2674,52 +2668,120 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     }
     if (begin_tab("Align")) {
       SectionTitle("IMU leveling");
-      reprocess |= ImGui::Checkbox("IMU auto level", &state.imu_level_enabled);
-      const auto available = lidar_viewer::ComputeImuLeveling(state.base_frame.imu, state.imu_mount);
-      ImGui::TextWrapped("%s", state.imu_level_enabled ? state.imu_level_result.status.c_str() : available.status.c_str());
-      Tip("Align gravity with +Z before ground segmentation. Yaw and sensor height remain adjustable.");
-      if (state.base_frame.imu && !state.base_frame.imu->topic.empty()) {
-        const auto & imu = *state.base_frame.imu;
-        ImGui::TextWrapped("Topic: %s", imu.topic.c_str());
-        if (imu.up) ImGui::TextDisabled("Sample offset: %.1f ms", imu.skew_ms);
-        ImGui::TextDisabled("Clock: %s received", state.live_mode ? "live" : "bag");
-        if (ImGui::CollapsingHeader("IMU mounting rotation")) {
-          ImGui::TextWrapped("%s -> %s", imu.imu_frame.c_str(), imu.lidar_frame.c_str());
-          if (ImGui::Checkbox("Use profile mount rotation", &state.imu_mount.confirmed)) {
-            if (state.imu_mount.confirmed) {
-              state.imu_mount.imu_frame = imu.imu_frame;
-              state.imu_mount.lidar_frame = imu.lidar_frame;
-            }
-            reprocess = true;
+      reprocess|=ImGui::Checkbox("IMU auto level",&state.imu_level_enabled);
+      const auto available=lidar_viewer::ComputeImuLeveling(state.base_frame.imu,state.imu_mount);
+      const auto resolved=lidar_viewer::ResolveDisplayAlignment(state.calibration,state.imu_level_enabled,available);
+      const bool automatic=resolved.imu_active;
+      ImGui::TextColored(automatic ? ImVec4(.42f,.85f,.65f,1) :
+        (state.imu_level_enabled ? ImVec4(1,.75f,.42f,1) : ImVec4(.7f,.8f,.9f,1)),"%s",
+        automatic ? "AUTO / IMU ACTIVE" : (state.imu_level_enabled ? "MANUAL FALLBACK" : "MANUAL"));
+      ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,{8*s,5*s});
+      ImGui::BeginChild("AlignmentStatus",{0,80*s},ImGuiChildFlags_None,
+        ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse);
+      const bool known_raw_pair=state.base_frame.imu && state.base_frame.imu->imu_frame=="vn100_link_ned" &&
+        state.base_frame.imu->lidar_frame=="pandar_xt32" && !state.base_frame.imu->imu_to_lidar &&
+        state.base_frame.imu->up && state.base_frame.imu->up->z<-.5;
+      if (available.applied && std::abs(available.roll_deg)>90 && known_raw_pair) {
+        ImGui::TextWrapped("Mount axes produce a near-180 deg roll correction.");
+        if (ImGui::Button("Use NED -> FLU axes##FlipFix",{-1,0})) {
+          state.imu_mount={true,"vn100_link_ned","pandar_xt32",180,0,0};reprocess=true;
+        }
+        Tip("For raw VN100 NED/FRD vectors paired with an FLU XT32. This changes only the mounting-axis conversion; display offsets remain unchanged. Save profile to persist it.");
+      } else {
+        ImGui::TextWrapped("%s",(!state.imu_level_enabled && available.applied) ?
+          "IMU is available. Auto level is off." : available.status.c_str());
+        if (automatic && std::abs(available.roll_deg)>90)
+          ImGui::TextWrapped("Large roll: verify mount axes.");
+        else if (state.imu_level_enabled) ImGui::TextWrapped("%s",automatic ?
+          "Pitch/roll below are from IMU." : "Using editable manual pitch / roll.");
+      }
+      ImGui::EndChild();ImGui::PopStyleVar();
+      SectionTitle("Applied display transform");
+      if (ImGui::BeginTable("AlignmentValues",2,ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Axis",ImGuiTableColumnFlags_WidthFixed,92*s);
+        ImGui::TableSetupColumn("Value",ImGuiTableColumnFlags_WidthStretch);
+        const auto input=[&](const char * label,const char * id,float & value,bool read_only,const char * format,float step,bool height=false) {
+          ImGui::TableNextRow();ImGui::TableSetColumnIndex(0);ImGui::AlignTextToFramePadding();ImGui::TextUnformatted(label);
+          ImGui::TableSetColumnIndex(1);ImGui::SetNextItemWidth(-1);
+          const float previous=value;
+          const bool changed=ImGui::InputFloat(id,&value,read_only ? 0 : step,read_only ? 0 : step*10,format,
+            read_only ? ImGuiInputTextFlags_ReadOnly : 0);
+          if (read_only) Tip("Controlled by IMU. Turn off auto level to edit the saved manual angle.");
+          else Tip(height ? "Display height in metres (-5 to 5)." : "Type an angle in degrees. Full turns wrap into -180 to 180.");
+          if (changed && !read_only) {
+            if (!std::isfinite(value)) {value=previous;state.ui_error="Alignment values must be finite.";return false;}
+            value=height ? std::clamp(value,-5.f,5.f) : std::remainder(value,360.f);
           }
-          ImGui::SetNextItemWidth(-1);
-          reprocess |= ImGui::SliderFloat("##ImuMountRoll", &state.imu_mount.roll_deg, -180, 180, "Mount roll: %.1f deg", ImGuiSliderFlags_AlwaysClamp);
-          ImGui::SetNextItemWidth(-1);
-          reprocess |= ImGui::SliderFloat("##ImuMountPitch", &state.imu_mount.pitch_deg, -180, 180, "Mount pitch: %.1f deg", ImGuiSliderFlags_AlwaysClamp);
-          ImGui::SetNextItemWidth(-1);
-          reprocess |= ImGui::SliderFloat("##ImuMountYaw", &state.imu_mount.yaw_deg, -180, 180, "Mount yaw: %.1f deg", ImGuiSliderFlags_AlwaysClamp);
-          Tip("Static TF takes priority. Profile rotation is used only for the configured frame pair.");
+          return changed && !read_only;
+        };
+        reprocess|=input("Yaw","##Yaw",state.calibration.yaw_deg,false,"%.2f deg",.1f);
+        float pitch=resolved.effective.pitch_deg,roll=resolved.effective.roll_deg;
+        if (input(automatic ? "Pitch (IMU)" : "Pitch","##Pitch",pitch,automatic,"%.2f deg",.1f)) {
+          state.calibration.pitch_deg=pitch;reprocess=true;
+        }
+        if (input(automatic ? "Roll (IMU)" : "Roll","##Roll",roll,automatic,"%.2f deg",.1f)) {
+          state.calibration.roll_deg=roll;reprocess=true;
+        }
+        reprocess|=input("Height Z","##Z",state.calibration.z_m,false,"%.3f m",.01f,true);
+        ImGui::EndTable();
+      }
+      const float half=(ImGui::GetContentRegionAvail().x-10*s)*.5f;
+      if (ImGui::Button("Reset rotation",{half,0})) {
+        lidar_viewer::ResetDisplayRotation(state.calibration,state.imu_level_enabled);reprocess=true;
+      }
+      Tip("Turn off IMU correction and reset yaw/pitch/roll to zero. Keep sensor height and mount settings.");
+      ImGui::SameLine();
+      if (ImGui::Button("Reset all",{half,0})) {
+        state.calibration={};state.imu_level_enabled=false;reprocess=true;
+      }
+      Tip("Turn off IMU correction and reset display angles and height. Sensor mounting settings are preserved.");
+      if (state.base_frame.imu && !state.base_frame.imu->topic.empty()) {
+        const auto & imu=*state.base_frame.imu;
+        ImGui::TextDisabled("%s -> %s",imu.imu_frame.c_str(),imu.lidar_frame.c_str());
+        Tip(imu.topic.c_str());
+        if (imu.up) ImGui::TextDisabled("%s clock | offset %.1f ms",state.live_mode ? "Live" : "Bag",imu.skew_ms);
+        const bool static_mount=imu.imu_to_lidar.has_value();
+        const bool matches=state.imu_mount.confirmed && state.imu_mount.imu_frame==imu.imu_frame &&
+          state.imu_mount.lidar_frame==imu.lidar_frame;
+        ImGui::TextDisabled("Mount: %s",static_mount ? "recorded static TF" : (matches ? "profile" : "not configured for this frame"));
+        if (ImGui::CollapsingHeader("Sensor mounting (advanced)")) {
+          ImGui::TextWrapped("Sensor-axis conversion, not the floor tilt. Display corrections are below.");
+          if (static_mount) ImGui::TextWrapped("Static TF is active; profile mounting values are not used.");
+          ImGui::BeginDisabled(static_mount);
+          if (ImGui::Checkbox("Use profile mount",&state.imu_mount.confirmed)) {
+            if (state.imu_mount.confirmed) {
+              state.imu_mount.imu_frame=imu.imu_frame;state.imu_mount.lidar_frame=imu.lidar_frame;
+            }
+            reprocess=true;
+          }
+          ImGui::TextWrapped("Profile pair: %s -> %s",state.imu_mount.imu_frame.c_str(),state.imu_mount.lidar_frame.c_str());
+          if (!matches && state.imu_mount.confirmed && ImGui::Button("Use current frame pair",{-1,0})) {
+            state.imu_mount.imu_frame=imu.imu_frame;state.imu_mount.lidar_frame=imu.lidar_frame;reprocess=true;
+          }
+          float mount[]{state.imu_mount.roll_deg,state.imu_mount.pitch_deg,state.imu_mount.yaw_deg};
+          ImGui::TextUnformatted("Mount roll / pitch / yaw (deg)");ImGui::SetNextItemWidth(-1);
+          if (ImGui::InputFloat3("##ImuMountRpy",mount,"%.2f")) {
+            if (std::all_of(mount,mount+3,[](float v){return std::isfinite(v);})) {
+              state.imu_mount.roll_deg=std::remainder(mount[0],360.f);
+              state.imu_mount.pitch_deg=std::remainder(mount[1],360.f);
+              state.imu_mount.yaw_deg=std::remainder(mount[2],360.f);reprocess=true;
+            } else state.ui_error="Mount angles must be finite.";
+          }
+          if (imu.imu_frame=="vn100_link_ned" && imu.lidar_frame=="pandar_xt32") {
+            if (ImGui::Button("Raw NED -> FLU",{half,0})) {
+              state.imu_mount={true,imu.imu_frame,imu.lidar_frame,180,0,0};reprocess=true;
+            }
+            Tip("Raw VN100 NED/FRD vectors: roll 180, pitch/yaw 0. This is an axis conversion, not a floor-tilt adjustment.");
+            ImGui::SameLine();
+            if (ImGui::Button("Prepared FLU",{half,0})) {
+              state.imu_mount={true,imu.imu_frame,imu.lidar_frame,0,0,0};reprocess=true;
+            }
+            Tip("Only for IMU vectors that have already been converted to FLU by an adapter. Do not apply the 180-degree conversion twice.");
+          }
+          ImGui::EndDisabled();
         }
       }
-      if (state.imu_level_result.applied)
-        ImGui::TextDisabled("Roll %.2f deg / Pitch %.2f deg", state.imu_level_result.roll_deg, state.imu_level_result.pitch_deg);
-      SectionTitle("Display transform");
-      ImGui::TextWrapped("Adjust the view frame only. The original dataset is never changed.");
-      ImGui::SetNextItemWidth(-1);
-      reprocess |= ImGui::SliderFloat("##Yaw", &state.calibration.yaw_deg, -180, 180, "Yaw: %.2f deg", ImGuiSliderFlags_AlwaysClamp);
-      ImGui::BeginDisabled(state.imu_level_enabled);
-      ImGui::SetNextItemWidth(-1);
-      reprocess |= ImGui::SliderFloat("##Pitch", &state.calibration.pitch_deg, -180, 180, "Pitch: %.2f deg", ImGuiSliderFlags_AlwaysClamp);
-      ImGui::SetNextItemWidth(-1);
-      reprocess |= ImGui::SliderFloat("##Roll", &state.calibration.roll_deg, -180, 180, "Roll: %.2f deg", ImGuiSliderFlags_AlwaysClamp);
-      ImGui::EndDisabled();
-      ImGui::SetNextItemWidth(-1);
-      reprocess |= ImGui::SliderFloat("##Z", &state.calibration.z_m, -5, 5, "Z offset: %.3f m", ImGuiSliderFlags_AlwaysClamp);
-      ImGui::TextDisabled("Ctrl+click a slider to enter a value.");
-      if (ImGui::Button("Reset alignment", {-1, 0})) {
-        state.calibration = {0, 0, 0, 0};
-        reprocess = true;
-      }
+      ImGui::TextWrapped("Display coordinates only. Raw input and recorded bags are unchanged.");
       ImGui::EndTabItem();
     }
     if (begin_tab("ROI")) {
