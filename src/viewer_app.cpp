@@ -387,6 +387,7 @@ struct CameraState
 
 struct ViewerState
 {
+  enum class GroundView {All, Ground, Obstacles};
   struct BagLoadResult
   {
     std::vector<FrameHandle> frames;
@@ -471,6 +472,7 @@ struct ViewerState
   lidar_viewer::UiLayout ui_layout;
   std::string ui_error;
   bool ground_removal_enabled{false};
+  GroundView ground_view{GroundView::All};
   std::size_t ground_removed_count{0};
   double playback_fps{8.0};
   std::optional<double> input_fps_estimate;
@@ -526,6 +528,25 @@ struct ViewerState
   std::optional<std::size_t> requested_frame;
   std::optional<std::size_t> prefetched_index;
 };
+
+struct VisiblePointRange {std::size_t first{0}, count{0};};
+
+VisiblePointRange VisiblePoints(const ViewerState & state)
+{
+  const auto total=state.frame.points.size(),ground=std::min(total,state.ground_removed_count);
+  switch (state.ground_view) {
+    case ViewerState::GroundView::Ground:return {total-ground,ground};
+    case ViewerState::GroundView::Obstacles:return {0,total-ground};
+    case ViewerState::GroundView::All:return {0,total};
+  }
+  return {0,total};
+}
+
+const char * GroundViewKey(ViewerState::GroundView mode)
+{
+  return mode==ViewerState::GroundView::Ground ? "ground" :
+    mode==ViewerState::GroundView::Obstacles ? "obstacles" : "all";
+}
 
 Vec3 CameraPosition(const CameraState & camera)
 {
@@ -1317,6 +1338,7 @@ void CompleteBagLoad(ViewerState & state)
       staged.calibration = state.calibration;
       staged.algorithm_config = state.algorithm_config;
       staged.ground_removal_enabled = state.ground_removal_enabled;
+      staged.ground_view=state.ground_view;
       staged.imu_level_enabled = state.imu_level_enabled;
       staged.imu_mount = state.imu_mount;
       staged.roi = state.roi;
@@ -1362,6 +1384,7 @@ void CompleteBagLoad(ViewerState & state)
       state.imu_mount = staged.imu_mount;
       state.algorithm_config = staged.algorithm_config;
       state.ground_removal_enabled = staged.ground_removal_enabled;
+      state.ground_view=staged.ground_view;
       state.camera = staged.camera;
       state.grid_settings = staged.grid_settings;
       state.grid.dirty = true;
@@ -1640,6 +1663,7 @@ void SaveSettings(ViewerState & state)
   out << "camera_2d_distance=" << camera_snapshot.saved_2d_view.distance << '\n';
   out << "camera_2d_valid=" << (camera_snapshot.saved_2d_view.valid ? 1 : 0) << '\n';
   out << "ground_removal_enabled=" << (state.ground_removal_enabled ? 1 : 0) << '\n';
+  out << "ground_view=" << GroundViewKey(state.ground_view) << '\n';
   out << "clustering_enabled=" << (state.algorithm_config.clustering.enabled ? 1 : 0) << '\n';
   out << "detection_enabled=" << (state.algorithm_config.detection.enabled ? 1 : 0) << '\n';
   out << "calibration_yaw_deg=" << state.calibration.yaw_deg << '\n';
@@ -1789,6 +1813,11 @@ void LoadSettingsFile(ViewerState & state, const fs::path & path)
         state.camera.saved_2d_view.valid = (ParseStrictInt(value) != 0);
       } else if (key == "ground_removal_enabled") {
         state.ground_removal_enabled = (ParseStrictInt(value) != 0);
+      } else if (key=="ground_view") {
+        if (value=="all") state.ground_view=ViewerState::GroundView::All;
+        else if (value=="ground") state.ground_view=ViewerState::GroundView::Ground;
+        else if (value=="obstacles") state.ground_view=ViewerState::GroundView::Obstacles;
+        else throw std::invalid_argument("Unknown ground display mode");
       } else if (key == "clustering_enabled") {
         state.algorithm_config.clustering.enabled = (ParseStrictInt(value) != 0);
       } else if (key == "detection_enabled") {
@@ -1844,6 +1873,7 @@ void LoadSettingsFile(ViewerState & state, const fs::path & path)
 void LoadSettings(ViewerState & state)
 {
   const auto app_scale=state.ui_scale;
+  state.ground_view=ViewerState::GroundView::All;
 #ifdef LIDAR_VIEWER_USER_SETTINGS
   LoadSettingsFile(state,lidar_viewer::ProjectResourcePath(kProfilesDir)/(state.dataset_profile+".cfg"));
 #endif
@@ -1853,6 +1883,7 @@ void LoadSettings(ViewerState & state)
   }
   state.saved_roi=state.roi; state.roi_history.Clear();
   if (state.app_settings_loaded) state.ui_scale=app_scale;
+  if (state.ground_view!=ViewerState::GroundView::All) state.ground_removal_enabled=true;
 }
 
 
@@ -2582,7 +2613,7 @@ void BuildRoiEditor(ViewerState & state)
   ImGui::Checkbox("Crop points",&state.roi.enabled);
   ImGui::SameLine(ImGui::GetWindowContentRegionMax().x-30*s);
   if (IconButton("##Outlines",UiIcon::Eye,"Show box outlines",s,state.roi.show_boxes)) state.roi.show_boxes=!state.roi.show_boxes;
-  ImGui::TextDisabled("%zu %s  |  %s points visible",state.roi.boxes.size(),state.roi.boxes.size()==1 ? "box" : "boxes",CountText(state.frame.points.size()).c_str());
+  ImGui::TextDisabled("%zu %s  |  %s points visible",state.roi.boxes.size(),state.roi.boxes.size()==1 ? "box" : "boxes",CountText(VisiblePoints(state).count).c_str());
   ImGui::Spacing();
   ImGui::BeginDisabled(state.roi_gesture.active || state.roi.boxes.size()>=lidar_viewer::kMaxRoiBoxes);
   if (IconButton("##AddRoi",UiIcon::Plus,"Add a box at the view center. Drag its handles to size it, or use Draw on the canvas.",s,false,"New")) {
@@ -2937,8 +2968,20 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     if (begin_tab("Ground")) {
       auto & ground = state.algorithm_config.ground_removal;
       SectionTitle("Ground segmentation");
-      reprocess |= ImGui::Checkbox("Highlight ground", &state.ground_removal_enabled);
-      ImGui::TextDisabled("Ground points are shown in red.");
+      if (ImGui::Checkbox("Classify ground", &state.ground_removal_enabled)) {
+        reprocess=true;
+        if (!state.ground_removal_enabled) state.ground_view=ViewerState::GroundView::All;
+      }
+      ImGui::TextDisabled("Show");ImGui::SetNextItemWidth(-1);
+      int ground_view=static_cast<int>(state.ground_view);
+      if (ImGui::Combo("##GroundView",&ground_view,"All points\0Ground only\0Obstacles only\0")) {
+        state.ground_view=static_cast<ViewerState::GroundView>(ground_view);
+        if (state.ground_view!=ViewerState::GroundView::All && !state.ground_removal_enabled) {
+          state.ground_removal_enabled=true;reprocess=true;
+        }
+      }
+      Tip("Display classified points only. ROI remains active. Switching views reuses the existing result and keeps playback running.");
+      ImGui::TextDisabled("Method");
       const char * modes[] = {"fast_grid", "gseg3d", "patchworkpp", "grid", "ransac"};
       const char * labels[] = {"Fast grid", "GSeg3D", "Patchwork++", "Grid", "RANSAC"};
       int mode = 0;
@@ -3137,11 +3180,11 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   }
   else if (state.requested_frame) ImGui::TextDisabled("Reading frame %zu...",*state.requested_frame+1);
   else if (!state.transient_status.empty()) ImGui::TextColored({.44f, .86f, .68f, 1}, "%s", state.transient_status.c_str());
-  else if (state.live_mode) ImGui::TextDisabled("%zu points | display %llu / received %llu | %s", state.frame.points.size(),
+  else if (state.live_mode) ImGui::TextDisabled("%zu points | display %llu / received %llu | %s", VisiblePoints(state).count,
     static_cast<unsigned long long>(state.live_display_sequence), static_cast<unsigned long long>(state.live_stats.clouds),
     !state.live_stats.connected ? "disconnected" : (state.live_paused ? "frozen" : (state.live_stats.cloud_age_ms > 1000 ? "stream stale" : "live")));
   else if (!has_input) ImGui::TextDisabled("Open a file, drop a bag, or connect live sensors.");
-  else ImGui::TextDisabled("%zu points   |   %s", state.frame.points.size(), state.frames[state.current_index].label.c_str());
+  else ImGui::TextDisabled("%zu points   |   %s", VisiblePoints(state).count, state.frames[state.current_index].label.c_str());
   ImGui::PopClipRect();
   if (layout.status.w > 700.f * s) {
     ImGui::SameLine(std::max(450.f * s, layout.status.w - 360.f * s));
@@ -3220,15 +3263,18 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     if (ImGui::Button(state.live_mode ? "Live settings" : "Connect live",{135*s,0})) state.open_live_dialog=true;
     ImGui::End();
   }
-  if (has_input && state.roi.enabled && state.frame.points.empty() && !state.base_frame.points.empty() &&
+  if (has_input && VisiblePoints(state).count==0 && !state.base_frame.points.empty() &&
       !state.loading_bag_source && state.roi_tool==ViewerState::RoiTool::Navigate &&
       !ImGui::IsPopupOpen(nullptr,ImGuiPopupFlags_AnyPopup) && view.w>300*s && view.h>180*s) {
     const float width=std::min(440*s,view.w-32*s);
     BeginPanel("Empty region",{view.x+(view.w-width)*.5f,view.y+(view.h-156*s)*.5f,width,156*s},false);
-    ImGui::TextUnformatted("No points inside your ROI");
-    ImGui::TextWrapped("The recording is loaded. Adjust the boxes or inspect the full cloud.");
-    if (ImGui::Button("Show full cloud")) {
-      state.roi_history.Record(state.roi);state.roi.enabled=false;state.roi_pending=true;
+    const bool roi_empty=state.roi.enabled && state.frame.points.empty();
+    ImGui::TextUnformatted(roi_empty ? "No points inside your ROI" :
+      state.ground_view==ViewerState::GroundView::Ground ? "No ground points to show" : "No obstacle points to show");
+    ImGui::TextWrapped("%s",roi_empty ? "Adjust the boxes or inspect the full cloud." : "Check ground settings or show both classes.");
+    if (ImGui::Button(roi_empty ? "Show full cloud" : "Show all points")) {
+      if (roi_empty) {state.roi_history.Record(state.roi);state.roi.enabled=false;state.roi_pending=true;state.ground_view=ViewerState::GroundView::All;}
+      else state.ground_view=ViewerState::GroundView::All;
     }
     ImGui::End();
   }
@@ -3248,7 +3294,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   }
   if (state.live_mode && (!state.live_stats.record_error.empty() || state.live_stats.record_dropped))
     draw->AddText({view.x + 14.f*s, view.y + view.h - 48.f*s}, IM_COL32(255,120,100,255), "Recording error - open Live for details");
-  if (has_input && state.ground_removal_enabled) {
+  if (has_input && state.ground_removal_enabled && state.ground_view!=ViewerState::GroundView::Obstacles) {
     draw->AddCircleFilled({view.x + 18.f * s, view.y + view.h - 18.f * s}, 4.f * s, IM_COL32(255, 75, 65, 255));
     draw->AddText({view.x + 30.f * s, view.y + view.h - 26.f * s}, muted, "Ground");
   }
@@ -3359,6 +3405,7 @@ void UploadClusterBoxes(ViewerState & state)
 
 void RenderClusterBoxes(ViewerState & state, const Mat4 & mvp)
 {
+  if (state.ground_view==ViewerState::GroundView::Ground) return;
   if (
     (!state.algorithm_config.clustering.enabled && !state.algorithm_config.detection.enabled) ||
     state.cluster_boxes.batches.empty())
@@ -3610,6 +3657,10 @@ int RunViewer(int argc, char ** argv)
     if (inspect) {
       std::cout << "ROI: " << (state.roi.enabled ? "on" : "off") << " | " << state.roi.boxes.size()
                 << " boxes | retained " << state.frame.points.size() << " / " << state.base_frame.points.size() << " points\n";
+      std::cout << "Display: " << GroundViewKey(state.ground_view) << " | visible " << VisiblePoints(state).count
+                << " | ground " << state.ground_removed_count << " | obstacles "
+                << state.frame.points.size()-std::min(state.frame.points.size(),state.ground_removed_count)
+                << " | ground passes " << state.ground_passes << '\n';
       if (state.imu_level_enabled) std::cout << "IMU leveling: " << state.imu_level_result.status << '\n';
       return 0;
     }
@@ -3821,7 +3872,8 @@ int RunViewer(int argc, char ** argv)
         RebuildGrid(state);
       }
       glBindVertexArray(state.vao);
-      glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(state.frame.points.size()));
+      const auto visible=VisiblePoints(state);
+      glDrawArrays(GL_POINTS,static_cast<GLint>(visible.first),static_cast<GLsizei>(visible.count));
       RenderGrid(state, mvp);
       RenderClusterBoxes(state, mvp);
       RenderRoiBoxes(state, mvp);
