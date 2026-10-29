@@ -83,7 +83,9 @@ def main():
                 process=subprocess.Popen([str(viewer),str(source),'--2d','--imu-level'],cwd=folder,
                     env=env,stdout=log,stderr=subprocess.STDOUT)
                 wait_for(x11.viewer_window);window=x11.viewer_window()
-                x11.focus(window);x11.resize(window,1600,960);x11.click(window,163,141)
+                x11.focus(window);x11.resize(window,1600,960)
+                if stage=="raw_ned": wait_for(lambda: "Opened bag:" in log_path.read_text(errors="replace"))
+                x11.click(window,100,141)
                 if stage=='no_imu':
                     initial=capture(x11,window,folder/'01_fallback.png')
                     enter(464,-4);enter(499,8)

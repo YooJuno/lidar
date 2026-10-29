@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <iomanip>
@@ -249,8 +250,10 @@ FrameData DecodePointCloud2(const PointCloud & cloud)
 }
 
 std::vector<FrameHandle> ResolveBagFrames(
-  const fs::path & input, const std::string & requested_topic, const std::string & requested_imu)
+  const fs::path & input, const std::string & requested_topic, const std::string & requested_imu,
+  lidar_viewer::InputLoadState * load)
 {
+  if (load) load->Stage(lidar_viewer::InputLoadStage::Opening);
   const fs::path path = BagPath(input);
   rosbag2_cpp::Reader reader;
   OpenReader(reader, path);
@@ -284,6 +287,12 @@ std::vector<FrameHandle> ResolveBagFrames(
   if (!static_tf_topic.empty()) filter.topics.push_back(static_tf_topic);
 #endif
   reader.set_filter(filter);
+  lidar_viewer::InputLoadProgress progress;
+  progress.stage=lidar_viewer::InputLoadStage::Indexing;
+  progress.total_frames=counts[topic];
+  for (const auto & selected : filter.topics) progress.total_messages+=counts[selected];
+  if (load) load->Publish(progress);
+  auto next_progress=std::chrono::steady_clock::now();
   std::vector<lidar_viewer::ImuObservation> observations;
   bool inconsistent_imu_frame = false;
   std::size_t malformed_imu_records = 0;
@@ -292,7 +301,13 @@ std::vector<FrameHandle> ResolveBagFrames(
   std::cout << "Indexing ROS 2 bag " << path << " topic " << topic
             << " (messages remain on disk)..." << std::endl;
   while (reader.has_next()) {
+    if (load) load->CheckCancelled();
+    if (load && std::chrono::steady_clock::now()>=next_progress) {
+      load->Publish(progress);
+      next_progress=std::chrono::steady_clock::now()+std::chrono::milliseconds(80);
+    }
     const auto message = reader.read_next();
+    ++progress.messages;
     if (message->topic_name == imu->topic && !imu->topic.empty()) {
       try {
         sensor_msgs::msg::Imu sample;
@@ -310,6 +325,7 @@ std::vector<FrameHandle> ResolveBagFrames(
         observation.orientation_valid = sample.orientation_covariance[0] >= 0;
         observation.world_ned = sample.header.frame_id.find("_ned") != std::string::npos;
         observations.push_back(observation);
+        ++progress.imu_samples;
       } catch (const std::exception &) { ++malformed_imu_records; }
       continue;
     }
@@ -340,6 +356,7 @@ std::vector<FrameHandle> ResolveBagFrames(
     label << path.filename().string() << " #" << std::setw(6) << std::setfill('0') << frames.size();
     handle.label = label.str();
     frames.push_back(std::move(handle));
+    progress.frames=frames.size();
     if (frames.size() % 1000 == 0) {
       std::cout << "  indexed " << frames.size() << " point-cloud frames" << std::endl;
     }
@@ -347,6 +364,8 @@ std::vector<FrameHandle> ResolveBagFrames(
   if (frames.empty()) {
     throw std::runtime_error("Bag topic has no PointCloud2 messages: " + topic);
   }
+  progress.stage=lidar_viewer::InputLoadStage::PreparingImu;
+  if (load) load->Publish(progress);
   std::stable_sort(frames.begin(), frames.end(), [](const FrameHandle & a, const FrameHandle & b) {
     return a.bag_timestamp_ns < b.bag_timestamp_ns;
   });
@@ -366,6 +385,7 @@ std::vector<FrameHandle> ResolveBagFrames(
     imu->samples = lidar_viewer::EstimateImuGravity(observations);
     imu->status = imu->topic.empty() ? "No IMU topic recorded" : "No reliable IMU gravity estimate";
   }
+  if (load) load->CheckCancelled();
   for (auto & handle : frames) handle.imu_timeline = imu;
   if (!imu->topic.empty()) std::cout << "IMU: " << imu->topic << " | " << imu->samples.size()
     << " usable gravity samples | " << malformed_imu_records << " malformed records skipped\n";
@@ -418,7 +438,8 @@ FrameData LoadBagFrame(const FrameHandle & handle)
   throw std::runtime_error("Indexed bag frame is missing; input bag may have changed: " + handle.label);
 }
 #else
-std::vector<FrameHandle> ResolveBagFrames(const fs::path &, const std::string &, const std::string &)
+std::vector<FrameHandle> ResolveBagFrames(const fs::path &, const std::string &, const std::string &,
+  lidar_viewer::InputLoadState *)
 {
   throw std::runtime_error(
     "ROS 2 bag support is not compiled. Source /opt/ros/jazzy/setup.bash and reconfigure CMake "

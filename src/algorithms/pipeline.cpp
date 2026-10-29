@@ -7,7 +7,7 @@ PipelineOutput RunPipelinePlaceholder(
   const PipelineConfig & config)
 {
   PipelineOutput output;
-  output.ground_removal = RunGroundRemovalPlaceholder(input, config.ground_removal);
+  output.ground_removal = RunGroundSegmentation(input, config.ground_removal);
   output.clusters = RunClusteringPlaceholder(output.ground_removal.non_ground_points, config.clustering);
   output.detections = RunDetectionPlaceholder(
     output.ground_removal.non_ground_points,

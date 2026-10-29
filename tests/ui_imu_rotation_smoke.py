@@ -87,6 +87,7 @@ def main():
                 if not window:
                     time.sleep(.1)
             x11.focus(window)
+            wait_for(lambda: "Opened bag:" in log_path.read_text(errors="replace"))
             x11.resize(window, 1600, 960)
             time.sleep(.4)
             original = shot("01_top_view")
@@ -104,7 +105,7 @@ def main():
             # Seek beyond the beginning of the bag where IMU coverage starts.
             x11.click(window, 1000, 878)
             wait_for(lambda: "IMU leveling active:" in log_path.read_text(errors="replace"))
-            x11.click(window, 163, 141)
+            x11.click(window, 100, 141)
             time.sleep(.3)
             leveled = shot("05_imu_leveling_active")
             x11.click(window, 46, 222)

@@ -52,6 +52,8 @@ install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/config/" DESTINATION "${resource_
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/README.md" DESTINATION "${resource_destination}")
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ground_segmentation/LICENSE.txt"
   DESTINATION "${resource_destination}/third-party-licenses" RENAME GSeg3D-BSD-3-Clause.txt)
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/patchwork_plusplus/LICENSE"
+  DESTINATION "${resource_destination}/third-party-licenses" RENAME PatchworkPlusPlus-BSD-2-Clause.txt)
 install(FILES "${dear_imgui_SOURCE_DIR}/LICENSE.txt"
   DESTINATION "${resource_destination}/third-party-licenses" RENAME Dear-ImGui-MIT.txt)
 if(APPLE)

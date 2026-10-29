@@ -1,3 +1,6 @@
 [submodule "third_party/ground_segmentation"]
 	path = third_party/ground_segmentation
 	url = https://github.com/dfki-ric/ground_segmentation.git
+[submodule "third_party/patchwork_plusplus"]
+	path = third_party/patchwork_plusplus
+	url = https://github.com/url-kaist/patchwork-plusplus.git

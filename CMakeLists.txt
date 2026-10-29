@@ -117,6 +117,18 @@ target_include_directories(lidar_viewer_gseg3d INTERFACE
 )
 target_link_libraries(lidar_viewer_gseg3d INTERFACE ${PCL_LIBRARIES} nanoflann::nanoflann)
 
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/patchwork_plusplus/cpp/patchworkpp/src/patchworkpp.cpp")
+  message(FATAL_ERROR "Missing Patchwork++ submodule. Run: git submodule update --init --recursive")
+endif()
+find_package(Eigen3 3.3 REQUIRED NO_MODULE)
+add_library(lidar_viewer_patchworkpp STATIC
+  third_party/patchwork_plusplus/cpp/patchworkpp/src/patchworkpp.cpp
+  third_party/patchwork_plusplus/cpp/common/src/plane_fit.cpp)
+target_include_directories(lidar_viewer_patchworkpp SYSTEM PUBLIC
+  third_party/patchwork_plusplus/cpp/patchworkpp/include
+  third_party/patchwork_plusplus/cpp/common/include)
+target_link_libraries(lidar_viewer_patchworkpp PUBLIC Eigen3::Eigen)
+
 add_library(lidar_viewer_roi STATIC src/roi.cpp)
 target_include_directories(lidar_viewer_roi PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 lidar_warnings(lidar_viewer_roi)
@@ -147,6 +159,7 @@ add_executable(lidar_viewer
   src/config.cpp
   src/algorithms/ground_removal.cpp
   src/algorithms/ground_removal_gseg3d.cpp
+  src/algorithms/ground_removal_patchworkpp.cpp
   src/algorithms/ground_removal_fast.cpp
   src/algorithms/clustering.cpp
   ${LIDAR_VIEWER_CUDA_SOURCES}
@@ -170,6 +183,7 @@ target_link_libraries(lidar_viewer PRIVATE
   GLEW::GLEW
   OpenGL::GL
   lidar_viewer_gseg3d
+  lidar_viewer_patchworkpp
   lidar_viewer_bag
   lidar_viewer_imgui
   lidar_viewer_roi
@@ -217,13 +231,14 @@ if(BUILD_TESTING)
     tests/algorithm_regression.cpp
     src/algorithms/ground_removal.cpp
     src/algorithms/ground_removal_gseg3d.cpp
+    src/algorithms/ground_removal_patchworkpp.cpp
     src/algorithms/ground_removal_fast.cpp
     src/algorithms/clustering.cpp
     ${LIDAR_VIEWER_CUDA_SOURCES}
   )
   lidar_warnings(algorithm_smoke_test)
   target_include_directories(algorithm_smoke_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-  target_link_libraries(algorithm_smoke_test PRIVATE lidar_viewer_gseg3d)
+  target_link_libraries(algorithm_smoke_test PRIVATE lidar_viewer_gseg3d lidar_viewer_patchworkpp lidar_viewer_bag)
   add_test(NAME algorithm_smoke_test COMMAND algorithm_smoke_test)
 endif()
 

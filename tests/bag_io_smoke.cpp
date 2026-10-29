@@ -214,7 +214,18 @@ void TestStorage(const std::string & storage_id)
       writer.close();
     }
     Check(IsRos2BagInput(folder) && IsRos2BagInput(folder / "metadata.yaml"), "Bag detection failed");
-    const auto handles = ResolveBagFrames(folder);
+    lidar_viewer::InputLoadState load;
+    const auto handles = ResolveBagFrames(folder,"/b2/points","",&load);
+    const auto progress=load.Snapshot();
+    Check(progress.frames==3 && progress.total_frames==3 && progress.imu_samples==3 &&
+      progress.messages==progress.total_messages && progress.messages>=6 &&
+      progress.stage==lidar_viewer::InputLoadStage::PreparingImu,
+      "Loading progress did not match the filtered bag metadata and actual reads");
+    load.Cancel();
+    bool canceled=false;
+    try {ResolveBagFrames(folder,"/b2/points","",&load);}
+    catch (const lidar_viewer::InputLoadCancelled &) {canceled=true;}
+    Check(canceled,"Canceled indexing continued or was reported as an input error");
     Check(handles.size() == 3, "Topic filtering lost or included other messages");
     const auto matched = LoadBagFrame(handles[0]);
     Check(matched.imu && matched.imu->up && matched.imu->topic == "/fixture/imu" &&

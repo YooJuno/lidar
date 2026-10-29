@@ -5,6 +5,7 @@
 #include <cmath>
 #include <limits>
 #include <random>
+#include <iostream>
 #include <stdexcept>
 #include <vector>
 
@@ -155,30 +156,62 @@ void TestFastGroundBackends()
     params.mode = "fast_grid";
     params.max_candidate_radius_m = 40;
     params.max_candidate_z = 3;
-    const auto cpu = RunGroundRemovalPlaceholder(cloud, params);
+    const auto cpu = RunGroundSegmentation(cloud, params);
     Check(cpu.ground_points.size() > 25000 && cpu.non_ground_points.size() >= 20,
       "Fast grid lost the sloped road or classified the raised obstacle as ground");
     params.use_cuda = true;
-    const auto gpu = RunGroundRemovalPlaceholder(cloud, params);
+    const auto gpu = RunGroundSegmentation(cloud, params);
     Check(SamePoints(cpu.ground_points, gpu.ground_points) &&
       SamePoints(cpu.non_ground_points, gpu.non_ground_points), "Fast grid CPU/CUDA classification differs");
     // Exercise workspace reuse after the input size shrinks.
     cloud.resize(8000);
     params.use_cuda = false;
-    const auto small_cpu = RunGroundRemovalPlaceholder(cloud, params);
+    const auto small_cpu = RunGroundSegmentation(cloud, params);
     params.use_cuda = true;
-    const auto small_gpu = RunGroundRemovalPlaceholder(cloud, params);
+    const auto small_gpu = RunGroundSegmentation(cloud, params);
     Check(SamePoints(small_cpu.ground_points, small_gpu.ground_points) &&
       SamePoints(small_cpu.non_ground_points, small_gpu.non_ground_points), "Reused CUDA workspace retained stale data");
     // Sliders also resize the grids, independently of the number of points.
     params.gseg3d_cell_size_x_m = .7f;
     params.gseg3d_cuda_cell_size_m = .35f;
     params.use_cuda = false;
-    const auto resized_cpu = RunGroundRemovalPlaceholder(cloud, params);
+    const auto resized_cpu = RunGroundSegmentation(cloud, params);
     params.use_cuda = true;
-    const auto resized_gpu = RunGroundRemovalPlaceholder(cloud, params);
+    const auto resized_gpu = RunGroundSegmentation(cloud, params);
     Check(SamePoints(resized_cpu.ground_points, resized_gpu.ground_points) &&
       SamePoints(resized_cpu.non_ground_points, resized_gpu.non_ground_points), "Resized CPU/CUDA grids differ");
+  }
+}
+
+void TestGroundQuality()
+{
+  for (const float slope : {0.f,.12f}) {
+    std::vector<KittiPoint> cloud;
+    std::size_t truth_ground=0;
+    for (int x=-72;x<=72;++x) for (int y=-72;y<=72;++y) {
+      const float px=x*.25f,py=y*.25f;
+      if (px*px+py*py<4) continue;
+      cloud.push_back({px,py,slope*px,0});++truth_ground;
+    }
+    for (int x=0;x<20;++x) for (int y=0;y<10;++y) for (int z=0;z<10;++z) {
+      const float px=7+x*.08f;
+      cloud.push_back({px,3+y*.08f,slope*px+.45f+z*.15f,1});
+    }
+    cloud.push_back(cloud.front());++truth_ground;
+    cloud.push_back({std::numeric_limits<float>::quiet_NaN(),0,0,1});
+    for (const auto * mode : {"fast_grid","gseg3d","patchworkpp","grid","ransac"}) {
+      GroundRemovalParams params;params.enabled=true;params.mode=mode;params.max_candidate_radius_m=40;
+      params.max_candidate_z=4;params.patchwork_min_points_per_patch=6;
+      params.patchwork_min_range_m=0;params.sequence_id=slope==0 ? 101 : 102;
+      const auto result=RunGroundSegmentation(cloud,params);
+      std::size_t true_positive=0,false_positive=0;
+      for (const auto & point : result.ground_points) (point.intensity==0 ? true_positive : false_positive)++;
+      const double precision=double(true_positive)/std::max<std::size_t>(1,true_positive+false_positive);
+      const double recall=double(true_positive)/truth_ground;
+      std::cout<<"Ground quality "<<mode<<" slope="<<slope<<" precision="<<precision<<" recall="<<recall<<'\n';
+      Check(result.ground_points.size()+result.non_ground_points.size()==cloud.size(),"Ground segmentation dropped input points");
+      Check(precision>=.98 && recall>=.85,"Ground segmentation failed labeled flat/ramp + raised-obstacle regression");
+    }
   }
 }
 }  // namespace
@@ -188,4 +221,9 @@ void RunAlgorithmRegressionTests()
   TestRotatedBoxes();
   TestConnectivity();
   TestFastGroundBackends();
+  TestGroundQuality();
+  bool rejected=false;
+  try {GroundRemovalParams invalid;invalid.mode="unknown";RunGroundSegmentation({},invalid);}
+  catch (const std::invalid_argument &) {rejected=true;}
+  Check(rejected,"Unknown ground method silently selected another algorithm");
 }

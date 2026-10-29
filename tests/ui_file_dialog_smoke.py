@@ -110,6 +110,10 @@ def main():
         time.sleep(.3)
         event("Return", True); event("Return", False)
         x11.x.XSync(x11.display, False)
+        time.sleep(.8)
+        if chooser_window():
+            x11.focus(chooser_window())
+            x11.key(chooser_window(), "Return")
         wait_for(lambda: not chooser_window())
 
     try:

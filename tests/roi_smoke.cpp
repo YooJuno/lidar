@@ -78,6 +78,19 @@ int main()
     Check(std::abs(rotated_drag.size.x-4)<1e-4f && std::abs(rotated_drag.size.y-2)<1e-4f &&
       rotated_drag.yaw_deg==45,"drawn ROI ignored view orientation");
     RoiSettings edited{true,true,{drag}};
+    const auto resized=ResizeRoi(a,{1,1,a.center.z},1,1);
+    Check(std::abs(resized.size.x-5)<1e-5f && std::abs(resized.size.y-3)<1e-5f &&
+      std::abs(resized.center.x-2.5f)<1e-5f && std::abs(resized.center.y+1.5f)<1e-5f &&
+      resized.center.z==a.center.z && resized.size.z==a.size.z && resized.yaw_deg==a.yaw_deg,
+      "Rotated corner resize moved the opposite corner or changed the vertical extent");
+    const auto edge=ResizeRoi(a,{3,1,a.center.z},1,0);
+    Check(std::abs(edge.size.x-5)<1e-5f && edge.size.y==a.size.y,"Edge resize changed the other axis");
+    Check(ResizeRoi(a,{3,-100,a.center.z},1,0).size.x>=.049f,"Crossed resize handle inverted a box");
+    const auto turned=RotateRoi(a,a.center+Vec3{0,2,0},a.center+Vec3{2,0,0});
+    Check(std::abs(turned.yaw_deg)<1e-5f && turned.center.x==a.center.x && turned.size.x==a.size.x,
+      "Rotation handle moved or resized the box");
+    const auto snapped=RotateRoi(a,a.center+Vec3{0,2,0},a.center+Vec3{2,.1f,0},true);
+    Check(std::abs(snapped.yaw_deg)<1e-5f,"Shift rotation did not snap to 15 degrees");
     const auto duplicate=DuplicateRoi(drag,edited);
     Check(!PreparedRoi(edited).Contains(duplicate.center),"duplicate overlaps source center");
     RoiHistory history; history.Record(edited); edited.boxes.push_back(duplicate);

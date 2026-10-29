@@ -7,6 +7,7 @@ CMake + OpenGL 기반 LiDAR 뷰어입니다. `.bin`과 ROS 2 PointCloud2 bag을 
 ```bash
 cd ~/workspace/lidar
 source /opt/ros/jazzy/setup.bash
+git submodule update --init --recursive
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel 2
 ```
@@ -91,7 +92,7 @@ GitHub Actions의 **Build and release**는 PR·main push·수동 실행에서 �
 
 ## 수집한 ROS 2 bag 열기
 
-실행 중에는 상단 **Open file** 버튼 또는 **Ctrl+O**로 시스템 파일 선택 창을 열 수 있습니다. 선택하면 해당 bag을 열고 첫 프레임에서 정지합니다. 취소하거나 열기에 실패하면 현재 점군을 유지합니다. 단일 bag을 고르는 동작은 상위 폴더 전체를 등록하지 않습니다.
+실행 중에는 상단 **Open file** 버튼 또는 **Ctrl+O**로 시스템 파일 선택 창을 열 수 있습니다. 선택하면 해당 bag을 열고 첫 프레임에서 정지합니다. 취소하거나 열기에 실패하면 현재 점군을 유지하며, 재생 중이었다면 재생도 복원합니다. 로딩 카드에는 파일명·색인한 LiDAR 프레임/전체 수·IMU 표본 수·경과 시간·선택 메시지의 스캔 진행률을 표시합니다. 전체 수를 아직 모르는 단계는 활동 표시줄로 구분합니다. **Cancel opening / Esc**로 취소할 수 있으며, 명령행에서 bag을 열어도 창이 먼저 표시됩니다. 단일 bag을 고르는 동작은 상위 폴더 전체를 등록하지 않습니다.
 
 ```bash
 cd ~/workspace/lidar
@@ -151,8 +152,9 @@ source /opt/ros/jazzy/setup.bash
 
 ## Controls
 
-- 왼쪽 `View`: 2D/3D, 전체 맞춤·센서 시점, 색상·점 크기, 격자, UI 배율
-- 왼쪽 `Ground`: 노면 분할 방식·해당 알고리즘의 셀 크기, 클러스터링, 실험용 형상 라벨
+- 왼쪽 `View`: 색상·점 크기·격자·카메라 설정. UI 배율은 오른쪽 위 앱 설정에서 관리합니다.
+- 왼쪽 `Ground`: 지면분리 방식·각 방식에 해당하는 파라미터
+- 왼쪽 `Objects`: 장애물 클러스터링과 형상 라벨
 - 왼쪽 `Align`: 표시용 yaw/pitch/roll/Z. 원본 데이터는 바꾸지 않습니다.
 - 왼쪽 `ROI`: 여러 3D 박스 추가·수정·복제·삭제, 박스 내부 점만 표시
 - 하단: 폴더 추가, 날짜·이름별 bag 선택, 재생·정지, 프레임 이동, 반복, 재생 FPS, 타임라인. 드래그 중 일시정지하며 놓을 때 선택한 프레임을 읽습니다.
@@ -173,15 +175,17 @@ source /opt/ros/jazzy/setup.bash
 
 ## 3D ROI
 
-- **화면에서 생성**: `R` 또는 캔버스의 **Draw box**를 누릅니다. 2D 시점으로 전환된 뒤 마우스로 XY 영역을 드래그하면 박스가 만들어집니다. `Creation settings`의 중심 Z·높이로 3D 범위를 정합니다. 박스의 yaw는 현재 2D 화면의 가로 방향을 따릅니다. 반대 방향으로 드래그해도 됩니다. `Esc`는 그리기를 취소하며, 너무 작은 클릭은 박스로 만들지 않습니다.
-- **이동**: **Move** 또는 **Move in 2D**를 누르고 박스를 드래그합니다. 높이·yaw는 유지됩니다. **Navigate** 또는 `Esc`로 카메라 조작으로 돌아갑니다. 회전한 2D 시점과 IMU 수평 보정에서도 원본 라이다 좌표로 대응합니다.
-- **숫자로 생성·편집**: ROI 탭의 **+ Box**는 현재 시점 중심에 박스를 만듭니다. 중심 XYZ(m), 전체 크기 XYZ(m), yaw(도)를 각 칸에 바로 입력할 수 있습니다. yaw는 숫자 입력만 사용하며 **Reset**으로 0도로 돌립니다. `Creation settings`에서 20×20m·4×4m·센서 전방 12×8m 프리셋을 선택할 수 있습니다.
-- **목록·복제·복구**: 목록의 체크박스는 개별 박스를 켜고 끕니다. **Duplicate / Ctrl+D**는 선택 박스의 로컬 X 방향으로 0.5m 간격을 두고 복제합니다. **Delete / Delete 키**로 삭제하며 **Undo / Ctrl+Z**, **Redo / Ctrl+Y**로 최근 64개 편집을 복구할 수 있습니다. 숫자 한 번의 편집과 드래그 한 번을 하나의 작업으로 취급합니다. 텍스트 입력 중에는 해당 입력 칸의 실행 취소를 사용합니다.
-- **표시·저장**: **Crop points**는 활성 박스들의 합집합 안에 있는 점만 표시합니다. 겹친 점은 중복되지 않으며 활성 박스가 없으면 빈 점군이 됩니다. **Outlines**는 박스 외곽선을 표시하고 선택한 박스는 노란색입니다. **Focus box**로 선택한 박스에 시점을 맞춥니다. **Save profile / Ctrl+S**로 저장하며 저장하지 않은 ROI 변경은 하단에 표시됩니다. `Coordinates & corners`에서 8개 꼭짓점을 복사할 수 있습니다. 최대 128개 박스입니다.
+캔버스 도구 모음 한 곳에서 2D/3D와 **Edit / Draw**를 선택합니다. 왼쪽은 **View**(표시), **Align**(좌표·IMU), **Ground**(지면분리), **ROI**(영역), **Objects**(클러스터·형상 라벨)로 구분합니다. 프로그램 UI 배율은 오른쪽 위 톱니바퀴의 **Application settings**에서 관리합니다. 배율은 사용자 설정 폴더의 `app_settings.cfg`에 저장하며, 데이터 프로파일이나 bag을 바꿔도 유지합니다. 기존 프로파일의 배율은 공통 설정이 아직 없을 때 최초 배율로만 사용합니다. ROI 때문에 표시할 점이 없을 때는 로딩 중 상태와 구분해 빈 영역 안내와 전체 점군 보기 동작을 제공합니다.
 
-좌표는 **IMU·수동 회전·Z 보정 전 원본 라이다 좌표계** 기준입니다. 박스를 드래그하는 동안에는 외곽선을 미리 보고 놓을 때 필터를 적용합니다. ROI를 수정하면 표시 재생을 정지하며, 실시간 구독과 녹화는 계속됩니다.
+- **만들기**: 캔버스 **Draw / R**을 누른 뒤 대각선으로 드래그합니다. **New** 아이콘은 현재 시점 중심에 기본 4×4m 박스를 만듭니다. `New box defaults`에서 새 박스의 높이와 프리셋을 바꿉니다.
+- **직접 편집**: **Edit**에서 박스 내부를 끌면 이동하고, 8개 모서리·변 핸들을 끌면 반대편을 고정한 채 크기를 바꿉니다. 바깥의 원형 핸들은 yaw를 회전하며 Shift를 누르면 15도 단위로 맞춥니다. 빈 공간 드래그는 화면 이동입니다.
+- **높이·정밀 값**: ROI 탭의 **Bottom / Top**을 마우스로 끌어 아래·윗면을 조절합니다. Ctrl+클릭하면 숫자를 입력합니다. `Exact geometry`를 펼치면 이름·중심 XYZ·전체 크기 XYZ·yaw를 직접 입력할 수 있습니다. yaw 슬라이더는 없습니다.
+- **관리**: 목록에서 선택하고, 선택 박스를 화면에 맞추기·복제·삭제 아이콘을 사용합니다. 목록을 더블클릭해도 해당 박스에 맞춥니다. 복제는 로컬 X 방향으로 0.5m 간격을 두어 생성합니다. 캔버스의 되돌리기/다시 실행 아이콘 또는 **Ctrl+Z / Ctrl+Y**로 복구합니다.
+- **표시·저장**: **Crop points**는 활성 박스의 합집합 안에 있는 점만 표시합니다. 눈 아이콘은 외곽선을 전환합니다. **Save profile / Ctrl+S**로 저장하며 `Export corners`에서 8개 꼭짓점을 복사합니다. 최대 128개 박스입니다.
 
-지면분리는 전체 프레임으로 계산해 캐시합니다. ROI 편집은 캐시를 필터링하고 ROI 안의 장애물만 클러스터링하므로 주변 지면 정보와 분류 결과가 유지됩니다. 새 프레임이나 보정·지면분리 설정 변경 시에는 캐시를 다시 만듭니다. 상태 표시줄에서 전체 처리와 ROI 처리 시간을 확인할 수 있습니다. 격자와 좌표축도 별도 GPU 버퍼를 사용해 정지 화면에서 매 프레임 다시 전송하지 않습니다.
+좌표는 IMU·수동 회전·Z 보정 전 원본 LiDAR 좌표계입니다. 도구 선택, 수치 수정, 복제·삭제와 일반 UI 조작은 재생을 멈추지 않습니다. 실제 박스 드래그 중에만 화면을 고정하고, 놓거나 취소하면 이전 재생 상태로 복귀합니다. 사용자가 Pause한 화면은 계속 정지 상태를 유지합니다. 실시간 구독과 원본 녹화는 계속됩니다.
+
+지면분리는 전체 프레임으로 계산해 캐시합니다. ROI 편집은 캐시를 필터링하고 ROI 안의 장애물만 클러스터링하므로 주변 지면 정보와 분류 결과가 유지됩니다. 프레임은 백그라운드에서 읽고 준비되지 않은 프레임을 기다리느라 UI 스레드를 막지 않습니다. 재생 중 설정 변경은 다음 프레임에 반영해 같은 프레임의 중복 계산을 피합니다.
 
 ## Notes
 
@@ -192,8 +196,8 @@ source /opt/ros/jazzy/setup.bash
 - 노면 분할 토글·알고리즘과 셀 크기도 설정 파일에 함께 저장됩니다.
 - calibration rotation과 z translation 값도 같은 설정 파일에 함께 저장됩니다.
 - 기본값으로 모든 유효 포인트를 GPU에 올려서 그립니다. NaN/Inf 좌표 샘플은 BIN과 bag에서 동일하게 제외합니다.
-- 노면 분할 기본값은 `fast_grid`입니다. 기존 CUDA 격자 경로의 규칙을 CPU에도 구현해 CUDA를 끄거나 사용할 수 없을 때 같은 방식으로 분류합니다. 원본 GSeg3D 라이브러리는 별도 `gseg3d` 모드(`GSeg3D (reference CPU)`)로 선택하며 CUDA 토글에 영향을 받지 않습니다. 기존 프로파일에 `ground_mode=gseg3d`를 저장했다면 기준 CPU 구현을 선택합니다. 이전 CUDA 경로를 계속 사용하려면 UI에서 `Fast grid`를 고르고 프로파일을 저장합니다.
-- GSeg3D는 ROS2 wrapper 없이 핵심 라이브러리만 `third_party/ground_segmentation` submodule로 포함합니다. `patchworkpp`, `grid`, `ransac` 비교 모드도 사용할 수 있습니다.
+- 노면 분할 기본값은 `fast_grid`입니다. 기존 CUDA 격자 경로의 규칙을 CPU에도 구현해 CUDA를 끄거나 사용할 수 없을 때 같은 방식으로 분류합니다. 원본 GSeg3D 라이브러리는 별도 `gseg3d` 모드(`GSeg3D`)로 선택하며 CUDA 토글에 영향을 받지 않습니다. 기존 프로파일에 `ground_mode=gseg3d`를 저장했다면 기준 CPU 구현을 선택합니다. 이전 CUDA 경로를 계속 사용하려면 UI에서 `Fast grid`를 고르고 프로파일을 저장합니다.
+- GSeg3D는 ROS2 wrapper 없이 핵심 라이브러리만 `third_party/ground_segmentation` submodule로 포함합니다. `patchworkpp`는 [KAIST 원본 Patchwork++](https://github.com/url-kaist/patchwork-plusplus) submodule의 C++ 구현을 사용합니다. 원본의 R-VPF·적응형 GLE·TGR을 사용하고, 데이터/탐색 위치/파라미터가 바뀌면 적응 이력을 초기화합니다. 프레임별로 정규화된 강도를 원시 반사 강도로 오인하지 않도록 RNR은 끕니다. 알고리즘 입력은 보정된 센서 높이를 기준으로 변환하고, 반환 인덱스로 원본 점을 분류해 중복점·색상·범위 밖 점도 보존합니다. `grid`와 `ransac`은 각각 연결 격자와 전역 평면에 기반한 구현입니다.
 - 클러스터링은 실제 점 간 수평 거리와 수직 간격을 검증하는 range-adaptive Euclidean 방식입니다. 작은 공간 해시 셀·거리별 검색 범위를 사용하고, 이미 연결한 점은 후보에서 제거해 고밀도 점군의 반복 검사를 줄입니다. 회전 박스의 긴 축을 길이로 정규화하며 CUDA 작업 버퍼는 프레임 간 재사용합니다.
 - 형상 라벨은 클러스터 치수 기반 휴리스틱입니다. 학습된 사람·차량 인식기로 간주하면 안 됩니다.
 
@@ -248,4 +252,23 @@ xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_file_dialog_sm
   --bag ~/shalom_ws/data/bags/sensors_20261022_192513_438096 \
   --target ~/shalom_ws/data/bags/sensors_20261023_120204_157971 \
   --output build/test_artifacts/file_dialog
+```
+
+### 지면분리 검증 범위
+
+GSeg3D와 Patchwork++는 원본 라이브러리를 연결하며, Fast grid·Grid·RANSAC도 실제 분할을 수행합니다. 지면분리를 끈 상태에서 방식을 선택하면 분류를 켜서 결과가 바로 반영됩니다. Patchwork++에는 해당 방식이 사용하지 않는 격자 크기·CUDA 조작을 표시하지 않습니다.
+
+CTest는 다섯 방식 모두에 대해 정답이 정해진 평지·약 7도 경사와 45cm 이상 높이의 장애물 장면에서 지면 precision ≥98%, recall ≥85%, 전체 점 보존을 검사합니다. 이 제한된 합성 검사는 모든 실제 지형의 정확도를 보장하지 않습니다. GSeg3D의 높이 연속성 기본값은 원본 코어와 같은 0.30m이며, 이전 0.10m 값은 1m 셀의 경사 연결을 끊는 문제가 있었습니다. Ground reference에서 연속성·기준 높이를 조절할 수 있습니다.
+
+실제 bag의 1/4·1/2·3/4 프레임에서 다섯 방식의 처리 시간과 분류 수를 비교하려면 다음을 실행합니다. 출력의 분류 수는 정답 라벨이 없는 데이터의 정확도 점수가 아닙니다. 아래 VN100 NED → XT32 장착 변환과 0.57m 높이는 제공된 원본 bag에 대한 값입니다.
+
+```bash
+./build/algorithm_smoke_test /path/to/raw_vn100_xt32_bag 0.57
+```
+
+재생 중 버튼·ROI 조작과 앱 공통 설정 검사는 별도 설정·합성 bag을 사용합니다.
+
+```bash
+xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_playback_smoke.py --viewer build/lidar_viewer --output build/test_artifacts/playback
+xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_app_settings_smoke.py --viewer build/lidar_viewer --output build/test_artifacts/app-settings
 ```

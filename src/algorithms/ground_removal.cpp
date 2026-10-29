@@ -8,6 +8,7 @@
 #include <iostream>
 #include <limits>
 #include <random>
+#include <stdexcept>
 #include <queue>
 #include <unordered_map>
 
@@ -656,247 +657,6 @@ std::vector<int> ScorePlanesCpu(
   return inlier_counts;
 }
 
-// Jacobi eigensolver for a 3x3 symmetric covariance matrix.  Keeping this
-// local avoids adding a heavyweight linear algebra dependency just for the
-// small per-patch plane fits used by Patchwork++.
-bool FitLocalGroundPlane(
-  const std::vector<KittiPoint> & input,
-  const std::vector<std::size_t> & indices,
-  Plane & plane,
-  float & flatness)
-{
-  if (indices.size() < 3) {
-    return false;
-  }
-
-  Vec3 mean{};
-  for (const std::size_t index : indices) {
-    mean.x += input[index].x;
-    mean.y += input[index].y;
-    mean.z += input[index].z;
-  }
-  const float inverse_count = 1.0f / static_cast<float>(indices.size());
-  mean = mean * inverse_count;
-
-  float matrix[3][3]{};
-  for (const std::size_t index : indices) {
-    const KittiPoint & point = input[index];
-    const float d[3]{point.x - mean.x, point.y - mean.y, point.z - mean.z};
-    for (int row = 0; row < 3; ++row) {
-      for (int column = 0; column < 3; ++column) {
-        matrix[row][column] += d[row] * d[column];
-      }
-    }
-  }
-  for (auto & row : matrix) {
-    for (float & value : row) {
-      value *= inverse_count;
-    }
-  }
-
-  float vectors[3][3]{{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}};
-  for (int iteration = 0; iteration < 12; ++iteration) {
-    int p = 0;
-    int q = 1;
-    if (std::abs(matrix[0][2]) > std::abs(matrix[p][q])) {
-      p = 0;
-      q = 2;
-    }
-    if (std::abs(matrix[1][2]) > std::abs(matrix[p][q])) {
-      p = 1;
-      q = 2;
-    }
-    if (std::abs(matrix[p][q]) < 1e-6f) {
-      break;
-    }
-
-    const float angle = 0.5f * std::atan2(2.0f * matrix[p][q], matrix[q][q] - matrix[p][p]);
-    const float cosine = std::cos(angle);
-    const float sine = std::sin(angle);
-    const float pp = matrix[p][p];
-    const float qq = matrix[q][q];
-    const float pq = matrix[p][q];
-    matrix[p][p] = cosine * cosine * pp - 2.0f * sine * cosine * pq + sine * sine * qq;
-    matrix[q][q] = sine * sine * pp + 2.0f * sine * cosine * pq + cosine * cosine * qq;
-    matrix[p][q] = matrix[q][p] = 0.0f;
-    for (int k = 0; k < 3; ++k) {
-      if (k == p || k == q) {
-        continue;
-      }
-      const float pk = matrix[p][k];
-      const float qk = matrix[q][k];
-      matrix[p][k] = matrix[k][p] = cosine * pk - sine * qk;
-      matrix[q][k] = matrix[k][q] = sine * pk + cosine * qk;
-    }
-    for (int k = 0; k < 3; ++k) {
-      const float vp = vectors[k][p];
-      const float vq = vectors[k][q];
-      vectors[k][p] = cosine * vp - sine * vq;
-      vectors[k][q] = sine * vp + cosine * vq;
-    }
-  }
-
-  int normal_column = 0;
-  if (matrix[1][1] < matrix[normal_column][normal_column]) {
-    normal_column = 1;
-  }
-  if (matrix[2][2] < matrix[normal_column][normal_column]) {
-    normal_column = 2;
-  }
-  Vec3 normal{
-    vectors[0][normal_column], vectors[1][normal_column], vectors[2][normal_column]};
-  const float normal_length = Length(normal);
-  if (!std::isfinite(normal_length) || normal_length < 1e-5f) {
-    return false;
-  }
-  normal = normal * (1.0f / normal_length);
-  if (normal.z < 0.0f) {
-    normal = normal * -1.0f;
-  }
-  plane = {normal.x, normal.y, normal.z, -DotProduct(normal, mean)};
-  flatness = std::max(matrix[normal_column][normal_column], 0.0f);
-  return true;
-}
-
-GroundRemovalResult RunGroundRemovalPatchworkPPInternal(
-  const std::vector<KittiPoint> & input,
-  const GroundRemovalParams & params)
-{
-  GroundRemovalResult result;
-  if (!params.enabled || input.empty()) {
-    result.non_ground_points = input;
-    return result;
-  }
-
-  const int zone_count = std::clamp(params.patchwork_num_zones, 1, 8);
-  const int sector_count = std::clamp(params.patchwork_num_sectors, 4, 128);
-  const float min_range = std::max(params.patchwork_min_range_m, 0.0f);
-  const float max_range = std::max(params.max_candidate_radius_m, min_range + 1.0f);
-  const float range_span = max_range - min_range;
-  std::vector<int> zone_offsets(static_cast<std::size_t>(zone_count) + 1, 0);
-  std::vector<float> zone_boundaries(static_cast<std::size_t>(zone_count), max_range);
-  const float zone_denominator = static_cast<float>((1 << zone_count) - 1);
-  for (int zone = 0; zone < zone_count; ++zone) {
-    // Small near-field rings preserve curbs and vehicle feet; wider far-field
-    // rings keep the number of plane fits bounded.
-    const int rings = (zone == 0) ? 2 : 4;
-    zone_offsets[zone + 1] = zone_offsets[zone] + rings * sector_count;
-    // Exponentially wider zones match LiDAR sampling density: detail is kept
-    // close to the ego vehicle while far-range plane fitting stays cheap.
-    zone_boundaries[zone] = min_range + range_span *
-      (static_cast<float>((1 << (zone + 1)) - 1) / zone_denominator);
-  }
-  std::vector<std::vector<std::size_t>> patches(static_cast<std::size_t>(zone_offsets.back()));
-
-  for (std::size_t index = 0; index < input.size(); ++index) {
-    const KittiPoint & point = input[index];
-    if (!IsCandidate(point, params)) {
-      continue;
-    }
-    const float range = std::sqrt(point.x * point.x + point.y * point.y);
-    if (range < min_range || range > max_range) {
-      continue;
-    }
-    const int zone = static_cast<int>(std::lower_bound(
-      zone_boundaries.begin(), zone_boundaries.end(), range) - zone_boundaries.begin());
-    const float zone_start = (zone == 0) ? min_range : zone_boundaries[zone - 1];
-    const float zone_end = zone_boundaries[zone];
-    const float within_zone = std::clamp(
-      (range - zone_start) / std::max(zone_end - zone_start, 1e-3f), 0.0f, 0.999999f);
-    const int rings = (zone == 0) ? 2 : 4;
-    const int ring = std::min(rings - 1, static_cast<int>(within_zone * rings));
-    const float angle = std::atan2(point.y, point.x);
-    const float normalized_angle = (angle + 3.14159265358979323846f) / (2.0f * 3.14159265358979323846f);
-    const int sector = std::min(sector_count - 1, static_cast<int>(normalized_angle * sector_count));
-    patches[static_cast<std::size_t>(zone_offsets[zone] + ring * sector_count + sector)].push_back(index);
-  }
-
-  const float max_angle_rad = params.max_ground_angle_deg * 3.14159265358979323846f / 180.0f;
-  const float min_normal_z = std::cos(max_angle_rad);
-  const int min_patch_points = std::max(params.patchwork_min_points_per_patch, 3);
-  const int seed_count = std::max(params.patchwork_seed_count, 3);
-  const int refine_iterations = std::max(params.patchwork_refine_iterations, 1);
-  const float seed_threshold = std::max(params.patchwork_seed_threshold_m, 0.02f);
-  const float base_distance_threshold = std::max(params.patchwork_distance_threshold_m, 0.02f);
-  const float max_flatness = std::max(params.patchwork_max_flatness_m2, 0.0f);
-  std::vector<unsigned char> is_ground(input.size(), 0);
-
-  for (auto & patch : patches) {
-    if (static_cast<int>(patch.size()) < min_patch_points) {
-      continue;
-    }
-    std::sort(patch.begin(), patch.end(), [&input](std::size_t lhs, std::size_t rhs) {
-      return input[lhs].z < input[rhs].z;
-    });
-    const int lpr_count = std::min(seed_count, static_cast<int>(patch.size()));
-    float lpr_height = 0.0f;
-    for (int i = 0; i < lpr_count; ++i) {
-      lpr_height += input[patch[static_cast<std::size_t>(i)]].z;
-    }
-    lpr_height /= static_cast<float>(lpr_count);
-
-    std::vector<std::size_t> seeds;
-    seeds.reserve(patch.size());
-    for (const std::size_t index : patch) {
-      if (input[index].z <= lpr_height + seed_threshold) {
-        seeds.push_back(index);
-      }
-    }
-
-    Plane plane{};
-    float flatness = 0.0f;
-    bool valid_plane = false;
-    for (int iteration = 0; iteration < refine_iterations; ++iteration) {
-      if (!FitLocalGroundPlane(input, seeds, plane, flatness) || plane.c < min_normal_z ||
-        flatness > max_flatness)
-      {
-        valid_plane = false;
-        break;
-      }
-      valid_plane = true;
-      std::vector<std::size_t> refined_seeds;
-      refined_seeds.reserve(patch.size());
-      for (const std::size_t index : patch) {
-        const float signed_distance = SignedDistanceToPlane(plane, input[index]);
-        if (signed_distance >= -seed_threshold && signed_distance <= seed_threshold) {
-          refined_seeds.push_back(index);
-        }
-      }
-      if (refined_seeds.size() < 3) {
-        valid_plane = false;
-        break;
-      }
-      seeds.swap(refined_seeds);
-    }
-    if (!valid_plane) {
-      continue;
-    }
-
-    for (const std::size_t index : patch) {
-      const KittiPoint & point = input[index];
-      const float threshold = RangeAdaptiveThreshold(point, base_distance_threshold, params);
-      const float signed_distance = SignedDistanceToPlane(plane, point);
-      if (signed_distance >= -threshold && signed_distance <= threshold) {
-        is_ground[index] = 1;
-      }
-    }
-  }
-
-  result.ground_points.reserve(input.size() / 2);
-  result.non_ground_points.reserve(input.size());
-  for (std::size_t index = 0; index < input.size(); ++index) {
-    const KittiPoint & point = input[index];
-    const bool ego_hood =
-      point.x >= 0.5f && point.x <= 4.0f && std::abs(point.y) <= 1.4f && point.z >= 0.2f;
-    if (is_ground[index] != 0 && !ego_hood) {
-      result.ground_points.push_back(point);
-    } else {
-      result.non_ground_points.push_back(point);
-    }
-  }
-  return result;
-}
-
 void LogGroundCudaBackendStatus(bool requested, bool used)
 {
   static bool logged = false;
@@ -1004,14 +764,7 @@ GroundRemovalResult RunGroundRemovalGrid(
   return RunGroundRemovalGridInternal(input, params);
 }
 
-GroundRemovalResult RunGroundRemovalPatchworkPP(
-  const std::vector<KittiPoint> & input,
-  const GroundRemovalParams & params)
-{
-  return RunGroundRemovalPatchworkPPInternal(input, params);
-}
-
-GroundRemovalResult RunGroundRemovalPlaceholder(
+GroundRemovalResult RunGroundSegmentation(
   const std::vector<KittiPoint> & input,
   const GroundRemovalParams & params)
 {
@@ -1031,6 +784,7 @@ GroundRemovalResult RunGroundRemovalPlaceholder(
   if (mode == "fast_grid") {
     return RunGroundRemovalFastGrid(input, params);
   }
-  return RunGroundRemovalRansac(input, params);
+  if (mode=="ransac") return RunGroundRemovalRansac(input, params);
+  throw std::invalid_argument("Unknown ground segmentation method: "+params.mode);
 }
 }  // namespace lidar_viewer::algorithms

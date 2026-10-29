@@ -39,7 +39,8 @@ ground_removal:
   max_iterations: 240
   min_inliers: 80
 
-  # Patchwork++: concentric zones + sectors with iterative local-plane fitting.
+  # Original url-kaist Patchwork++; R-VPF, adaptive GLE and TGR are enabled.
+  # Four CZM zones are fixed by the original implementation.
   patchwork_num_zones: 4
   patchwork_num_sectors: 32
   patchwork_min_points_per_patch: 12
@@ -61,7 +62,9 @@ ground_removal:
   gseg3d_ground_inlier_threshold_m: 0.20
   gseg3d_centroid_search_radius_m: 5.0
   gseg3d_ground_height_m: 0.0
-  gseg3d_max_ground_height_deviation_m: 0.10
+  # Match the reference core's 0.30 m continuity limit. 0.10 m breaks
+  # expansion even on a 7-degree ramp with 1 m XY cells.
+  gseg3d_max_ground_height_deviation_m: 0.30
   gseg3d_cuda_seed_radius_m: 15.0
   gseg3d_cuda_cell_size_m: 0.50
 

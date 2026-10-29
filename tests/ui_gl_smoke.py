@@ -10,6 +10,7 @@ import ctypes.util
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import tempfile
@@ -211,6 +212,13 @@ def main():
         parser.error("Expected an existing viewer binary and ROS 2 bag directory")
     args.output.mkdir(parents=True, exist_ok=True)
     output = Path(tempfile.mkdtemp(prefix="gl-smoke-", dir=args.output.resolve()))
+    private=output/"private_project"
+    (private/"build").mkdir(parents=True)
+    shutil.copytree(repo/"config",private/"config")
+    (private/"config/profiles/rosbag.cfg").write_text(
+        "ground_removal_enabled=0\nclustering_enabled=0\ndetection_enabled=0\n"
+        "roi_enabled=0\nroi_count=0\nimu_level_enabled=0\nui_scale=1\ncolor_mode=0\n")
+    private_viewer=private/"build/lidar_viewer";shutil.copy2(viewer,private_viewer)
     process = None
     x11 = None
     window = None
@@ -233,8 +241,9 @@ def main():
         subprocess.run(["xrdb", "-merge"], input=f"Xft.dpi: {args.dpi}\n", text=True, check=True)
         with (output / "viewer.log").open("wb") as log:
             process = subprocess.Popen(
-                [str(viewer), str(bag), "--topic", "/b2/points", "--sensor-height", "0.57"],
-                cwd=repo, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+                [str(private_viewer), str(bag), "--topic", "/b2/points", "--sensor-height", "0.57"],
+                cwd=private, env=dict(os.environ,XDG_CONFIG_HOME=str(output/"isolated_config")),
+                stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
             while not window:
                 if process.poll() is not None:
                     raise RuntimeError(f"Viewer exited before creating a window: {process.returncode}")
@@ -245,6 +254,9 @@ def main():
                     time.sleep(.1)
             x11.focus(window)
             x11.resize(window, 1600, 960)
+            while "Opened bag:" not in (output / "viewer.log").read_text(errors="replace"):
+                if process.poll() is not None or time.monotonic()>deadline: raise TimeoutError("Initial bag did not load")
+                time.sleep(.1)
             x11.move(window, 150, 350)
             time.sleep(.7)
             original = shot("01_desktop_1600")
@@ -280,7 +292,7 @@ def main():
                     raise RuntimeError("Viewer exited after resizing")
                 result["checks"][f"resize_{width}x{height}"] = True
             x11.resize(window, 1600, 960)
-            x11.click(window, 105 * ui_scale, 141 * ui_scale)
+            x11.click(window, 155 * ui_scale, 141 * ui_scale)
             shot("06_processing_1600")
             result["checks"]["settings_unchanged"] = before_settings == settings_inventory(repo)
             if not result["checks"]["settings_unchanged"]:

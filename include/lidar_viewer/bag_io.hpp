@@ -11,7 +11,8 @@
 bool IsRos2BagInput(const fs::path & input);
 bool RosbagInputAvailable();
 std::vector<FrameHandle> ResolveBagFrames(
-  const fs::path & input, const std::string & topic = "/b2/points", const std::string & imu_topic = "");
+  const fs::path & input, const std::string & topic = "/b2/points", const std::string & imu_topic = "",
+  lidar_viewer::InputLoadState * load = nullptr);
 FrameData LoadBagFrame(const FrameHandle & handle);
 
 #ifdef LIDAR_VIEWER_HAS_ROSBAG

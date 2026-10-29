@@ -1,6 +1,7 @@
 #pragma once
 
 #include "lidar_viewer/imu_alignment.hpp"
+#include "lidar_viewer/input_load.hpp"
 
 #include <array>
 #include <cstdint>
@@ -76,5 +77,6 @@ struct FrameData
 };
 
 std::vector<FrameHandle> ResolveInputFrames(
-  const fs::path & input, const std::string & bag_topic = "/b2/points", const std::string & imu_topic = "");
+  const fs::path & input, const std::string & bag_topic = "/b2/points", const std::string & imu_topic = "",
+  lidar_viewer::InputLoadState * load = nullptr);
 FrameData LoadFrame(const FrameHandle & handle);
