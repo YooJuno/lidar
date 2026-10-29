@@ -202,6 +202,20 @@ target_link_libraries(lidar_viewer PRIVATE
   lidar_viewer_detector
 )
 
+# Source builds also need a desktop entry: GNOME docks use the desktop ID
+# and StartupWMClass, independently of GLFW's native window icon.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  find_package(Python3 QUIET COMPONENTS Interpreter)
+  if(Python3_Interpreter_FOUND)
+    add_custom_target(install-user-desktop
+      COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/install_linux_desktop.py"
+        --binary "$<TARGET_FILE:lidar_viewer>"
+      DEPENDS lidar_viewer
+      COMMENT "Registering LiDAR Studio in the user application menu and dock"
+      VERBATIM)
+  endif()
+endif()
+
 include(CTest)
 if(BUILD_TESTING)
   find_package(Python3 QUIET COMPONENTS Interpreter)
@@ -210,6 +224,10 @@ if(BUILD_TESTING)
     target_link_libraries(learned_detector_smoke_test PRIVATE lidar_viewer_detector)
     add_test(NAME learned_detector_smoke_test COMMAND learned_detector_smoke_test ${Python3_EXECUTABLE})
     set_tests_properties(learned_detector_smoke_test PROPERTIES TIMEOUT 45)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      add_test(NAME linux_desktop_smoke_test COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/linux_desktop_smoke.py)
+    endif()
   endif()
   add_executable(live_io_smoke_test tests/live_io_smoke.cpp)
   target_link_libraries(live_io_smoke_test PRIVATE lidar_viewer_live)
