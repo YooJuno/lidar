@@ -18,6 +18,7 @@
 #include "lidar_viewer/roi_editor.hpp"
 #include "lidar_viewer/display_alignment.hpp"
 #include "lidar_viewer/ui_icons.hpp"
+#include "lidar_viewer/app_icon.hpp"
 #include "lidar_viewer/file_dialog.hpp"
 #include "lidar_viewer/live_io.hpp"
 #include "lidar_viewer/learned_detector.hpp"
@@ -776,7 +777,8 @@ void FilterDetections(ViewerState & state)
   if (state.algorithm_config.detection.enabled && state.detector_completed==state.detector_revision) {
     const lidar_viewer::PreparedRoi roi(state.roi,state.roi_frame);
     for (const auto & detection:state.full_detections)
-      if (roi.Contains(detection.oriented_bounds.center)) state.detections.push_back(detection);
+      if (detection.confidence>=state.algorithm_config.detection.min_confidence &&
+          roi.Contains(detection.oriented_bounds.center)) state.detections.push_back(detection);
   }
   RebuildClusterBoxes(state);
 }
@@ -811,7 +813,9 @@ bool UpdateDetector(ViewerState & state)
     state.detector_retry=false;state.detector_submitted=0;state.detector_error.clear();
   }
   if (state.detector_submitted!=state.detector_revision) {
-    state.detector->Submit(state.detector_revision,state.detector_input,state.algorithm_config.detection.min_confidence,state.detector_yaw);
+    // Lower candidates never suppress a higher-scoring NMS survivor. Cache
+    // down to the UI minimum once; changing score is then an immediate filter.
+    state.detector->Submit(state.detector_revision,state.detector_input,.1f,state.detector_yaw);
     state.detector_submitted=state.detector_revision;state.detector_submitted_at=DetectorClock();
   }
   if (auto result=state.detector->Poll();result && result->revision==state.detector_revision) {
@@ -1716,6 +1720,14 @@ void SaveSettings(ViewerState & state)
   out << "point_size=" << camera_snapshot.point_size << '\n';
   out << "ground_cell_size_m=" << state.algorithm_config.ground_removal.candidate_grid_cell_m << '\n';
   out << "ground_mode=" << state.algorithm_config.ground_removal.mode << '\n';
+  out << "fugseg_num_segments=" << state.algorithm_config.ground_removal.fugseg_num_segments << '\n';
+  out << "fugseg_bin_size_m=" << state.algorithm_config.ground_removal.fugseg_bin_size_m << '\n';
+  out << "fugseg_inlier_threshold_m=" << state.algorithm_config.ground_removal.fugseg_inlier_threshold_m << '\n';
+  out << "fugseg_max_slope_change_deg=" << state.algorithm_config.ground_removal.fugseg_max_slope_change_deg << '\n';
+  out << "fugseg_max_gap_m=" << state.algorithm_config.ground_removal.fugseg_max_gap_m << '\n';
+  out << "fugseg_horizontal_noise_deg=" << state.algorithm_config.ground_removal.fugseg_horizontal_noise_deg << '\n';
+  out << "fugseg_vertical_noise_deg=" << state.algorithm_config.ground_removal.fugseg_vertical_noise_deg << '\n';
+  out << "fugseg_range_noise_m=" << state.algorithm_config.ground_removal.fugseg_range_noise_m << '\n';
   out << "ground_use_cuda=" << state.algorithm_config.ground_removal.use_cuda << '\n';
   out << "gseg3d_ground_inlier_threshold_m=" << state.algorithm_config.ground_removal.gseg3d_ground_inlier_threshold_m << '\n';
   out << "gseg3d_cell_size_x_m=" << state.algorithm_config.ground_removal.gseg3d_cell_size_x_m << '\n';
@@ -1824,9 +1836,25 @@ void LoadSettingsFile(ViewerState & state, const fs::path & path)
         state.algorithm_config.ground_removal.candidate_grid_cell_m =
           std::clamp(ParseFiniteFloat(value), 0.1f, 5.0f);
       } else if (key == "ground_mode") {
-        if (value == "fast_grid" || value == "gseg3d" || value == "patchworkpp" || value == "grid" || value == "ransac")
+        if (value == "fast_grid" || value == "gseg3d" || value == "patchworkpp" || value == "fugseg" || value == "grid" || value == "ransac")
           state.algorithm_config.ground_removal.mode = value;
         else throw std::invalid_argument("Unknown ground segmentation method");
+      } else if (key == "fugseg_num_segments") {
+        state.algorithm_config.ground_removal.fugseg_num_segments=std::clamp(ParseStrictInt(value),30,720);
+      } else if (key == "fugseg_bin_size_m") {
+        state.algorithm_config.ground_removal.fugseg_bin_size_m=std::clamp(ParseFiniteFloat(value),0.25f,3.f);
+      } else if (key == "fugseg_inlier_threshold_m") {
+        state.algorithm_config.ground_removal.fugseg_inlier_threshold_m=std::clamp(ParseFiniteFloat(value),0.02f,0.5f);
+      } else if (key == "fugseg_max_slope_change_deg") {
+        state.algorithm_config.ground_removal.fugseg_max_slope_change_deg=std::clamp(ParseFiniteFloat(value),1.f,45.f);
+      } else if (key == "fugseg_max_gap_m") {
+        state.algorithm_config.ground_removal.fugseg_max_gap_m=std::clamp(ParseFiniteFloat(value),1.f,30.f);
+      } else if (key == "fugseg_horizontal_noise_deg") {
+        state.algorithm_config.ground_removal.fugseg_horizontal_noise_deg=std::clamp(ParseFiniteFloat(value),0.001f,1.f);
+      } else if (key == "fugseg_vertical_noise_deg") {
+        state.algorithm_config.ground_removal.fugseg_vertical_noise_deg=std::clamp(ParseFiniteFloat(value),0.001f,1.f);
+      } else if (key == "fugseg_range_noise_m") {
+        state.algorithm_config.ground_removal.fugseg_range_noise_m=std::clamp(ParseFiniteFloat(value),0.001f,0.5f);
       } else if (key == "ground_use_cuda") {
         state.algorithm_config.ground_removal.use_cuda = ParseStrictInt(value) != 0;
       } else if (key == "gseg3d_ground_inlier_threshold_m") {
@@ -2705,7 +2733,7 @@ void BuildInputLoading(ViewerState & state)
 void BuildRoiEditor(ViewerState & state)
 {
   if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsKeyPressed(ImGuiKey_Tab)) state.roi_numeric_edit=false;
-  const auto before=state.roi;
+  auto before=state.roi;
   const float s=state.ui_layout.scale;
   using lidar_viewer::IconButton;using lidar_viewer::UiIcon;
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,{8*s,8*s});
@@ -2716,8 +2744,21 @@ void BuildRoiEditor(ViewerState & state)
   if (IconButton("##Outlines",UiIcon::Eye,"Show box outlines",s,state.roi.show_boxes)) state.roi.show_boxes=!state.roi.show_boxes;
   ImGui::TextDisabled("%zu %s  |  %s points visible",state.roi.boxes.size(),state.roi.boxes.size()==1 ? "box" : "boxes",CountText(VisiblePoints(state).count).c_str());
   ImGui::Spacing();
+  ImGui::BeginDisabled(state.roi_gesture.active);
+  if (IconButton("##EditRoi",UiIcon::Select,"Select, move and resize an ROI in 2D. Drag empty space to pan.",s,
+      state.roi_tool==ViewerState::RoiTool::Move,"Edit")) SelectRoiTool(state,ViewerState::RoiTool::Move);
+  ImGui::EndDisabled();ImGui::SameLine();
+  ImGui::BeginDisabled(state.roi.boxes.size()>=lidar_viewer::kMaxRoiBoxes || state.loading_bag_source.has_value() || state.roi_gesture.active);
+  if (IconButton("##DrawRoi",UiIcon::Box,"Draw a new footprint in 2D. R. Esc cancels.",s,state.roi_tool==ViewerState::RoiTool::Draw,"Draw"))
+    SelectRoiTool(state,ViewerState::RoiTool::Draw);
+  ImGui::EndDisabled();ImGui::SameLine(0,14*s);
+  ImGui::BeginDisabled(!state.roi_history.CanUndo() || state.roi_gesture.active);
+  if (IconButton("##UndoRoi",UiIcon::Undo,"Undo ROI edit. Ctrl+Z",s)) {RestoreRoiHistory(state,false);before=state.roi;}
+  ImGui::EndDisabled();ImGui::SameLine();ImGui::BeginDisabled(!state.roi_history.CanRedo() || state.roi_gesture.active);
+  if (IconButton("##RedoRoi",UiIcon::Redo,"Redo ROI edit. Ctrl+Y",s)) {RestoreRoiHistory(state,true);before=state.roi;}
+  ImGui::EndDisabled();
   ImGui::BeginDisabled(state.roi_gesture.active || state.roi.boxes.size()>=lidar_viewer::kMaxRoiBoxes);
-  if (IconButton("##AddRoi",UiIcon::Plus,"Add a box at the view center. Drag its handles to size it, or use Draw on the canvas.",s,false,"New")) {
+  if (IconButton("##AddRoi",UiIcon::Plus,"Add a box at the view center. Drag its handles to size it, or choose Draw above.",s,false,"New")) {
     lidar_viewer::RoiBox box;box.name=lidar_viewer::NextRoiName(state.roi);
     box.center=state.roi_frame.InverseTransform(state.camera.target);box.center.z=state.roi_new_z;
     box.size={4,4,state.roi_new_height};
@@ -2758,7 +2799,7 @@ void BuildRoiEditor(ViewerState & state)
     state.roi_reveal_selection=false;ImGui::EndListBox();
   }
   if (state.roi.boxes.empty()) {
-    ImGui::TextWrapped("Add a box or use Draw on the canvas.");
+    ImGui::TextWrapped("Add a box or choose Draw above.");
   } else {
     state.selected_roi=std::min(state.selected_roi,state.roi.boxes.size()-1);
     ImGui::BeginDisabled(state.roi_gesture.active);ImGui::PushID(static_cast<int>(state.selected_roi));
@@ -2767,7 +2808,7 @@ void BuildRoiEditor(ViewerState & state)
     if (!state.roi_exact_geometry) {
     if (state.camera.projection_mode==CameraState::ProjectionMode::View2D && state.roi_tool==ViewerState::RoiTool::Move)
       ImGui::TextWrapped("Drag inside to move. Edges resize; the round handle rotates.");
-    else if (ImGui::Button("Edit in top view",{-1,0})) SelectRoiTool(state,ViewerState::RoiTool::Move);
+    else ImGui::TextWrapped("%s",state.roi_tool==ViewerState::RoiTool::Draw ? "Drag on the scene to draw a footprint." : "Choose Edit above to adjust the footprint.");
     }
     ImGui::SetNextItemOpen(state.roi_exact_geometry);
     state.roi_exact_geometry=ImGui::CollapsingHeader("Exact geometry");
@@ -3083,17 +3124,17 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       }
       Tip("Display classified points only. ROI remains active. Switching views reuses the existing result and keeps playback running.");
       ImGui::TextDisabled("Method");
-      const char * modes[] = {"fast_grid", "gseg3d", "patchworkpp", "grid", "ransac"};
-      const char * labels[] = {"Fast grid", "GSeg3D", "Patchwork++", "Grid", "RANSAC"};
+      const char * modes[] = {"fast_grid", "gseg3d", "patchworkpp", "fugseg", "grid", "ransac"};
+      const char * labels[] = {"Fast grid", "GSeg3D", "Patchwork++", "FugSeg", "Grid", "RANSAC"};
       int mode = 0;
-      for (int i = 0; i < 5; ++i) if (ground.mode == modes[i]) mode = i;
+      for (int i = 0; i < 6; ++i) if (ground.mode == modes[i]) mode = i;
       ImGui::SetNextItemWidth(-1);
-      if (ImGui::Combo("##GroundMethod", &mode, labels, 5)) {
+      if (ImGui::Combo("##GroundMethod", &mode, labels, 6)) {
         ground.mode = modes[mode];
         state.ground_removal_enabled=true;
         reprocess = true;
       }
-      ImGui::TextDisabled("%s",ground.mode=="gseg3d" || ground.mode=="patchworkpp" ? "Original library / CPU" :
+      ImGui::TextDisabled("%s",ground.mode=="gseg3d" || ground.mode=="patchworkpp" || ground.mode=="fugseg" ? "Original library / CPU" :
         ground.mode=="fast_grid" ? "Local terrain grid / CPU or CUDA" : ground.mode=="ransac" ? "Global plane + local height check" : "Connected ground grid");
       if (ground.mode == "gseg3d" || ground.mode == "fast_grid") {
         float cell = ground.gseg3d_cell_size_x_m;
@@ -3108,6 +3149,31 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         }
         ImGui::SetNextItemWidth(-1);
         reprocess |= ImGui::SliderFloat("##Inliers", &ground.gseg3d_ground_inlier_threshold_m, .02f, .6f, "Inlier limit: %.2f m", ImGuiSliderFlags_AlwaysClamp);
+      } else if (ground.mode=="fugseg") {
+        ImGui::TextWrapped("Uncertainty-aware polar grid / TITS 2026");
+        ImGui::SetNextItemWidth(-1);
+        reprocess|=ImGui::SliderFloat("##FugInlier",&ground.fugseg_inlier_threshold_m,.02f,.5f,"Ground thickness: %.2f m",ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::CollapsingHeader("FugSeg settings")) {
+          ImGui::SetNextItemWidth(-1);
+          reprocess|=ImGui::SliderFloat("##FugBin",&ground.fugseg_bin_size_m,.25f,3.f,"Radial bin: %.2f m",ImGuiSliderFlags_AlwaysClamp);
+          ImGui::SetNextItemWidth(-1);
+          reprocess|=ImGui::SliderInt("##FugSegments",&ground.fugseg_num_segments,30,720,"Angular segments: %d",ImGuiSliderFlags_AlwaysClamp);
+          ImGui::SetNextItemWidth(-1);
+          reprocess|=ImGui::SliderFloat("##FugSlope",&ground.fugseg_max_slope_change_deg,1,45,"Slope change: %.1f deg",ImGuiSliderFlags_AlwaysClamp);
+          ImGui::SetNextItemWidth(-1);
+          reprocess|=ImGui::SliderFloat("##FugGap",&ground.fugseg_max_gap_m,1,30,"Max radial gap: %.1f m",ImGuiSliderFlags_AlwaysClamp);
+          ImGui::TextDisabled("Angular noise H / V (deg)");ImGui::SetNextItemWidth(-1);
+          float noise[]={ground.fugseg_horizontal_noise_deg,ground.fugseg_vertical_noise_deg};
+          if (ImGui::InputFloat2("##FugAngleNoise",noise,"%.3f")) {
+            if (std::isfinite(noise[0]) && std::isfinite(noise[1])) {
+              ground.fugseg_horizontal_noise_deg=std::clamp(noise[0],.001f,1.f);
+              ground.fugseg_vertical_noise_deg=std::clamp(noise[1],.001f,1.f);reprocess=true;
+            }
+          }
+          Tip("Measurement standard deviations used by the original uncertainty model. Defaults are from the upstream KITTI configuration; tune them to measured sensor noise.");
+          ImGui::SetNextItemWidth(-1);
+          reprocess|=ImGui::SliderFloat("##FugRangeNoise",&ground.fugseg_range_noise_m,.001f,.1f,"Range noise: %.3f m",ImGuiSliderFlags_AlwaysClamp);
+        }
       } else if (ground.mode=="patchworkpp") {
         ImGui::SetNextItemWidth(-1);
         reprocess|=ImGui::SliderFloat("##PatchDistance",&ground.patchwork_distance_threshold_m,.02f,.5f,"Ground thickness: %.2f m",ImGuiSliderFlags_AlwaysClamp);
@@ -3123,7 +3189,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         ImGui::SetNextItemWidth(-1);
         reprocess|=ImGui::SliderFloat("##PlaneDistance",&ground.final_distance_threshold_m,.02f,.5f,"Ground thickness: %.2f m",ImGuiSliderFlags_AlwaysClamp);
       }
-      if (ground.mode=="gseg3d" || ground.mode=="fast_grid" || ground.mode=="patchworkpp") {
+      if (ground.mode=="gseg3d" || ground.mode=="fast_grid" || ground.mode=="patchworkpp" || ground.mode=="fugseg") {
         if (ImGui::CollapsingHeader("Ground reference")) {
           ImGui::TextDisabled("Expected ground Z after Align");ImGui::SetNextItemWidth(-1);
           reprocess|=ImGui::DragFloat("##GroundReferenceZ",&ground.gseg3d_ground_height_m,.01f,-5,5,"%.2f m",ImGuiSliderFlags_AlwaysClamp);
@@ -3136,10 +3202,10 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         }
       }
 #ifdef LIDAR_VIEWER_HAS_CUDA
-      if (ground.mode!="gseg3d" && ground.mode!="patchworkpp")
+      if (ground.mode!="gseg3d" && ground.mode!="patchworkpp" && ground.mode!="fugseg")
         reprocess |= ImGui::Checkbox("Use CUDA", &ground.use_cuda);
 #else
-      if (ground.mode!="gseg3d" && ground.mode!="patchworkpp") ImGui::TextDisabled("CPU backend");
+      if (ground.mode!="gseg3d" && ground.mode!="patchworkpp" && ground.mode!="fugseg") ImGui::TextDisabled("CPU backend");
 #endif
       Metric("Ground points", std::to_string(state.ground_removed_count));
       ImGui::EndTabItem();
@@ -3174,8 +3240,8 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
           if (ImGui::Button("Retry model",{-1,0})) state.detector_retry=true;
         }
         ImGui::SetNextItemWidth(-1);
-        if (ImGui::SliderFloat("##DetectionScore",&state.algorithm_config.detection.min_confidence,.1f,.9f,"Min score: %.2f")) {
-          ++state.detector_revision;state.full_detections.clear();FilterDetections(state);
+        if (ImGui::SliderFloat("##DetectionScore",&state.algorithm_config.detection.min_confidence,.1f,.9f,"Min score: %.2f",ImGuiSliderFlags_AlwaysClamp)) {
+          FilterDetections(state);
         }
         Tip("Neural classification score, not a calibrated probability. Raising it hides uncertain detections. No ground-truth accuracy has been measured for this sensor.");
       }
@@ -3196,15 +3262,16 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
           state.algorithm_config.clustering.mode=metric==0 ? "euclidean_3d" : "euclidean";reprocess=true;
         }
         ImGui::SetNextItemWidth(-1);
-        reprocess|=ImGui::SliderFloat("##ClusterDistance",&state.algorithm_config.clustering.tolerance_m,.1f,1.5f,"XY distance: %.2f m");
+        reprocess|=ImGui::SliderFloat("##ClusterDistance",&state.algorithm_config.clustering.tolerance_m,.1f,1.5f,"Distance: %.2f m",ImGuiSliderFlags_AlwaysClamp);
         ImGui::SetNextItemWidth(-1);
-        reprocess|=ImGui::SliderFloat("##ClusterVerticalGap",&state.algorithm_config.clustering.max_vertical_gap_m,.1f,2.5f,"Vertical gap: %.2f m");
+        reprocess|=ImGui::SliderFloat("##ClusterVerticalGap",&state.algorithm_config.clustering.max_vertical_gap_m,.1f,2.5f,"Vertical gap: %.2f m",ImGuiSliderFlags_AlwaysClamp);
         ImGui::EndDisabled();
       }
       ImGui::EndTabItem();
     }
     ImGui::EndTabBar();
   }
+  if (!state.roi_tab_active && !state.roi_tab_requested && !state.roi_gesture.active) state.roi_tool=ViewerState::RoiTool::Navigate;
   if (!state.ui_error.empty()) {
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, .56f, .48f, 1));
     ImGui::TextWrapped("%s", state.ui_error.c_str());
@@ -3336,11 +3403,10 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
 
   const auto & view=layout.viewport;
   if (view.w>300*s && view.h>100*s) {
-    using lidar_viewer::IconButton;using lidar_viewer::UiIcon;
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,{6*s,6*s});
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,{5*s,0});
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,{6*s,5*s});
-    BeginPanel("Canvas tools",{view.x+12*s,view.y+10*s,std::min(view.w-24*s,370*s),42*s},false);
+    BeginPanel("Canvas tools",{view.x+12*s,view.y+10*s,std::min(view.w-24*s,87*s),42*s},false);
     const bool top=state.camera.projection_mode==CameraState::ProjectionMode::View2D;
     const auto mode_button=[&](const char * label,bool selected) {
       if (selected) ImGui::PushStyleColor(ImGuiCol_Button,{.13f,.34f,.42f,1});
@@ -3351,20 +3417,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     if (mode_button("3D",!top)) {SelectRoiTool(state,ViewerState::RoiTool::Navigate);SetProjectionMode(state,CameraState::ProjectionMode::View3D);}
     ImGui::SameLine();
     if (mode_button("2D",top)) SetProjectionMode(state,CameraState::ProjectionMode::View2D);
-    ImGui::SameLine();
-    ImGui::SameLine(0,14*s);
-    if (IconButton("##EditRoi",UiIcon::Select,"Select, move and resize a box in 2D. Drag empty space to pan.",s,
-        state.roi_tool==ViewerState::RoiTool::Move,"Edit")) SelectRoiTool(state,ViewerState::RoiTool::Move);
-    ImGui::SameLine();
-    ImGui::BeginDisabled(state.roi.boxes.size()>=lidar_viewer::kMaxRoiBoxes || state.loading_bag_source.has_value());
-    if (IconButton("##DrawRoi",UiIcon::Box,"Draw a new footprint in 2D. R. Esc cancels.",s,state.roi_tool==ViewerState::RoiTool::Draw,"Draw"))
-      SelectRoiTool(state,ViewerState::RoiTool::Draw);
-    ImGui::EndDisabled();ImGui::SameLine(0,14*s);
-    ImGui::BeginDisabled(!state.roi_history.CanUndo() || state.roi_gesture.active);
-    if (IconButton("##UndoRoi",UiIcon::Undo,"Undo ROI edit. Ctrl+Z",s)) RestoreRoiHistory(state,false);
-    ImGui::EndDisabled();ImGui::SameLine();ImGui::BeginDisabled(!state.roi_history.CanRedo() || state.roi_gesture.active);
-    if (IconButton("##RedoRoi",UiIcon::Redo,"Redo ROI edit. Ctrl+Y",s)) RestoreRoiHistory(state,true);
-    ImGui::EndDisabled();ImGui::End();ImGui::PopStyleVar(3);
+    ImGui::End();ImGui::PopStyleVar(3);
   }
   auto * draw=ImGui::GetBackgroundDrawList();
   const ImU32 muted = IM_COL32(131, 151, 174, 255);
@@ -3842,12 +3895,27 @@ int RunViewer(int argc, char ** argv)
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
 #endif
 
+#if defined(GLFW_X11_CLASS_NAME) && !defined(_WIN32) && !defined(__APPLE__)
+    glfwWindowHintString(GLFW_X11_CLASS_NAME,"lidar-viewer");
+    glfwWindowHintString(GLFW_X11_INSTANCE_NAME,"lidar-viewer");
+#endif
+#if defined(GLFW_WAYLAND_APP_ID) && !defined(_WIN32) && !defined(__APPLE__)
+    glfwWindowHintString(GLFW_WAYLAND_APP_ID,"lidar-viewer");
+#endif
     GLFWwindow * window = glfwCreateWindow(kWindowWidth, kWindowHeight, "LiDAR Studio", nullptr, nullptr);
     if (!window) {
       glfwTerminate();
       throw std::runtime_error("Failed to create GLFW window");
     }
 
+#ifndef __APPLE__
+    // Native macOS icons come from the application bundle's ICNS resource.
+    // GLFW copies these pixels, so local arrays can be released immediately.
+    auto icon32=lidar_viewer::app_icon::Decode<32*32>(lidar_viewer::app_icon::rgba32);
+    auto icon128=lidar_viewer::app_icon::Decode<128*128>(lidar_viewer::app_icon::rgba128);
+    GLFWimage icons[]={{32,32,icon32.data()},{128,128,icon128.data()}};
+    glfwSetWindowIcon(window,2,icons);
+#endif
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
     glfwSetWindowSizeLimits(window, 800, 600, GLFW_DONT_CARE, GLFW_DONT_CARE);

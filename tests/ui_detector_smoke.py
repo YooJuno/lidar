@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 import time
 import traceback
-from ui_gl_smoke import X11,capture,settings_inventory
+from ui_gl_smoke import X11,capture,changed_pixels,settings_inventory
 from ui_playback_smoke import write_fixture
 
 
@@ -63,6 +63,8 @@ while True:
         with log_path.open('wb') as log:
             process=subprocess.Popen([str(viewer),str(bag),'--2d','--play','--detect'],env=env,stdout=log,stderr=subprocess.STDOUT)
             wait(lambda:x11.viewer_window() is not None);window=x11.viewer_window();x11.focus(window);x11.resize(window,1600,960)
+            icon=subprocess.check_output(['xprop','-id',str(window),'_NET_WM_ICON'],text=True,env=dict(env,LC_ALL='C'))
+            check('native_window_has_multi_resolution_app_icon','32 x 32' in icon and '128 x 128' in icon)
             wait(lambda:len(rows())>=5);initial=rows()[-1]
             for point in [(280,140),(50,140),(155,140),(205,140),(280,140)]:x11.click(window,*point)
             wait(lambda:rows()[-1][0]>initial[0]+3)
@@ -70,9 +72,12 @@ while True:
             capture(x11,window,out/'01_playing_objects.png')
             x11.click(window,410,837);time.sleep(.5);paused=rows();time.sleep(.5)
             check('explicit_pause_holds_frame_and_reuses_result',rows()==paused)
-            x11.click(window,165,427);wait(lambda:len(rows())>len(paused))
-            check('score_reprocesses_same_paused_frame',rows()[-1][0]==paused[-1][0] and rows()[-1][1]>paused[-1][1])
-            time.sleep(.2);settled=len(rows());x11.click(window,205,140);x11.click(window,70,267);time.sleep(.4)
+            before_score=capture(x11,window,out/'score_before.png')
+            x11.click(window,310,427);time.sleep(.3)
+            after_score=capture(x11,window,out/'score_after.png')
+            check('score_filter_is_instant_without_reinference',rows()==paused)
+            check('higher_score_hides_actual_boxes',changed_pixels(before_score,after_score,(380,180,1540,750))>80)
+            time.sleep(.2);settled=len(rows());x11.click(window,205,140);x11.click(window,70,328);time.sleep(.4)
             check('roi_edit_reuses_full_scene_neural_result',len(rows())==settled)
             x11.click(window,410,837);wait(lambda:len(rows())>settled+3)
             check('resume_continues_current_revision_detection',True)

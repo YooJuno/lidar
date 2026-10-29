@@ -103,6 +103,22 @@ void ApplyGroundRemovalValue(
     params.patchwork_distance_threshold_m = ParseFloat(value);
   } else if (key == "patchwork_max_flatness_m2") {
     params.patchwork_max_flatness_m2 = ParseFloat(value);
+  } else if (key == "fugseg_num_segments") {
+    params.fugseg_num_segments = ParseInt(value);
+  } else if (key == "fugseg_bin_size_m") {
+    params.fugseg_bin_size_m = ParseFloat(value);
+  } else if (key == "fugseg_inlier_threshold_m") {
+    params.fugseg_inlier_threshold_m = ParseFloat(value);
+  } else if (key == "fugseg_max_slope_change_deg") {
+    params.fugseg_max_slope_change_deg = ParseFloat(value);
+  } else if (key == "fugseg_max_gap_m") {
+    params.fugseg_max_gap_m = ParseFloat(value);
+  } else if (key == "fugseg_horizontal_noise_deg") {
+    params.fugseg_horizontal_noise_deg = ParseFloat(value);
+  } else if (key == "fugseg_vertical_noise_deg") {
+    params.fugseg_vertical_noise_deg = ParseFloat(value);
+  } else if (key == "fugseg_range_noise_m") {
+    params.fugseg_range_noise_m = ParseFloat(value);
   } else if (key == "gseg3d_cell_size_x_m") {
     params.gseg3d_cell_size_x_m = ParseFloat(value);
   } else if (key == "gseg3d_cell_size_y_m") {

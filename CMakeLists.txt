@@ -123,6 +123,7 @@ endif()
 # PCL may provide Eigen 3 or Eigen 5 under the same Eigen3 package/target.
 # A requested 3.x version rejects compatible Eigen 5 installations.
 find_package(Eigen3 REQUIRED NO_MODULE)
+include(cmake/FugSeg.cmake)
 add_library(lidar_viewer_patchworkpp STATIC
   third_party/patchwork_plusplus/cpp/patchworkpp/src/patchworkpp.cpp
   third_party/patchwork_plusplus/cpp/common/src/plane_fit.cpp)
@@ -167,6 +168,7 @@ add_executable(lidar_viewer
   src/config.cpp
   src/algorithms/ground_removal.cpp
   src/algorithms/ground_removal_gseg3d.cpp
+  src/algorithms/ground_removal_fugseg.cpp
   src/algorithms/ground_removal_patchworkpp.cpp
   src/algorithms/ground_removal_fast.cpp
   src/algorithms/clustering.cpp
@@ -191,6 +193,7 @@ target_link_libraries(lidar_viewer PRIVATE
   OpenGL::GL
   lidar_viewer_gseg3d
   lidar_viewer_patchworkpp
+  lidar_viewer_fugseg
   lidar_viewer_bag
   lidar_viewer_imgui
   lidar_viewer_roi
@@ -246,6 +249,7 @@ if(BUILD_TESTING)
     tests/algorithm_regression.cpp
     src/algorithms/ground_removal.cpp
     src/algorithms/ground_removal_gseg3d.cpp
+    src/algorithms/ground_removal_fugseg.cpp
     src/algorithms/ground_removal_patchworkpp.cpp
     src/algorithms/ground_removal_fast.cpp
     src/algorithms/clustering.cpp
@@ -253,7 +257,7 @@ if(BUILD_TESTING)
   )
   lidar_warnings(algorithm_smoke_test)
   target_include_directories(algorithm_smoke_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-  target_link_libraries(algorithm_smoke_test PRIVATE lidar_viewer_gseg3d lidar_viewer_patchworkpp lidar_viewer_bag)
+  target_link_libraries(algorithm_smoke_test PRIVATE lidar_viewer_gseg3d lidar_viewer_patchworkpp lidar_viewer_fugseg lidar_viewer_bag)
   add_test(NAME algorithm_smoke_test COMMAND algorithm_smoke_test)
 endif()
 

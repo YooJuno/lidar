@@ -68,6 +68,12 @@ def main():
             def red_count(picture):
                 return sum(r>170 and g<90 and b<90 for r,g,b in picture.crop((750,230,930,400)).convert('RGB').getdata())
             check('ground_pixels_are_hidden_in_obstacles_view',red_count(ground_image)>50 and red_count(obstacle_image)<red_count(ground_image)*.1)
+            x11.click(window,170,362);x11.key(window,'Home')
+            for _ in range(3):x11.key(window,'Down')
+            x11.key(window,'Return');time.sleep(.2);save();fug=inspect()
+            check('original_fugseg_selects_runs_and_persists','ground_mode=fugseg' in profile.read_text() and fug[2]>1600 and fug[3]>0)
+            capture(x11,window,output/'04_fugseg.png')
+            x11.click(window,170,362);x11.key(window,'Home');x11.key(window,'Return');time.sleep(.2)
             select(1);x11.click(window,46,222);save();disabled=inspect()
             check('disabling_classification_restores_all',disabled[0]=='all' and disabled[1]==len(points) and disabled[2]==0)
         # Exact count checks use the same scene with a smaller 3D ROI.

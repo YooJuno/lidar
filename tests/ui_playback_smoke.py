@@ -67,9 +67,9 @@ def main():
             check('initial_bag_autoplay_moves',changed_pixels(playing,moving,crop)>80)
             # Ordinary controls, including holding a tab button, keep playback active.
             for x in [50,100,155,255]: x11.click(window,x,140)
-            x11.click(window,485,102)
-            x11.click(window,65,290);x11.click(window,46,219)  # New box, then crop off.
-            x11.click(window,163,290);x11.click(window,201,290)
+            x11.click(window,205,140);x11.click(window,65,290)
+            x11.click(window,65,328);x11.click(window,46,219)  # New box, then crop off.
+            x11.click(window,163,328);x11.click(window,201,328)
             x11.click(window,1567,30);x11.key(window,'Escape')
             controls=shot('03_controls');time.sleep(.35);controls_later=shot('04_controls_motion')
             check('controls_and_roi_actions_keep_playing_state',changed_pixels(playing,controls,header)==0)

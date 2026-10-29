@@ -51,6 +51,17 @@ ground_removal:
   patchwork_distance_threshold_m: 0.18
   patchwork_max_flatness_m2: 0.06
 
+  # Original FugSeg (IEEE TITS 2026). Public core, no ROS 1 dependency.
+  # Height follows Align. The original KITTI ego-vehicle crop is disabled.
+  fugseg_num_segments: 120
+  fugseg_bin_size_m: 1
+  fugseg_inlier_threshold_m: 0.15
+  fugseg_max_slope_change_deg: 7
+  fugseg_max_gap_m: 10
+  fugseg_horizontal_noise_deg: 0.009
+  fugseg_vertical_noise_deg: 0.033
+  fugseg_range_noise_m: 0.02
+
   # GSeg3D: two-phase, 3D grid ground segmentation vendored from
   # dfki-ric/ground_segmentation.  Points have already been transformed by
   # the viewer calibration; ground_height should normally remain at zero.

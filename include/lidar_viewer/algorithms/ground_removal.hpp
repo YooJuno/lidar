@@ -48,6 +48,16 @@ struct GroundRemovalParams
   float patchwork_distance_threshold_m{0.18f};
   float patchwork_max_flatness_m2{0.06f};
 
+  // Original FugSeg (TITS 2026), single-thread CPU polar grid propagation.
+  int fugseg_num_segments{120};
+  float fugseg_bin_size_m{1.0f};
+  float fugseg_inlier_threshold_m{0.15f};
+  float fugseg_max_slope_change_deg{7.0f};
+  float fugseg_max_gap_m{10.0f};
+  float fugseg_horizontal_noise_deg{0.009f};
+  float fugseg_vertical_noise_deg{0.033f};
+  float fugseg_range_noise_m{0.02f};
+
   // GSeg3D: two-pass 3D grid segmentation.  The viewer calibrates points
   // into its level world frame before this algorithm runs, so the default
   // ground height is zero and no ROS/IMU transform is required here.
@@ -88,6 +98,10 @@ GroundRemovalResult RunGroundRemovalGrid(
   const GroundRemovalParams & params);
 
 GroundRemovalResult RunGroundRemovalPatchworkPP(
+  const std::vector<KittiPoint> & input,
+  const GroundRemovalParams & params);
+
+GroundRemovalResult RunGroundRemovalFugSeg(
   const std::vector<KittiPoint> & input,
   const GroundRemovalParams & params);
 

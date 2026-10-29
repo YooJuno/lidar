@@ -775,6 +775,7 @@ GroundRemovalResult RunGroundSegmentation(
   if (mode == "patchworkpp" || mode == "patchwork++" || mode == "patchwork") {
     return RunGroundRemovalPatchworkPP(input, params);
   }
+  if (mode == "fugseg") return RunGroundRemovalFugSeg(input,params);
   if (mode == "grid") {
     return RunGroundRemovalGrid(input, params);
   }

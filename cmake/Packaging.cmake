@@ -10,15 +10,23 @@ set(CPACK_PACKAGE_DIRECTORY "${CMAKE_BINARY_DIR}/packages")
 
 if(APPLE)
   set_target_properties(lidar_viewer PROPERTIES MACOSX_BUNDLE TRUE
-    MACOSX_BUNDLE_BUNDLE_NAME "LiDAR Viewer"
+    MACOSX_BUNDLE_BUNDLE_NAME "LiDAR Studio"
+    MACOSX_BUNDLE_ICON_FILE "lidar-studio.icns"
     MACOSX_BUNDLE_GUI_IDENTIFIER "io.github.yoojuno.lidar"
     MACOSX_BUNDLE_SHORT_VERSION_STRING "${CPACK_PACKAGE_VERSION}"
     MACOSX_BUNDLE_BUNDLE_VERSION "${CPACK_PACKAGE_VERSION}")
+  set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/lidar-studio.icns"
+    PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+  target_sources(lidar_viewer PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/lidar-studio.icns")
   install(TARGETS lidar_viewer BUNDLE DESTINATION .)
   set(resource_destination "lidar_viewer.app/Contents/Resources")
   set(CPACK_GENERATOR "ZIP;DragNDrop")
-  set(CPACK_DMG_VOLUME_NAME "LiDAR Viewer")
+  set(CPACK_DMG_VOLUME_NAME "LiDAR Studio")
 elseif(WIN32)
+  enable_language(RC)
+  configure_file("${CMAKE_CURRENT_SOURCE_DIR}/resources/app_icon.rc.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/app_icon.rc" @ONLY)
+  target_sources(lidar_viewer PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/app_icon.rc")
   target_sources(lidar_viewer PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/resources/app.manifest")
   install(TARGETS lidar_viewer RUNTIME DESTINATION .)
   set(resource_destination ".")
@@ -37,6 +45,12 @@ else()
   install(TARGETS lidar_viewer RUNTIME DESTINATION lib/lidar_viewer)
   install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/linux/lidar-viewer" DESTINATION bin)
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/resources/lidar-viewer.desktop" DESTINATION share/applications)
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/lidar-studio.svg"
+    DESTINATION share/icons/hicolor/scalable/apps RENAME lidar-viewer.svg)
+  foreach(icon_size IN ITEMS 16 24 32 48 64 128 256 512 1024)
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/lidar-studio-${icon_size}.png"
+      DESTINATION "share/icons/hicolor/${icon_size}x${icon_size}/apps" RENAME lidar-viewer.png)
+  endforeach()
   set(resource_destination "share/lidar_viewer")
   set(CPACK_GENERATOR "TGZ;DEB")
   set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
@@ -54,6 +68,8 @@ install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/python/" DESTINATION "${resource_
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/tools/setup_detector.py" DESTINATION "${resource_destination}/tools")
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/README.md" DESTINATION "${resource_destination}")
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/third_party/licenses/" DESTINATION "${resource_destination}/third-party-licenses")
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/fugseg/LICENSE"
+  DESTINATION "${resource_destination}/third-party-licenses" RENAME FugSeg-MIT.txt)
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ground_segmentation/LICENSE.txt"
   DESTINATION "${resource_destination}/third-party-licenses" RENAME GSeg3D-BSD-3-Clause.txt)
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/patchwork_plusplus/LICENSE"

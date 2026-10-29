@@ -1,0 +1,3 @@
+// GLFW loads this named resource for the native Win32 window; Explorer also
+// uses the multi-resolution icon embedded in the executable.
+GLFW_ICON ICON "@CMAKE_CURRENT_SOURCE_DIR@/resources/icons/lidar-studio.ico"
