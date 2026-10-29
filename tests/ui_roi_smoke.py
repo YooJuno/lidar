@@ -100,31 +100,32 @@ def main():
             x11.focus(window); x11.resize(window, 1600, 960)
             x11.key(window,"r")  # Opens ROI editor without a fragile tab position.
             x11.key(window,"Escape")  # Cancel drawing mode, keeping the editor open.
-            x11.click(window,75,300)  # Numeric/preset box at view center.
-            count(2205,"create_box_at_view_center",1)
+            x11.click(window,65,290)  # A 4 m box at view center, ready for direct editing.
+            count(125,"create_box_at_view_center",1)
+            x11.click(window,120,564)  # Exact fields are optional, below the direct controls.
             user_profile=Path(env["XDG_CONFIG_HOME"])/"lidar_viewer/profiles/default.cfg"
             if user_profile.is_file(): profile=user_profile
-            enter(270,508,-2,False)
-            for x,value in [(75,4),(170,2),(270,2)]: enter(x,564,value,False)
-            enter(120,596,90,False)
+            enter(270,580,-2,False)
+            for x,value in [(75,4),(170,2),(270,2)]: enter(x,641,value,False)
+            enter(120,700,90,False)
             count(45,"direct_center_size_and_yaw_input")
-            enter(120,596,45,False)
+            enter(120,700,45,False)
             count(21,"yaw_edit_changes_crop")
-            enter(120,596,90,False)
+            enter(120,700,90,False)
             count(45,"yaw_restore")
-            x11.click(window,170,300)  # Distinct, adjacent duplicate.
+            x11.click(window,163,290)  # Distinct, adjacent duplicate.
             count(81,"duplicate_is_offset_and_keeps_dimensions",2)
-            enter(75,508,8,False);enter(170,508,0,False);enter(120,596,0,False)
+            enter(75,580,8,False);enter(170,580,0,False);enter(120,700,0,False)
             count(90,"multiple_boxes_union",2)
             capture(x11,window,output/"01_editor.png")
-            x11.click(window,270,300)
+            x11.click(window,201,290)
             count(45,"delete_selected_box",1)
             chord("z");count(90,"undo_delete",2)
             chord("y");count(45,"redo_delete",1)
             chord("z");count(90,"restore_union",2)
             # A click on Delete must not merge into the preceding text edit.
-            enter(120,452,"nearby",False,commit=False)
-            x11.click(window,270,300)
+            enter(120,519,"nearby",False,commit=False)
+            x11.click(window,201,290)
             chord("z");count(90,"undo_delete_preserves_unsubmitted_name",2)
             result["checks"]["name_edit_and_delete_are_separate_transactions"]='"nearby"' in profile.read_text()
             x11.click(window,46,212);count(3125,"crop_off_restores_full_cloud")
@@ -140,8 +141,21 @@ def main():
             chord("y")
             x11.click(window,170,850)
             before_move=profile.read_text()
+            # Direct manipulation changes geometry without typing coordinates.
+            drag(1100,570,1140,600)
+            x11.click(window,170,850)
+            resized=profile.read_text()
+            result["checks"]["corner_handle_resizes_box"]=roi_lines(resized)!=roi_lines(before_move)
+            chord("z");x11.click(window,170,850)
+            result["checks"]["undo_resize_restores_exact_box"]=roi_lines(profile.read_text())==roi_lines(before_move)
+            drag(950,270,1115,435)
+            x11.click(window,170,850)
+            last=[line for line in profile.read_text().splitlines() if line.startswith("roi_box=")][-1]
+            result["checks"]["round_handle_rotates_box"]=abs(abs(float(last.split()[-1]))-90)<2
+            chord("z");x11.click(window,170,850)
+            result["checks"]["undo_rotation_restores_exact_box"]=roi_lines(profile.read_text())==roi_lines(before_move)
             # In top view the footprint is at (800,300)..(1100,570).
-            x11.click(window,620,102)  # Canvas Move tool.
+            x11.click(window,485,102)  # Canvas Move tool.
             drag(950,420,1000,450)
             x11.click(window,170,850)
             result["checks"]["canvas_move_changes_box_center"]=profile.read_text()!=before_move
@@ -161,10 +175,10 @@ def main():
             chord("z");x11.click(window,170,850)
             result["checks"]["undo_rotated_draw_preserves_original_boxes"]=roi_lines(profile.read_text())==roi_lines(before_move)
             # Ground runs once for this frame; subsequent ROI changes reuse it.
-            x11.click(window,105,140);x11.click(window,46,222)
+            x11.click(window,155,140);x11.click(window,46,222)
             x11.key(window,"r");x11.key(window,"Escape")
-            enter(75,508,1,False);x11.click(window,170,850)
-            enter(75,508,2,False);x11.click(window,170,850)
+            enter(75,580,1,False);x11.click(window,170,850)
+            enter(75,580,2,False);x11.click(window,170,850)
             passes=re.findall(r"ROI applied: .*ground passes (\d+)",(output/"viewer.log").read_text())
             result["checks"]["roi_edits_reuse_ground_segmentation"]=len(passes)>=2 and passes[-2:]==["1","1"]
             capture(x11,window,output/"03_cached_ground.png")

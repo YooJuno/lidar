@@ -74,6 +74,34 @@ inline RoiBox RoiFromDrag(Vec3 a, Vec3 b, float center_z, float height, const st
   ValidateRoiBox(box); return box;
 }
 
+// Resize in the box's own axes, holding the opposite edge/corner fixed.
+inline RoiBox ResizeRoi(const RoiBox & original, Vec3 pointer, int handle_x, int handle_y)
+{
+  auto box=original;
+  const float yaw=box.yaw_deg*kPi/180.f,c=std::cos(yaw),s=std::sin(yaw);
+  const auto delta=pointer-original.center;
+  const float x=delta.x*c+delta.y*s,y=-delta.x*s+delta.y*c;
+  float low_x=-box.size.x*.5f,high_x=-low_x,low_y=-box.size.y*.5f,high_y=-low_y;
+  if (handle_x<0) low_x=std::min(x,high_x-.05f);
+  if (handle_x>0) high_x=std::max(x,low_x+.05f);
+  if (handle_y<0) low_y=std::min(y,high_y-.05f);
+  if (handle_y>0) high_y=std::max(y,low_y+.05f);
+  const float center_x=(low_x+high_x)*.5f,center_y=(low_y+high_y)*.5f;
+  box.center=original.center+Vec3{center_x*c-center_y*s,center_x*s+center_y*c,0};
+  box.size.x=high_x-low_x;box.size.y=high_y-low_y;
+  ValidateRoiBox(box);return box;
+}
+
+inline RoiBox RotateRoi(const RoiBox & original, Vec3 start, Vec3 pointer, bool snap=false)
+{
+  auto box=original;
+  const auto a=start-box.center,b=pointer-box.center;
+  if (a.x*a.x+a.y*a.y<1e-8f || b.x*b.x+b.y*b.y<1e-8f) return box;
+  box.yaw_deg=std::remainder(original.yaw_deg+(std::atan2(b.y,b.x)-std::atan2(a.y,a.x))*180.f/kPi,360.f);
+  if (snap) box.yaw_deg=std::round(box.yaw_deg/15.f)*15.f;
+  return box;
+}
+
 // Normalized viewport coordinates: left/bottom=-1, right/top=+1. Intersect
 // the orthographic display ray with a raw LiDAR Z plane, including IMU tilt.
 inline std::optional<Vec3> RoiPointFromTopView(float nx, float ny, float aspect,

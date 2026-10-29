@@ -29,7 +29,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build libglfw3-dev libglew-dev libpcl-dev libnanoflann-dev \
             ros-jazzy-rosbag2-cpp ros-jazzy-sensor-msgs ros-jazzy-tf2-msgs ros-jazzy-rclcpp \
-            ros-jazzy-rclpy ros-jazzy-rmw-fastrtps-cpp ros-jazzy-rosbag2-storage-mcap ros-jazzy-rosbag2-storage-sqlite3 \
+            ros-jazzy-rclpy ros-jazzy-rosbag2-py ros-jazzy-rmw-fastrtps-cpp ros-jazzy-rosbag2-storage-mcap ros-jazzy-rosbag2-storage-sqlite3 \
             zenity xvfb xauth x11-utils x11-xserver-utils libxtst6 ffmpeg \
             python3-pil python3-yaml libgl1-mesa-dri dpkg-dev
       - name: Configure
@@ -69,6 +69,22 @@ jobs:
           source /opt/ros/jazzy/setup.bash
           xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_alignment_smoke.py \
             --viewer build/lidar_viewer --output build/test_artifacts/alignment
+      - name: Playback continuity and direct ROI manipulation GUI test
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_playback_smoke.py \
+            --viewer build/lidar_viewer --output build/test_artifacts/playback
+      - name: Application settings persistence GUI test
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_app_settings_smoke.py \
+            --viewer build/lidar_viewer --output build/test_artifacts/app-settings
       - name: Package Ubuntu
         run: |
           source /opt/ros/jazzy/setup.bash

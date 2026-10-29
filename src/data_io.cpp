@@ -281,10 +281,12 @@ FrameData LoadOusterLegacyFrame(const FrameHandle & handle)
 }  // namespace
 
 std::vector<FrameHandle> ResolveInputFrames(
-  const fs::path & input, const std::string & bag_topic, const std::string & imu_topic)
+  const fs::path & input, const std::string & bag_topic, const std::string & imu_topic,
+  lidar_viewer::InputLoadState * load)
 {
+  if (load) load->CheckCancelled();
   if (IsRos2BagInput(input)) {
-    return ResolveBagFrames(input, bag_topic, imu_topic);
+    return ResolveBagFrames(input, bag_topic, imu_topic, load);
   }
   if (fs::is_regular_file(input)) {
     if (input.extension() != ".bin") {
@@ -299,6 +301,7 @@ std::vector<FrameHandle> ResolveInputFrames(
 
   std::vector<fs::path> files;
   for (const auto & entry : fs::recursive_directory_iterator(input)) {
+    if (load) load->CheckCancelled();
     if (entry.is_regular_file() && entry.path().extension() == ".bin") {
       files.push_back(entry.path());
     }
@@ -307,6 +310,7 @@ std::vector<FrameHandle> ResolveInputFrames(
   std::sort(files.begin(), files.end());
   std::vector<FrameHandle> frames;
   for (const auto & file_path : files) {
+    if (load) load->CheckCancelled();
     auto resolved = ResolveFramesFromFile(file_path);
     frames.insert(frames.end(), resolved.begin(), resolved.end());
   }

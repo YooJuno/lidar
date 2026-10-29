@@ -33,9 +33,11 @@ struct GroundRemovalParams
   int max_iterations{240};
   int min_inliers{80};
 
-  // Patchwork++-style concentric zone model (CZM).  Each radial patch gets
-  // its own low-point seeds and locally fitted ground plane, so slopes and
-  // crowned/uneven roads are not forced onto one global plane.
+  // Original Patchwork++ library; height comes from the viewer's calibrated
+  // sensor origin. Sequence identity resets adaptive history on a new input/seek.
+  float sensor_height_m{1.7f};
+  std::uint64_t sequence_id{0};
+  // Retained configuration keys; the original CZM uses four zones.
   int patchwork_num_zones{4};
   int patchwork_num_sectors{32};
   int patchwork_min_points_per_patch{12};
@@ -57,7 +59,7 @@ struct GroundRemovalParams
   float gseg3d_ground_inlier_threshold_m{0.20f};
   float gseg3d_centroid_search_radius_m{5.0f};
   float gseg3d_ground_height_m{0.0f};
-  float gseg3d_max_ground_height_deviation_m{0.10f};
+  float gseg3d_max_ground_height_deviation_m{0.30f};
   float gseg3d_cuda_seed_radius_m{15.0f};
   float gseg3d_cuda_cell_size_m{0.50f};
 };
@@ -97,7 +99,7 @@ GroundRemovalResult RunGroundRemovalFastGrid(
   const std::vector<KittiPoint> & input,
   const GroundRemovalParams & params);
 
-GroundRemovalResult RunGroundRemovalPlaceholder(
+GroundRemovalResult RunGroundSegmentation(
   const std::vector<KittiPoint> & input,
   const GroundRemovalParams & params);
 }  // namespace lidar_viewer::algorithms
