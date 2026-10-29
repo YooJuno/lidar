@@ -183,6 +183,18 @@ void TestFastGroundBackends()
   }
 }
 
+void TestThreeDimensionalClusters()
+{
+  auto params=Unfiltered();params.mode="euclidean_3d";params.tolerance_m=.5f;params.max_tolerance_m=.5f;params.range_tolerance_scale=0;
+  // Two directly stacked, disconnected surfaces must be distinct in XYZ.
+  std::vector<KittiPoint> points{{0,0,0,0},{.1f,0,0,0},{0,0,2,0},{.1f,0,2,0}};
+  Check(Canonical(RunClustering(points,params))==Membership{{0,1},{2,3}},"XYZ clustering joined disconnected stacked surfaces");
+  params.mode="euclidean";
+  Check(Canonical(RunClustering(points,params))==Membership{{0,1,2,3}},"Explicit projected XY mode changed its documented connectivity");
+  params.mode="euclidean_3d";points={{0,0,0,0},{.4f,0,.4f,0},{.7f,0,.4f,0}};
+  Check(Canonical(RunClustering(points,params))==Membership{{0},{1,2}},"XYZ clustering used separate per-axis limits instead of Euclidean distance");
+}
+
 void TestGroundQuality()
 {
   for (const float slope : {0.f,.12f}) {
@@ -220,6 +232,7 @@ void RunAlgorithmRegressionTests()
 {
   TestRotatedBoxes();
   TestConnectivity();
+  TestThreeDimensionalClusters();
   TestFastGroundBackends();
   TestGroundQuality();
   bool rejected=false;

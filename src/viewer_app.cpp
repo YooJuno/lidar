@@ -20,6 +20,7 @@
 #include "lidar_viewer/ui_icons.hpp"
 #include "lidar_viewer/file_dialog.hpp"
 #include "lidar_viewer/live_io.hpp"
+#include "lidar_viewer/learned_detector.hpp"
 #include "lidar_viewer/platform.hpp"
 
 #include <algorithm>
@@ -43,6 +44,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -333,6 +335,7 @@ struct ClusterBoxRenderer
     Color line_color{};
     std::vector<Vec3> fill_vertices;
     std::vector<Vec3> line_vertices;
+    std::size_t fill_first{0},line_first{0};
   };
   std::vector<Batch> batches;
   bool dirty{true};
@@ -521,6 +524,14 @@ struct ViewerState
   lidar_viewer::algorithms::PipelineConfig algorithm_config;
   std::vector<lidar_viewer::algorithms::Cluster> clusters;
   std::vector<lidar_viewer::algorithms::Detection> detections;
+  std::unique_ptr<lidar_viewer::LearnedDetector> detector;
+  std::vector<KittiPoint> detector_input;
+  std::vector<lidar_viewer::algorithms::Detection> full_detections;
+  std::uint64_t detector_revision{1}, detector_submitted{0}, detector_completed{0};
+  float detector_yaw{0}, detector_latency_ms{0};
+  double detector_submitted_at{0};
+  std::string detector_detail, detector_error;
+  bool detector_retry{false}, detector_cli_override{false};
   std::string dataset_profile{"default"};
   std::unordered_map<std::size_t, FrameData> frame_cache;
   std::deque<std::size_t> frame_cache_order;
@@ -653,16 +664,22 @@ void AppendBoxFace(
 void AppendClusterBox(
   const lidar_viewer::algorithms::BoundingBox3D & bounds,
   std::vector<Vec3> & fill_vertices,
-  std::vector<Vec3> & line_vertices)
+  std::vector<Vec3> & line_vertices,
+  const lidar_viewer::algorithms::OrientedBox3D & oriented = {})
 {
-  const Vec3 p000{bounds.min.x, bounds.min.y, bounds.min.z};
-  const Vec3 p100{bounds.max.x, bounds.min.y, bounds.min.z};
-  const Vec3 p110{bounds.max.x, bounds.max.y, bounds.min.z};
-  const Vec3 p010{bounds.min.x, bounds.max.y, bounds.min.z};
-  const Vec3 p001{bounds.min.x, bounds.min.y, bounds.max.z};
-  const Vec3 p101{bounds.max.x, bounds.min.y, bounds.max.z};
-  const Vec3 p111{bounds.max.x, bounds.max.y, bounds.max.z};
-  const Vec3 p011{bounds.min.x, bounds.max.y, bounds.max.z};
+  const auto corner=[&](float x,float y,float z) {
+    return oriented.valid ? oriented.center+oriented.axis_x*(x*oriented.half_length)+oriented.axis_y*(y*oriented.half_width)+
+      Vec3{0,0,(z<0 ? oriented.min_z : oriented.max_z)-oriented.center.z} :
+      Vec3{x<0 ? bounds.min.x : bounds.max.x,y<0 ? bounds.min.y : bounds.max.y,z<0 ? bounds.min.z : bounds.max.z};
+  };
+  const Vec3 p000=corner(-1,-1,-1);
+  const Vec3 p100=corner(1,-1,-1);
+  const Vec3 p110=corner(1,1,-1);
+  const Vec3 p010=corner(-1,1,-1);
+  const Vec3 p001=corner(-1,-1,1);
+  const Vec3 p101=corner(1,-1,1);
+  const Vec3 p111=corner(1,1,1);
+  const Vec3 p011=corner(-1,1,1);
 
   AppendBoxFace(fill_vertices, p000, p100, p110, p010);
   AppendBoxFace(fill_vertices, p001, p011, p111, p101);
@@ -714,7 +731,7 @@ void RebuildClusterBoxes(ViewerState & state)
     return;
   }
 
-  if (state.algorithm_config.detection.enabled && !state.detections.empty()) {
+  if (state.algorithm_config.detection.enabled) {
     state.cluster_boxes.batches.reserve(5);
     for (const auto & detection : state.detections) {
       const auto [fill_color, line_color] = DetectionClassColors(detection.class_id);
@@ -732,9 +749,10 @@ void RebuildClusterBoxes(ViewerState & state)
         state.cluster_boxes.batches.push_back({fill_color, line_color, {}, {}});
         batch_it = std::prev(state.cluster_boxes.batches.end());
       }
-      AppendClusterBox(detection.bounds, batch_it->fill_vertices, batch_it->line_vertices);
+      AppendClusterBox(detection.bounds, batch_it->fill_vertices, batch_it->line_vertices, detection.oriented_bounds);
     }
-  } else {
+  }
+  if (state.algorithm_config.clustering.enabled) {
     state.cluster_boxes.batches.push_back({
       {0.08f, 0.72f, 1.0f, 0.12f},
       {0.08f, 0.86f, 1.0f, 0.86f},
@@ -745,11 +763,66 @@ void RebuildClusterBoxes(ViewerState & state)
     batch.fill_vertices.reserve(state.clusters.size() * 36);
     batch.line_vertices.reserve(state.clusters.size() * 24);
     for (const auto & cluster : state.clusters) {
-      AppendClusterBox(cluster.bounds, batch.fill_vertices, batch.line_vertices);
+      AppendClusterBox(cluster.bounds, batch.fill_vertices, batch.line_vertices, cluster.oriented_bounds);
     }
   }
 
   state.cluster_boxes.dirty = true;
+}
+
+void FilterDetections(ViewerState & state)
+{
+  state.detections.clear();
+  if (state.algorithm_config.detection.enabled && state.detector_completed==state.detector_revision) {
+    const lidar_viewer::PreparedRoi roi(state.roi,state.roi_frame);
+    for (const auto & detection:state.full_detections)
+      if (roi.Contains(detection.oriented_bounds.center)) state.detections.push_back(detection);
+  }
+  RebuildClusterBoxes(state);
+}
+
+double DetectorClock()
+{
+  return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+bool DetectorFramePending(const ViewerState & state)
+{
+  if (!state.algorithm_config.detection.enabled || !state.detector ||
+      state.detector_submitted!=state.detector_revision || state.detector_completed==state.detector_revision) return false;
+  const auto status=state.detector->Status();
+  // Let playback continue during startup or failure. Once ready, keep cloud
+  // and boxes on the same revision. A slow backend never blocks UI or recording.
+  return status.ready && !status.failed && DetectorClock()-state.detector_submitted_at<2.;
+}
+
+bool UpdateDetector(ViewerState & state)
+{
+  if (!state.algorithm_config.detection.enabled) return false;
+  if (state.detector_input.empty()) {
+    if (state.detector_completed!=state.detector_revision) {
+      state.detector_completed=state.detector_revision;state.full_detections.clear();FilterDetections(state);
+    }
+    return false;
+  }
+  if (!state.detector || state.detector_retry) {
+    if (!state.detector) state.detector=std::make_unique<lidar_viewer::LearnedDetector>();
+    state.detector->Start(lidar_viewer::ProjectResourcePath("python"));
+    state.detector_retry=false;state.detector_submitted=0;state.detector_error.clear();
+  }
+  if (state.detector_submitted!=state.detector_revision) {
+    state.detector->Submit(state.detector_revision,state.detector_input,state.algorithm_config.detection.min_confidence,state.detector_yaw);
+    state.detector_submitted=state.detector_revision;state.detector_submitted_at=DetectorClock();
+  }
+  if (auto result=state.detector->Poll();result && result->revision==state.detector_revision) {
+    state.detector_completed=result->revision;state.full_detections=std::move(result->detections);
+    state.detector_latency_ms=result->latency_ms;state.detector_detail=result->detail;state.detector_error=result->error;
+    FilterDetections(state);
+    if (std::getenv("LIDAR_VIEWER_DETECTOR_TRACE"))
+      std::cout<<"Detector frame "<<state.current_index<<" revision "<<state.detector_revision<<" boxes "<<state.detections.size()<<" full "<<state.full_detections.size()<<std::endl;
+    return true;
+  }
+  return false;
 }
 
 void BuildFileGroups(ViewerState & state)
@@ -910,8 +983,8 @@ void ApplyRoiResult(ViewerState & state, const FrameData & processed, std::size_
     frame.points.assign(processed.points.begin(),processed.points.begin()+static_cast<std::ptrdiff_t>(obstacles));
     roi.Filter(frame.points);
   }
-  auto clusters=lidar_viewer::algorithms::RunClusteringPlaceholder(frame.points,state.algorithm_config.clustering);
-  auto detections=lidar_viewer::algorithms::RunDetectionPlaceholder(frame.points,clusters,state.algorithm_config.detection);
+  auto clusters=state.ground_removal_enabled ? lidar_viewer::algorithms::RunClustering(frame.points,state.algorithm_config.clustering) :
+    std::vector<lidar_viewer::algorithms::Cluster>{};
   const auto retained_obstacles=frame.points.size();
   if (!roi.RejectsAll()) {
     frame.points.reserve(frame.points.size()+processed.points.size()-obstacles);
@@ -922,9 +995,9 @@ void ApplyRoiResult(ViewerState & state, const FrameData & processed, std::size_
   }
   RecomputeFrameBounds(frame);
   state.ground_removed_count=frame.points.size()-retained_obstacles;
-  state.frame=std::move(frame); state.clusters=std::move(clusters); state.detections=std::move(detections);
+  state.frame=std::move(frame); state.clusters=std::move(clusters);
   state.roi_frame=coordinates;
-  RebuildRoiGeometry(state); RebuildClusterBoxes(state);
+  RebuildRoiGeometry(state); FilterDetections(state);
   state.frame_dirty=true; state.roi_pending=false;
   state.roi_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
 }
@@ -948,6 +1021,17 @@ void ApplyCalibration(ViewerState & state, const FrameData * source = nullptr,
   for (auto & point : frame.points) {
     const auto rotated=ApplyCalibrationTransform({point.x,point.y,point.z},transform);
     point.x=rotated.x; point.y=rotated.y; point.z=rotated.z;
+  }
+  ++state.detector_revision;state.full_detections.clear();state.detections.clear();state.detector_error.clear();
+  state.detector_yaw=resolved.effective.yaw_deg*kPi/180.f;
+  state.detector_input.clear();
+  if (state.algorithm_config.detection.enabled) {
+    // Organized XT32 scans contain zero XYZ for missing returns. Do not turn
+    // those into a dense artificial pillar when height alignment translates Z.
+    const auto & raw=(source ? *source : state.base_frame).points;
+    state.detector_input.reserve(frame.points.size());
+    for (std::size_t i=0;i<frame.points.size();++i)
+      if (raw[i].x!=0 || raw[i].y!=0 || raw[i].z!=0) state.detector_input.push_back(frame.points[i]);
   }
   std::size_t obstacles=frame.points.size();
   if (state.ground_removal_enabled && !frame.points.empty()) {
@@ -1327,6 +1411,7 @@ void CompleteBagLoad(ViewerState & state)
     const auto profile=DetectDatasetProfile(state.bag_sources[selected].path);
     const bool change_profile = state.dataset_profile != profile;
     staged.dataset_profile = profile;
+    staged.detector_cli_override=state.detector_cli_override;
     if (change_profile) {
       staged.calibration = {0, 0, 0, 0};
       staged.algorithm_config = lidar_viewer::LoadPipelineConfig(AlgorithmsConfigPath());
@@ -1360,6 +1445,8 @@ void CompleteBagLoad(ViewerState & state)
     state.live_mode = false;
     state.live_has_frame = false;
     state.frame = std::move(staged.frame);
+    state.detector_input=std::move(staged.detector_input);state.detector_yaw=staged.detector_yaw;
+    ++state.detector_revision;state.full_detections.clear();
     state.processed_frame=std::move(staged.processed_frame);
     state.processed_obstacles=staged.processed_obstacles;
     state.processing_ms=staged.processing_ms; state.roi_ms=staged.roi_ms;
@@ -1464,7 +1551,7 @@ void ConnectLive(ViewerState & state)
   state.frames.clear(); state.file_groups.clear(); state.current_bag_source.reset();
   state.base_frame = {}; state.frame = {}; state.processed_frame={}; state.processed_obstacles=0;
   state.roi_gesture.active=false; state.roi_pending=false; state.roi_tool=ViewerState::RoiTool::Navigate;
-  state.clusters.clear(); state.detections.clear();
+  state.clusters.clear(); state.detections.clear();state.full_detections.clear();state.detector_input.clear();++state.detector_revision;
   RebuildClusterBoxes(state);
   state.roi_renderer.vertices.clear(); state.roi_renderer.dirty = true;
   state.global_ground_offset = 0; state.alignment_initialized = true;
@@ -1481,7 +1568,7 @@ void UpdateLiveFrame(ViewerState & state)
 {
   if (!state.live_mode) return;
   state.live_stats = state.live.Stats();
-  if (!state.live_stats.connected || state.live_paused) return;
+  if (!state.live_stats.connected || state.live_paused || DetectorFramePending(state)) return;
   auto next = state.live.TakeLatest();
   if (!next) return;
   try {
@@ -1665,7 +1752,11 @@ void SaveSettings(ViewerState & state)
   out << "ground_removal_enabled=" << (state.ground_removal_enabled ? 1 : 0) << '\n';
   out << "ground_view=" << GroundViewKey(state.ground_view) << '\n';
   out << "clustering_enabled=" << (state.algorithm_config.clustering.enabled ? 1 : 0) << '\n';
+  out << "clustering_mode=" << state.algorithm_config.clustering.mode << '\n';
+  out << "clustering_tolerance_m=" << state.algorithm_config.clustering.tolerance_m << '\n';
+  out << "clustering_vertical_gap_m=" << state.algorithm_config.clustering.max_vertical_gap_m << '\n';
   out << "detection_enabled=" << (state.algorithm_config.detection.enabled ? 1 : 0) << '\n';
+  out << "detection_min_score=" << state.algorithm_config.detection.min_confidence << '\n';
   out << "calibration_yaw_deg=" << state.calibration.yaw_deg << '\n';
   out << "calibration_pitch_deg=" << state.calibration.pitch_deg << '\n';
   out << "calibration_roll_deg=" << state.calibration.roll_deg << '\n';
@@ -1820,8 +1911,17 @@ void LoadSettingsFile(ViewerState & state, const fs::path & path)
         else throw std::invalid_argument("Unknown ground display mode");
       } else if (key == "clustering_enabled") {
         state.algorithm_config.clustering.enabled = (ParseStrictInt(value) != 0);
+      } else if (key == "clustering_mode") {
+        if (value!="euclidean" && value!="euclidean_3d") throw std::invalid_argument("Unknown cluster mode");
+        state.algorithm_config.clustering.mode=value;
+      } else if (key == "clustering_tolerance_m") {
+        state.algorithm_config.clustering.tolerance_m=std::clamp(ParseFiniteFloat(value),.1f,1.5f);
+      } else if (key == "clustering_vertical_gap_m") {
+        state.algorithm_config.clustering.max_vertical_gap_m=std::clamp(ParseFiniteFloat(value),.1f,2.5f);
       } else if (key == "detection_enabled") {
         state.algorithm_config.detection.enabled = (ParseStrictInt(value) != 0);
+      } else if (key == "detection_min_score") {
+        state.algorithm_config.detection.min_confidence=std::clamp(ParseFiniteFloat(value),.1f,.9f);
       } else if (key == "calibration_yaw_deg") {
         state.calibration.yaw_deg = std::clamp(ParseFiniteFloat(value), -180.0f, 180.0f);
       } else if (key == "calibration_pitch_deg") {
@@ -1883,6 +1983,7 @@ void LoadSettings(ViewerState & state)
   }
   state.saved_roi=state.roi; state.roi_history.Clear();
   if (state.app_settings_loaded) state.ui_scale=app_scale;
+  if (state.detector_cli_override) state.algorithm_config.detection.enabled=true;
   if (state.ground_view!=ViewerState::GroundView::All) state.ground_removal_enabled=true;
 }
 
@@ -3048,18 +3149,58 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       ImGui::EndTabItem();
     }
     if (begin_tab("Objects")) {
-      SectionTitle("Obstacle objects");
-      if (ImGui::Checkbox("Cluster obstacles", &state.algorithm_config.clustering.enabled)) {
-        reprocess = true;
-        if (!state.algorithm_config.clustering.enabled) state.algorithm_config.detection.enabled = false;
+      SectionTitle("Object detection");
+      if (ImGui::Checkbox("Detect objects",&state.algorithm_config.detection.enabled)) {
+        reprocess=true;
+        if (!state.algorithm_config.detection.enabled) state.detector_cli_override=false;
+        else if (state.detector && (!state.detector->Status().configured || state.detector->Status().failed)) state.detector_retry=true;
       }
-      ImGui::BeginDisabled(!state.algorithm_config.clustering.enabled);
-      reprocess |= ImGui::Checkbox("Geometric labels (experimental)", &state.algorithm_config.detection.enabled);
-      ImGui::EndDisabled();
-      if (!state.algorithm_config.clustering.enabled) ImGui::TextDisabled("Requires obstacle clustering.");
-      ImGui::TextWrapped("Labels are shape-based heuristics, not trained object recognition.");
-      Metric("Clusters", std::to_string(state.clusters.size()));
-      Metric("Labels", std::to_string(state.detections.size()));
+      ImGui::TextDisabled("CenterPoint tiny  /  Autoware v4.1");
+      Tip("Original trained ONNX weights. Five classes, full 360 degree scan, single-frame XYZT. Requires gravity-aligned LiDAR and correct ground height in Align.");
+      ImGui::TextUnformatted("Person / Bicycle\nCar / Truck / Bus");
+      if (state.algorithm_config.detection.enabled) {
+        const auto status=state.detector ? state.detector->Status() : lidar_viewer::DetectorStatus{};
+        if (status.ready) {
+          Metric("Backend",status.provider=="CUDAExecutionProvider" ? "CUDA GPU" : "CPU");
+          Metric("Detections",std::to_string(state.detections.size()));
+          if (state.detector_completed==state.detector_revision) {
+            ImGui::TextDisabled("Inference pipeline: %.1f ms",state.detector_latency_ms);
+            Tip(state.detector_detail.c_str());
+          } else ImGui::TextDisabled("Processing current frame...");
+        } else ImGui::TextWrapped("%s",status.message.empty() ? (state.detector_input.empty() ? "Waiting for valid LiDAR returns." : "Starting detector...") : status.message.c_str());
+        if (!state.detector_error.empty()) ImGui::TextWrapped("%s",state.detector_error.c_str());
+        if (!status.configured || status.failed) {
+          ImGui::TextWrapped("Setup: python3 tools/setup_detector.py\nNVIDIA GPU: add --cuda");
+          if (ImGui::Button("Retry model",{-1,0})) state.detector_retry=true;
+        }
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::SliderFloat("##DetectionScore",&state.algorithm_config.detection.min_confidence,.1f,.9f,"Min score: %.2f")) {
+          ++state.detector_revision;state.full_detections.clear();FilterDetections(state);
+        }
+        Tip("Neural classification score, not a calibrated probability. Raising it hides uncertain detections. No ground-truth accuracy has been measured for this sensor.");
+      }
+      ImGui::Spacing();ImGui::Separator();ImGui::Spacing();
+      if (ImGui::CollapsingHeader("Geometry clusters")) {
+        if (ImGui::Checkbox("Show obstacle clusters",&state.algorithm_config.clustering.enabled)) {
+          if (state.algorithm_config.clustering.enabled) state.ground_removal_enabled=true;
+          reprocess=true;
+        }
+        Tip("Optional geometric grouping, independent of the learned detector. Ground is classified first to avoid road points joining separate objects.");
+        Metric("Clusters",std::to_string(state.clusters.size()));
+        if (state.algorithm_config.clustering.enabled && !state.ground_removal_enabled)
+          ImGui::TextWrapped("Enable Classify ground in Ground to isolate obstacles.");
+        ImGui::BeginDisabled(!state.algorithm_config.clustering.enabled);
+        int metric=state.algorithm_config.clustering.mode=="euclidean_3d" ? 0 : 1;
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::Combo("##ClusterMetric",&metric,"3D distance\0Projected XY distance\0")) {
+          state.algorithm_config.clustering.mode=metric==0 ? "euclidean_3d" : "euclidean";reprocess=true;
+        }
+        ImGui::SetNextItemWidth(-1);
+        reprocess|=ImGui::SliderFloat("##ClusterDistance",&state.algorithm_config.clustering.tolerance_m,.1f,1.5f,"XY distance: %.2f m");
+        ImGui::SetNextItemWidth(-1);
+        reprocess|=ImGui::SliderFloat("##ClusterVerticalGap",&state.algorithm_config.clustering.max_vertical_gap_m,.1f,2.5f,"Vertical gap: %.2f m");
+        ImGui::EndDisabled();
+      }
       ImGui::EndTabItem();
     }
     ImGui::EndTabBar();
@@ -3400,71 +3541,72 @@ void RenderGrid(const ViewerState & state, const Mat4 & mvp)
 
 void UploadClusterBoxes(ViewerState & state)
 {
-  state.cluster_boxes.dirty = false;
+  std::vector<Vec3> fills,lines;
+  for (auto & batch:state.cluster_boxes.batches) {
+    batch.fill_first=fills.size();batch.line_first=lines.size();
+    fills.insert(fills.end(),batch.fill_vertices.begin(),batch.fill_vertices.end());
+    lines.insert(lines.end(),batch.line_vertices.begin(),batch.line_vertices.end());
+  }
+  glBindBuffer(GL_ARRAY_BUFFER,state.cluster_boxes.fill_vbo);
+  glBufferData(GL_ARRAY_BUFFER,static_cast<GLsizeiptr>(fills.size()*sizeof(Vec3)),fills.data(),GL_DYNAMIC_DRAW);
+  glBindBuffer(GL_ARRAY_BUFFER,state.cluster_boxes.line_vbo);
+  glBufferData(GL_ARRAY_BUFFER,static_cast<GLsizeiptr>(lines.size()*sizeof(Vec3)),lines.data(),GL_DYNAMIC_DRAW);
+  state.cluster_boxes.dirty=false;
 }
 
-void RenderClusterBoxes(ViewerState & state, const Mat4 & mvp)
+void RenderClusterBoxes(ViewerState & state,const Mat4 & mvp)
 {
-  if (state.ground_view==ViewerState::GroundView::Ground) return;
-  if (
-    (!state.algorithm_config.clustering.enabled && !state.algorithm_config.detection.enabled) ||
-    state.cluster_boxes.batches.empty())
-  {
-    return;
-  }
-
-  if (state.cluster_boxes.dirty) {
-    UploadClusterBoxes(state);
-  }
-
-  glUseProgram(state.grid.program);
-  glUniformMatrix4fv(state.grid.mvp_loc, 1, GL_FALSE, mvp.m.data());
-  glBindVertexArray(state.cluster_boxes.vao);
-  glEnable(GL_DEPTH_TEST);
-  glEnable(GL_BLEND);
-  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-  for (const auto & batch : state.cluster_boxes.batches) {
+  if (state.ground_view==ViewerState::GroundView::Ground ||
+      (!state.algorithm_config.clustering.enabled && !state.algorithm_config.detection.enabled) || state.cluster_boxes.batches.empty()) return;
+  if (state.cluster_boxes.dirty) UploadClusterBoxes(state);
+  glUseProgram(state.grid.program);glUniformMatrix4fv(state.grid.mvp_loc,1,GL_FALSE,mvp.m.data());
+  glBindVertexArray(state.cluster_boxes.vao);glEnable(GL_DEPTH_TEST);glEnable(GL_BLEND);
+  glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+  for (const auto & batch:state.cluster_boxes.batches) {
     if (!batch.fill_vertices.empty()) {
-      glDepthMask(GL_FALSE);
-      glBindBuffer(GL_ARRAY_BUFFER, state.cluster_boxes.fill_vbo);
-      glBufferData(
-        GL_ARRAY_BUFFER,
-        static_cast<GLsizeiptr>(batch.fill_vertices.size() * sizeof(Vec3)),
-        batch.fill_vertices.data(),
-        GL_DYNAMIC_DRAW);
-      glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vec3), reinterpret_cast<void *>(0));
-      glUniform4f(
-        state.grid.color_loc,
-        batch.fill_color.r,
-        batch.fill_color.g,
-        batch.fill_color.b,
-        batch.fill_color.a);
-      glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(batch.fill_vertices.size()));
-      glDepthMask(GL_TRUE);
+      glDepthMask(GL_FALSE);glBindBuffer(GL_ARRAY_BUFFER,state.cluster_boxes.fill_vbo);
+      glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,sizeof(Vec3),reinterpret_cast<void *>(0));
+      glUniform4f(state.grid.color_loc,batch.fill_color.r,batch.fill_color.g,batch.fill_color.b,batch.fill_color.a);
+      glDrawArrays(GL_TRIANGLES,static_cast<GLint>(batch.fill_first),static_cast<GLsizei>(batch.fill_vertices.size()));
     }
-
     if (!batch.line_vertices.empty()) {
-      glBindBuffer(GL_ARRAY_BUFFER, state.cluster_boxes.line_vbo);
-      glBufferData(
-        GL_ARRAY_BUFFER,
-        static_cast<GLsizeiptr>(batch.line_vertices.size() * sizeof(Vec3)),
-        batch.line_vertices.data(),
-        GL_DYNAMIC_DRAW);
-      glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vec3), reinterpret_cast<void *>(0));
-      glUniform4f(
-        state.grid.color_loc,
-        batch.line_color.r,
-        batch.line_color.g,
-        batch.line_color.b,
-        batch.line_color.a);
-      glLineWidth(2.0f);
-      glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(batch.line_vertices.size()));
+      glBindBuffer(GL_ARRAY_BUFFER,state.cluster_boxes.line_vbo);
+      glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,sizeof(Vec3),reinterpret_cast<void *>(0));
+      glUniform4f(state.grid.color_loc,batch.line_color.r,batch.line_color.g,batch.line_color.b,batch.line_color.a);
+      glLineWidth(2.f);glDrawArrays(GL_LINES,static_cast<GLint>(batch.line_first),static_cast<GLsizei>(batch.line_vertices.size()));
     }
   }
+  glDepthMask(GL_TRUE);glLineWidth(1.f);glDisable(GL_BLEND);
+}
 
-  glLineWidth(1.0f);
-  glDisable(GL_BLEND);
+void RenderDetectionLabels(const ViewerState & state,const Mat4 & mvp)
+{
+  if (!state.algorithm_config.detection.enabled || state.ground_view==ViewerState::GroundView::Ground) return;
+  const auto & canvas=state.ui_layout.viewport;
+  auto * draw=ImGui::GetForegroundDrawList();
+  draw->PushClipRect({canvas.x,canvas.y},{canvas.x+canvas.w,canvas.y+canvas.h},true);
+  std::vector<ImVec4> labels;
+  for (const auto & detection:state.detections) {
+    const auto & b=detection.oriented_bounds;const Vec3 p{b.center.x,b.center.y,b.max_z};
+    const auto & m=mvp.m;
+    const float w=m[3]*p.x+m[7]*p.y+m[11]*p.z+m[15];if (w<=0) continue;
+    const float x=(m[0]*p.x+m[4]*p.y+m[8]*p.z+m[12])/w;
+    const float y=(m[1]*p.x+m[5]*p.y+m[9]*p.z+m[13])/w;
+    const float z=(m[2]*p.x+m[6]*p.y+m[10]*p.z+m[14])/w;if (z < -1 || z>1) continue;
+    char text[64];std::snprintf(text,sizeof(text),"%s %.2f",lidar_viewer::algorithms::DetectionClassName(detection.class_id),detection.confidence);
+    const auto size=ImGui::CalcTextSize(text);
+    const ImVec2 a{canvas.x+(x+1)*.5f*canvas.w-size.x*.5f,canvas.y+(1-y)*.5f*canvas.h-size.y-5};
+    const ImVec4 rectangle{a.x-4,a.y-2,a.x+size.x+4,a.y+size.y+2};
+    if (rectangle.x<canvas.x || rectangle.z>canvas.x+canvas.w || rectangle.y<canvas.y || rectangle.w>canvas.y+canvas.h) continue;
+    if (std::any_of(labels.begin(),labels.end(),[&](const ImVec4 & other) {
+        return rectangle.x<other.z+3 && rectangle.z>other.x-3 && rectangle.y<other.w+3 && rectangle.w>other.y-3;
+      })) continue;
+    labels.push_back(rectangle);
+    const auto color=DetectionClassColors(detection.class_id).second;
+    draw->AddRectFilled({a.x-4,a.y-2},{a.x+size.x+4,a.y+size.y+2},IM_COL32(12,17,24,210),3);
+    draw->AddText(a,ImGui::ColorConvertFloat4ToU32({color.r,color.g,color.b,1}),text);
+  }
+  draw->PopClipRect();
 }
 
 void RenderAxes(ViewerState & state, const Mat4 & mvp)
@@ -3498,6 +3640,7 @@ int RunViewer(int argc, char ** argv)
     std::string imu_topic;
     bool input_selected = false;
     bool inspect = false;
+    bool detect_objects = false;
     bool autoplay = false;
     bool imu_level = false;
     bool start_2d = false;
@@ -3510,7 +3653,7 @@ int RunViewer(int argc, char ** argv)
     for (int i = 1; i < argc; ++i) {
       const std::string arg = argv[i];
       if (arg == "--help" || arg == "-h") {
-        std::cout << "Usage: lidar_viewer [INPUT] [--live] [--topic /b2/points] [--sensor-height METRES] [--imu-level] [--imu-topic TOPIC] [--2d] [--play] [--inspect] [--record-folder DIR]\n"
+        std::cout << "Usage: lidar_viewer [INPUT] [--live] [--topic /b2/points] [--sensor-height METRES] [--imu-level] [--imu-topic TOPIC] [--2d] [--play] [--detect] [--inspect] [--record-folder DIR]\n"
                   << "INPUT: .bin file/directory, bag collection folder, ROS 2 bag, .mcap, .db3 or metadata.yaml.\n"
                   << "Without INPUT, show an empty viewer. Click Open file to select a recording.\n"
                   << "Open file (Ctrl+O) selects another recording; Add folder remembers bag collections.\n"
@@ -3520,6 +3663,7 @@ int RunViewer(int argc, char ** argv)
                   << "--imu-level: gravity-align roll/pitch using recorded IMU and a known mount rotation.\n"
                   << "--imu-topic: select an IMU topic; otherwise choose one from recorded topics.\n"
                   << "--2d: open top view; right-drag or Q/E rotates, left-drag pans.\n"
+                  << "--detect: enable the installed original CenterPoint model.\n"
                   << "--inspect: index and load the first frame without opening a window.\n"
                   << "ROS 2 bag backend: " << (RosbagInputAvailable() ? "enabled" : "not built") << '\n';
         return 0;
@@ -3549,6 +3693,8 @@ int RunViewer(int argc, char ** argv)
         }
       } else if (arg == "--inspect") {
         inspect = true;
+      } else if (arg == "--detect") {
+        detect_objects=true;
       } else if (arg == "--play") {
         autoplay = true;
       } else if (arg == "--imu-level") {
@@ -3579,6 +3725,7 @@ int RunViewer(int argc, char ** argv)
     state.bag_topic = bag_topic;
     state.bag_imu_topic = imu_topic;
     state.imu_level_cli_override = imu_level;
+    state.detector_cli_override=detect_objects;
     state.bag_sensor_height_override = sensor_height;
     try {
       state.data_folders_config = DataFoldersConfigPath();
@@ -3607,6 +3754,7 @@ int RunViewer(int argc, char ** argv)
     state.algorithm_config = lidar_viewer::LoadPipelineConfig(AlgorithmsConfigPath());
     LoadSettings(state);
     LoadAppSettings(state);
+    if (detect_objects) state.algorithm_config.detection.enabled=true;
     if (imu_level) state.imu_level_enabled = true;
     if (start_2d) SetProjectionMode(state, CameraState::ProjectionMode::View2D);
     if (sensor_height) {
@@ -3662,6 +3810,24 @@ int RunViewer(int argc, char ** argv)
                 << state.frame.points.size()-std::min(state.frame.points.size(),state.ground_removed_count)
                 << " | ground passes " << state.ground_passes << '\n';
       if (state.imu_level_enabled) std::cout << "IMU leveling: " << state.imu_level_result.status << '\n';
+      if (detect_objects && !state.detector_input.empty()) {
+        const double deadline=DetectorClock()+90;
+        while (state.detector_completed!=state.detector_revision) {
+          UpdateDetector(state);
+          const auto status=state.detector ? state.detector->Status() : lidar_viewer::DetectorStatus{};
+          if (!status.configured || status.failed) throw std::runtime_error(status.message);
+          if (DetectorClock()>deadline) throw std::runtime_error("Detector timed out");
+          std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        if (!state.detector_error.empty()) throw std::runtime_error(state.detector_error);
+        std::cout<<"Detector: CenterPoint tiny v4.1 | "<<state.detector->Status().provider<<" | "<<state.detector_latency_ms<<" ms | "<<state.detections.size()<<" boxes\n";
+        for (const auto & detection:state.detections) {
+          const auto & b=detection.oriented_bounds;
+          std::cout<<"  "<<lidar_viewer::algorithms::DetectionClassName(detection.class_id)<<" score "<<detection.confidence<<
+            " center "<<b.center.x<<' '<<b.center.y<<' '<<b.center.z<<" yaw "<<std::atan2(b.axis_x.y,b.axis_x.x)<<'\n';
+        }
+      }
+      if (detect_objects && state.detector_input.empty()) std::cout<<"Detector: no valid LiDAR returns | 0 boxes\n";
       return 0;
     }
 
@@ -3776,7 +3942,8 @@ int RunViewer(int argc, char ** argv)
       CompleteBagPicker(state, window);
       CompleteBagLoad(state);
       const bool requested_frame_ready=CompleteFrameRequest(state);
-      UpdateLiveFrame(state);
+      const bool live_detector_ready=UpdateDetector(state);
+      if (!live_detector_ready) UpdateLiveFrame(state);
       int fb_width = 0, fb_height = 0, window_width = 0, window_height = 0;
       glfwGetFramebufferSize(window, &fb_width, &fb_height);
       glfwGetWindowSize(window, &window_width, &window_height);
@@ -3795,6 +3962,7 @@ int RunViewer(int argc, char ** argv)
       ImGui_ImplGlfw_NewFrame();
       ImGui::NewFrame();
       BuildViewerInterface(state, window);
+      const bool detector_result_ready=UpdateDetector(state) || live_detector_ready;
       const double frame_begin_time = glfwGetTime();
       bool advanced_frame = requested_frame_ready;
 
@@ -3802,7 +3970,7 @@ int RunViewer(int argc, char ** argv)
         state.transient_status.clear();
       }
 
-      if (state.is_playing && state.frames.size() > 1) {
+      if (state.is_playing && state.frames.size() > 1 && !DetectorFramePending(state) && !detector_result_ready) {
         const double now_time = glfwGetTime();
         const double frame_interval = 1.0 / std::max(0.1, state.playback_fps);
         if ((now_time - state.last_frame_advance_time) >= frame_interval) {
@@ -3876,6 +4044,7 @@ int RunViewer(int argc, char ** argv)
       glDrawArrays(GL_POINTS,static_cast<GLint>(visible.first),static_cast<GLsizei>(visible.count));
       RenderGrid(state, mvp);
       RenderClusterBoxes(state, mvp);
+      RenderDetectionLabels(state,mvp);
       RenderRoiBoxes(state, mvp);
       RenderAxes(state, mvp);
       glDisable(GL_SCISSOR_TEST);

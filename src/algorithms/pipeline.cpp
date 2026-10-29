@@ -2,17 +2,15 @@
 
 namespace lidar_viewer::algorithms
 {
-PipelineOutput RunPipelinePlaceholder(
+PipelineOutput RunGeometryPipeline(
   const std::vector<KittiPoint> & input,
   const PipelineConfig & config)
 {
   PipelineOutput output;
   output.ground_removal = RunGroundSegmentation(input, config.ground_removal);
-  output.clusters = RunClusteringPlaceholder(output.ground_removal.non_ground_points, config.clustering);
-  output.detections = RunDetectionPlaceholder(
-    output.ground_removal.non_ground_points,
-    output.clusters,
-    config.detection);
+  output.clusters = RunClustering(output.ground_removal.non_ground_points, config.clustering);
+  // Learned detection consumes the full aligned scene asynchronously through
+  // LearnedDetector. Geometry alone must never manufacture semantic labels.
   return output;
 }
 }  // namespace lidar_viewer::algorithms

@@ -30,7 +30,8 @@ UI는 고정 버전의 [Dear ImGui](https://github.com/ocornut/imgui/tree/f5befd
 - `include/lidar_viewer/camera_2d.hpp`: 회전한 2D 시점의 카메라·이동 좌표계
 - `src/data_io.cpp`: KITTI / Ouster `.bin` 로딩
 - `include/lidar_viewer/data_io.hpp`: 로더가 공유하는 데이터 구조
-- `src/algorithms/`: 노면 제거, 클러스터링, detection placeholder 구현
+- `src/algorithms/`: 노면 제거, 3D/XY 클러스터링, 학습 모델 박스 변환
+- `src/learned_detector.cpp`, `python/lidar_detection/`: 비동기 CenterPoint ONNX 추론
 - `include/lidar_viewer/app.hpp`: 앱 진입 선언
 - `include/lidar_viewer/algorithms/`: 알고리즘 인터페이스와 공통 타입
 
@@ -43,7 +44,7 @@ source /opt/ros/jazzy/setup.bash
 ./build/lidar_viewer --sensor-height 0.57 --imu-level --2d
 ```
 
-BIN 파일이나 단일 bag 폴더를 뷰어에 드래그해 열 수도 있습니다. 하단은 소스 선택·폴더 등록·재생·타임라인에 사용하고, 캔버스 상단에서 2D/3D·전체 맞춤·ROI 도구를 바로 선택합니다.
+BIN 파일이나 단일 bag 폴더를 뷰어에 드래그해 열 수도 있습니다. 하단은 소스 선택·폴더 등록·재생·타임라인에 사용하고, 캔버스 상단에서 2D/3D·ROI 도구를 바로 선택합니다.
 
 입력 경로를 직접 주면 해당 데이터를 열어 시작합니다.
 
@@ -278,3 +279,50 @@ CTest는 다섯 방식 모두에 대해 정답이 정해진 평지·약 7도 경
 xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_playback_smoke.py --viewer build/lidar_viewer --output build/test_artifacts/playback
 xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_app_settings_smoke.py --viewer build/lidar_viewer --output build/test_artifacts/app-settings
 ```
+
+## 사람·차량 인식 — 원본 CenterPoint
+
+**Objects → Detect objects**는 [CenterPoint 논문(CVPR 2021)](https://arxiv.org/abs/2006.11275)에 기반한 [Autoware의 원본 CenterPoint tiny v4.1 모델](https://huggingface.co/AutowareFoundation/lidar_centerpoint)을 실행합니다. 사람·승용차·트럭·버스·자전거 5종을 지원합니다. 이전 박스 크기·점 개수 가중치로 만드는 분류 점수는 제거했습니다. 클러스터가 잘못 합쳐져도 모델의 입력이 잘리지 않도록, 학습 모델은 **지면 제거·ROI 이전의 전체 수평 보정 스캔**을 받습니다.
+
+이 컴퓨터의 GPU 런타임과 모델은 설치·실행 검증을 마쳤습니다. 기본 뷰어 실행 후 Objects에서 켜면 됩니다.
+
+```bash
+source /opt/ros/jazzy/setup.bash
+./build/lidar_viewer --detect
+```
+
+다른 컴퓨터에서는 Python 3.10–3.13으로 선택 기능을 한 번 설치합니다. 시스템 Python 패키지를 바꾸지 않고 사용자 폴더의 별도 가상환경에 설치합니다. Ubuntu에서 venv가 없다면 `python3-venv` 패키지가 필요합니다.
+
+```bash
+# CPU: Ubuntu / Windows / macOS
+python3 tools/setup_detector.py
+# NVIDIA GPU: Linux / Windows x64, CUDA 12 + cuDNN 9 런타임을 별도 환경에 설치
+python3 tools/setup_detector.py --cuda
+# Windows에서는 위 python3 대신 py -3.12 사용 가능
+```
+
+배포본에도 `python/`과 `tools/setup_detector.py`가 포함됩니다. Ubuntu 설치본의 setup 경로는 `/usr/share/lidar_viewer/tools/setup_detector.py`, macOS는 앱의 `Contents/Resources/tools/setup_detector.py`입니다. 설치 후 실행 중인 앱에서는 **Retry model**을 누르거나 Detect objects를 켭니다. CUDA가 실행되지 않으면 실제 사용 중인 CPU 백엔드를 표시합니다.
+
+모델 두 파일(약 20 MB)은 고정 revision `494c8171def40bd36cc2feb323e0a5acbfab132b`에서 내려받고 각각 SHA-256을 검증합니다. 원본 모델 카드도 함께 저장합니다. 기본 Linux 위치는 `~/.local/share/lidar_viewer/detector/`, 연결 설정은 `~/.config/lidar_viewer/detector.cfg`, 오류 로그는 같은 설정 폴더의 `detector.log`입니다. Windows는 LocalAppData/APPDATA, macOS는 Application Support를 사용합니다. 모델·가상환경은 Git과 배포 파일에 넣지 않습니다.
+
+- **Align**에서 지면의 기울기와 높이를 먼저 맞춥니다. 모델 입력은 ±76.8 m XY, Z −4~6 m 범위이며 표시 yaw는 추론에서 되돌린 후 박스에 다시 적용합니다.
+- 이 모델의 네 번째 입력은 intensity가 아닌 **시간 차이**입니다. 현재 스캔 하나의 시간 차이 0을 사용하며, 위치 추정 없이 이전 스캔을 억지로 합치지 않습니다. XT32의 미수신 XYZ=0 반환도 높이를 이동하기 전에 제외합니다.
+- 원본 32-point pillar 특징, 9개 encoder 입력, 480×480 BEV와 원본 가중치를 유지합니다. 표준 ONNX ScatterND로 encoder와 head를 연결해 TensorRT 플러그인·별도 CUDA 컴파일 없이 실행합니다. 샘플 선택은 일시정지 시 결과가 흔들리지 않도록 결정적입니다. 40,000 pillar 상한을 넘으면 가까운 pillar를 우선하고 잘린 수를 처리 시간 툴팁에 표시합니다.
+- 원본 형식의 크기·높이·yaw를 ROS 축으로 변환하고 circle NMS와 회전 BEV IoU NMS로 중복 박스를 억제합니다. 박스 회전과 클래스·점수를 표시하며 겹치는 글자는 숨깁니다. **Min score**는 신경망 분류 점수로, 보정된 확률이 아닙니다.
+- 모델 로딩과 추론은 별도 프로세스/작업 스레드에서 실행합니다. 표시할 스캔과 같은 revision의 박스만 적용합니다. 준비 후 추론이 재생보다 느리면 표시 프레임을 기다리지만 UI와 원본 ROS 구독·녹화는 계속 동작합니다. 초기 로딩·오류·2초 이상 지연은 재생을 막지 않습니다. ROI 편집은 저장된 검출의 중심점을 ROI로 필터링합니다.
+- **Geometry clusters**는 선택적인 기하학 오버레이입니다. 기본 3D 거리는 떨어진 위·아래 면을 구분하며 Projected XY도 선택할 수 있습니다. 지면분리 후 장애물에 적용하며 모델 검출에 의존성을 만들지 않습니다.
+
+실제 KITTI 스캔과 XT32 bag에서 추론·박스 출력까지 확인했지만 **이 XT32 환경의 정답 라벨 기반 AP/recall을 측정한 것은 아닙니다.** 모델의 학습 센서와 장착 위치가 달라 오검출·미검출이 생길 수 있습니다. 현재는 단일 스캔 검출이며 시간 추적 ID나 속도 추정은 제공하지 않습니다. 다른 클래스나 현장 정확도 향상에는 해당 센서 데이터로 평가·추가 학습이 필요합니다.
+
+원본 encoder → 독립 NCHW scatter → 원본 head와 합친 ONNX의 수치 일치, 특징·좌표·NMS 및 프로세스 종료/파이프/최신 프레임 전달 검사는 다음으로 확인합니다. 가중치 경로를 생략한 Python 검사는 NumPy만 필요합니다.
+
+```bash
+ctest --test-dir build --output-on-failure
+python3 tests/test_centerpoint.py
+~/.local/share/lidar_viewer/detector/runtime/bin/python tests/test_centerpoint.py \
+  --model-dir ~/.local/share/lidar_viewer/detector/centerpoint-tiny-v4.1 \
+  --cloud dataset/2011_09_26/2011_09_26_drive_0005_sync/velodyne_points/data/0000000041.bin
+./build/lidar_viewer /path/to/scan.bin --detect --inspect
+```
+
+출처와 라이선스는 `third_party/licenses/Autoware-CenterPoint-NOTICE.txt`와 모델 카드에 기록합니다.

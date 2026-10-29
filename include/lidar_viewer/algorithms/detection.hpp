@@ -18,22 +18,11 @@ enum DetectionClassId
 struct DetectionParams
 {
   bool enabled{false};
-  float min_confidence{0.22f};
+  float min_confidence{0.35f};
   int min_points{10};
 };
 
-class DetectionAlgorithm
-{
-public:
-  virtual ~DetectionAlgorithm() = default;
-  virtual std::vector<Detection> Run(
-    const std::vector<KittiPoint> & input,
-    const std::vector<Cluster> & clusters,
-    const DetectionParams & params) const = 0;
-};
-
-std::vector<Detection> RunDetectionPlaceholder(
-  const std::vector<KittiPoint> & input,
-  const std::vector<Cluster> & clusters,
-  const DetectionParams & params);
+const char * DetectionClassName(int class_id);
+// Worker format: x,y,z,length,width,height,ROS yaw,score,model class.
+Detection DecodeCenterPointBox(const float * box, float display_yaw_rad);
 }  // namespace lidar_viewer::algorithms

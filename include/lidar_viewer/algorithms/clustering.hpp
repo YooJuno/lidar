@@ -38,7 +38,7 @@ public:
     const ClusteringParams & params) const = 0;
 };
 
-std::vector<Cluster> RunClusteringPlaceholder(
+std::vector<Cluster> RunClustering(
   const std::vector<KittiPoint> & input,
   const ClusteringParams & params);
 

@@ -31,7 +31,7 @@ jobs:
             ros-jazzy-rosbag2-cpp ros-jazzy-sensor-msgs ros-jazzy-tf2-msgs ros-jazzy-rclcpp \
             ros-jazzy-rclpy ros-jazzy-rosbag2-py ros-jazzy-rmw-fastrtps-cpp ros-jazzy-rosbag2-storage-mcap ros-jazzy-rosbag2-storage-sqlite3 \
             zenity xvfb xauth x11-utils x11-xserver-utils libxtst6 ffmpeg \
-            python3-pil python3-yaml libgl1-mesa-dri dpkg-dev
+            python3-pil python3-yaml python3-numpy libgl1-mesa-dri dpkg-dev
       - name: Configure
         run: |
           source /opt/ros/jazzy/setup.bash
@@ -45,6 +45,16 @@ jobs:
           source /opt/ros/jazzy/setup.bash
           cmake --build build --parallel 2
           ctest --test-dir build --output-on-failure
+      - name: CenterPoint feature, coordinate and NMS regressions
+        run: /usr/bin/python3 tests/test_centerpoint.py
+      - name: Asynchronous detector playback and ROI GUI test
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_detector_smoke.py \
+            --viewer build/lidar_viewer --output build/test_artifacts/detector
       - name: Live pause, resume and recording GUI test
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'

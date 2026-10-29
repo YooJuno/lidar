@@ -17,10 +17,11 @@ struct PipelineOutput
 {
   GroundRemovalResult ground_removal{};
   std::vector<Cluster> clusters;
-  std::vector<Detection> detections;
 };
 
-PipelineOutput RunPipelinePlaceholder(
+// Synchronous geometry stages. LearnedDetector handles the full-scene neural
+// detector independently; a cluster is never a semantic classification.
+PipelineOutput RunGeometryPipeline(
   const std::vector<KittiPoint> & input,
   const PipelineConfig & config);
 }  // namespace lidar_viewer::algorithms
