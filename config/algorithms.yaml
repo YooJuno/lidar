@@ -72,7 +72,8 @@ clustering:
   enabled: true
   # Hashing alone is cheaper on the CPU than a device transfer for these clouds.
   use_cuda: false
-  mode: euclidean
+  # XYZ connectivity keeps disconnected overhead surfaces separate.
+  mode: euclidean_3d
   tolerance_m: 0.55
   grid_cell_m: 0.25
   range_tolerance_scale: 0.006
@@ -88,6 +89,7 @@ clustering:
   max_cluster_size: 20000
 
 detection:
-  enabled: true
-  min_confidence: 0.22
+  # Objects tab enables the separately installed original CenterPoint model.
+  enabled: false
+  min_confidence: 0.35
   min_points: 10

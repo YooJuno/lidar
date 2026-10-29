@@ -154,6 +154,12 @@ if(LIDAR_VIEWER_ENABLE_ROSBAG AND rosbag2_cpp_FOUND AND sensor_msgs_FOUND AND tf
   message(STATUS "Live ROS 2 input and raw MCAP recording enabled")
 endif()
 
+find_package(Threads REQUIRED)
+add_library(lidar_viewer_detector STATIC src/learned_detector.cpp src/algorithms/detection.cpp)
+target_include_directories(lidar_viewer_detector PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(lidar_viewer_detector PUBLIC Threads::Threads)
+lidar_warnings(lidar_viewer_detector)
+
 add_executable(lidar_viewer
   src/main.cpp
   src/viewer_app.cpp
@@ -165,7 +171,6 @@ add_executable(lidar_viewer
   src/algorithms/ground_removal_fast.cpp
   src/algorithms/clustering.cpp
   ${LIDAR_VIEWER_CUDA_SOURCES}
-  src/algorithms/detection.cpp
   src/algorithms/pipeline.cpp
 )
 
@@ -191,10 +196,18 @@ target_link_libraries(lidar_viewer PRIVATE
   lidar_viewer_roi
   lidar_viewer_file_dialog
   lidar_viewer_live
+  lidar_viewer_detector
 )
 
 include(CTest)
 if(BUILD_TESTING)
+  find_package(Python3 QUIET COMPONENTS Interpreter)
+  if(Python3_Interpreter_FOUND)
+    add_executable(learned_detector_smoke_test tests/learned_detector_smoke.cpp)
+    target_link_libraries(learned_detector_smoke_test PRIVATE lidar_viewer_detector)
+    add_test(NAME learned_detector_smoke_test COMMAND learned_detector_smoke_test ${Python3_EXECUTABLE})
+    set_tests_properties(learned_detector_smoke_test PROPERTIES TIMEOUT 45)
+  endif()
   add_executable(live_io_smoke_test tests/live_io_smoke.cpp)
   target_link_libraries(live_io_smoke_test PRIVATE lidar_viewer_live)
   add_test(NAME live_io_smoke_test COMMAND live_io_smoke_test)

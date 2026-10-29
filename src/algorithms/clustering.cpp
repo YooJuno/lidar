@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <iostream>
 #include <limits>
+#include <stdexcept>
 #include <unordered_map>
 
 namespace lidar_viewer::algorithms
@@ -291,6 +292,7 @@ std::vector<Cluster> RunClusteringEuclidean(
     }
   }
 
+  const bool distance_3d=params.mode=="euclidean_3d";
   const float vertical_gap = std::max(params.max_vertical_gap_m, 0.05f);
   std::vector<Cluster> clusters;
   clusters.reserve(cells.size() / 8);
@@ -353,7 +355,7 @@ std::vector<Cluster> RunClusteringEuclidean(
             }
             const float delta_x = neighbor.x - point.x;
             const float delta_y = neighbor.y - point.y;
-            if (delta_x * delta_x + delta_y * delta_y >
+            if (delta_x * delta_x + delta_y * delta_y + (distance_3d ? dz*dz : 0.f) >
               std::max(tolerance_squared[point_index], tolerance_squared[neighbor_index])) {
               ++slot;
               continue;
@@ -387,12 +389,12 @@ std::vector<Cluster> RunClusteringEuclidean(
   return clusters;
 }
 
-std::vector<Cluster> RunClusteringPlaceholder(
+std::vector<Cluster> RunClustering(
   const std::vector<KittiPoint> & input,
   const ClusteringParams & params)
 {
-  // Keep the historical entry point for the viewer and public API while
-  // making exact, range-adaptive Euclidean clustering the default backend.
+  if (params.enabled && params.mode!="euclidean" && params.mode!="euclidean_3d")
+    throw std::invalid_argument("Unknown clustering mode: "+params.mode);
   return RunClusteringEuclidean(input, params);
 }
 }  // namespace lidar_viewer::algorithms

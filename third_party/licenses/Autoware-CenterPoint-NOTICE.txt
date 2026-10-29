@@ -1,0 +1,26 @@
+CenterPoint adapter for LiDAR Studio
+
+Original Autoware lidar_centerpoint preprocessing, scatter and postprocessing:
+Copyright 2022 TIER IV, Inc.
+Apache License, Version 2.0
+https://github.com/autowarefoundation/autoware_universe/tree/7645a923be5357ad9480b012db52da4c4940f52d/perception/autoware_lidar_centerpoint
+
+Adapted in python/lidar_detection/centerpoint.py: portable NumPy voxelization,
+standard ONNX ScatterND bridge, ROS box decoding and circle/BEV suppression.
+Original neural network weights are unchanged. The adapter uses a single scan
+(time lag zero), deterministic sampling and no synthetic temporal sweeps.
+
+Optional model, downloaded separately after explicit setup:
+AutowareFoundation/lidar_centerpoint tiny v4.1
+Revision 494c8171def40bd36cc2feb323e0a5acbfab132b
+https://huggingface.co/AutowareFoundation/lidar_centerpoint
+Model card declares Apache-2.0; see the model card's Legal Notice and training
+data terms. No weights, training data or TensorRT engines are bundled here.
+
+CenterPoint: Tianwei Yin, Xingyi Zhou, Philipp Krahenbuhl,
+"Center-based 3D Object Detection and Tracking", CVPR 2021.
+https://arxiv.org/abs/2006.11275
+
+PointPillars: Alex H. Lang et al., "PointPillars: Fast Encoders for Object
+Detection from Point Clouds", CVPR 2019.
+https://arxiv.org/abs/1812.05784

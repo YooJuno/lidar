@@ -49,7 +49,11 @@ else()
 endif()
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/config/" DESTINATION "${resource_destination}/config"
   FILES_MATCHING PATTERN "*.cfg" PATTERN "*.yaml")
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/python/" DESTINATION "${resource_destination}/python"
+  FILES_MATCHING PATTERN "*.py" PATTERN "__pycache__" EXCLUDE)
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/tools/setup_detector.py" DESTINATION "${resource_destination}/tools")
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/README.md" DESTINATION "${resource_destination}")
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/third_party/licenses/" DESTINATION "${resource_destination}/third-party-licenses")
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ground_segmentation/LICENSE.txt"
   DESTINATION "${resource_destination}/third-party-licenses" RENAME GSeg3D-BSD-3-Clause.txt)
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/patchwork_plusplus/LICENSE"
