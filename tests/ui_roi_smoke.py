@@ -48,7 +48,7 @@ def main():
         code = x11.x.XKeysymToKeycode(x11.display, x11.x.XStringToKeysym(key.encode()))
         x11.xt.XTestFakeKeyEvent(x11.display, code, down, 0)
 
-    def enter(x, y, value, ctrl_click=True):
+    def enter(x, y, value, ctrl_click=True, commit=True):
         if ctrl_click: key_event("Control_L", True)
         x11.click(window, x, y)
         key_event("Control_L", True)
@@ -57,7 +57,8 @@ def main():
         for ch in str(value):
             key = {"-": "minus", ".": "period"}.get(ch, ch)
             key_event(key, True); key_event(key, False)
-        key_event("Return", True); key_event("Return", False)
+        if commit:
+            key_event("Return", True); key_event("Return", False)
         x11.x.XSync(x11.display, False)
         time.sleep(.2)
 
@@ -121,6 +122,11 @@ def main():
             chord("z");count(90,"undo_delete",2)
             chord("y");count(45,"redo_delete",1)
             chord("z");count(90,"restore_union",2)
+            # A click on Delete must not merge into the preceding text edit.
+            enter(120,452,"nearby",False,commit=False)
+            x11.click(window,270,300)
+            chord("z");count(90,"undo_delete_preserves_unsubmitted_name",2)
+            result["checks"]["name_edit_and_delete_are_separate_transactions"]='"nearby"' in profile.read_text()
             x11.click(window,46,212);count(3125,"crop_off_restores_full_cloud")
             x11.click(window,46,212);count(90,"crop_on_restores_union")
             # Draw a new footprint, preserving configured raw height and live freeze semantics.

@@ -1164,7 +1164,7 @@ void OpenBagSource(ViewerState & state, std::size_t index)
     state.loading_bag_source = index;
     state.ui_error.clear();
   } catch (const std::exception & error) {
-    state.ui_error = std::string("Bag could not be opened: ") + error.what();
+    state.ui_error = std::string("Input could not be opened: ") + error.what();
   }
 }
 
@@ -1246,7 +1246,7 @@ void CompleteBagPicker(ViewerState & state, GLFWwindow * window)
     if (result->path.empty()) return;  // Cancel leaves the current frame intact.
     OpenInputPath(state,result->path);
   } catch (const std::exception & error) {
-    state.ui_error = std::string("Bag could not be opened: ") + error.what();
+    state.ui_error = std::string("Input could not be opened: ") + error.what();
   }
 }
 
@@ -1345,7 +1345,7 @@ void CompleteBagLoad(ViewerState & state)
               << state.bag_sources[selected].path << " | "
               << state.frames.size() << " frames" << std::endl;
   } catch (const std::exception & error) {
-    state.ui_error = std::string("Bag could not be opened: ") + error.what();
+    state.ui_error = std::string("Input could not be opened: ") + error.what();
     std::cerr << state.ui_error << std::endl;
   }
   state.loading_bag_source.reset();
@@ -2160,8 +2160,8 @@ void BuildSourceSelector(ViewerState & state, float width)
     state.bag_picker.Active() || state.live.Active() || (!group && state.bag_sources.empty()));
   if (ImGui::BeginCombo("##Source", preview.c_str(), ImGuiComboFlags_HeightLarge)) {
     if (!state.bag_sources.empty()) {
-      ImGui::TextUnformatted("Recorded bags");
-      ImGui::TextDisabled("%zu bags  |  Dates from recording names", state.bag_sources.size());
+      ImGui::TextUnformatted("Data sources");
+      ImGui::TextDisabled("%zu sources  |  Dates from recording names", state.bag_sources.size());
       std::vector<std::string> dates;
       for (const auto & source : state.bag_sources) {
         const auto date = source.recording_date.empty() ? "Unknown date" : source.recording_date;
@@ -2365,6 +2365,10 @@ void FocusSelectedRoi(ViewerState & state)
 
 void BuildRoiEditor(ViewerState & state)
 {
+  // End the previous typing transaction before another field or button takes
+  // focus. A button's mouse-down is active before its click changes the ROI.
+  if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsKeyPressed(ImGuiKey_Tab))
+    state.roi_numeric_edit=false;
   const auto before=state.roi;
   bool history_handled=false;
   const float s=state.ui_layout.scale;
@@ -2429,6 +2433,7 @@ void BuildRoiEditor(ViewerState & state)
   } else {
     state.selected_roi=std::min(state.selected_roi,state.roi.boxes.size()-1);
     ImGui::BeginDisabled(state.roi_gesture.active);
+    ImGui::PushID(static_cast<int>(state.selected_roi));
     auto box=state.roi.boxes[state.selected_roi];
     std::array<char,128> name{}; std::copy(box.name.begin(),box.name.end(),name.begin());
     ImGui::SetNextItemWidth(-1);
@@ -2454,6 +2459,7 @@ void BuildRoiEditor(ViewerState & state)
     if (ImGui::Button("Focus box",{half,0})) FocusSelectedRoi(state);
     ImGui::SameLine(); if (ImGui::Button("Move in 2D",{half,0})) SelectRoiTool(state,ViewerState::RoiTool::Move);
     Tip("Click a box in the canvas and drag to move it. Height and yaw are preserved.");
+    ImGui::PopID();
     ImGui::EndDisabled();
   }
   ImGui::BeginDisabled(state.roi_gesture.active);
@@ -2524,7 +2530,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     "%s", !state.ui_error.empty() ? "ERROR" :
       (state.live_mode ? (state.live_stats.connected ? (state.live_paused ? "FROZEN" :
         (state.live_stats.clouds==0 ? "WAITING" : (state.live_stats.cloud_age_ms>1000 ? "STALE" : "LIVE"))) : "DISCONNECTED") :
-      (state.loading_bag_source ? "OPENING BAG" :
+      (state.loading_bag_source ? "OPENING INPUT" :
         (has_input ? (state.is_playing ? "PLAYING" : "PAUSED") : "READY"))));
   ImGui::SameLine();
   ImGui::TextDisabled("  %s", state.dataset_profile.c_str());
@@ -2874,7 +2880,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     if (tool_button("Navigate",state.roi_tool==ViewerState::RoiTool::Navigate)) SelectRoiTool(state,ViewerState::RoiTool::Navigate);
     ImGui::End();ImGui::PopStyleVar(3);
   }
-  auto * draw=ImGui::GetForegroundDrawList();
+  auto * draw=ImGui::GetBackgroundDrawList();
   const ImU32 muted = IM_COL32(131, 151, 174, 255);
   draw->AddText({view.x + 14.f * s, view.y + 64.f * s}, muted,
     state.camera.projection_mode == CameraState::ProjectionMode::View2D ? "TOP VIEW  /  XY" : "PERSPECTIVE  /  XYZ");
