@@ -233,3 +233,13 @@ void SaveBagFolders(
   if (config.has_parent_path()) fs::create_directories(config.parent_path());
   lidar_viewer::settings::AtomicWriteText(config, contents.str());
 }
+
+std::string FormatBagDuration(std::optional<std::uint64_t> nanoseconds)
+{
+  if (!nanoseconds) return "--:--:--";
+  const auto seconds=*nanoseconds/1000000000ULL;
+  std::ostringstream result;
+  result<<std::setfill('0')<<std::setw(2)<<seconds/3600<<':'
+    <<std::setw(2)<<(seconds/60)%60<<':'<<std::setw(2)<<seconds%60;
+  return result.str();
+}

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "lidar_viewer/data_io.hpp"
+#include <optional>
 
 #ifdef LIDAR_VIEWER_HAS_ROSBAG
 #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -10,6 +11,9 @@
 // participate in DDS discovery, or publish recorded robot commands.
 bool IsRos2BagInput(const fs::path & input);
 bool RosbagInputAvailable();
+// Metadata/summary only: never decode point clouds or index a full MCAP file.
+// Missing, incomplete or invalid metadata returns nullopt.
+std::optional<std::uint64_t> ReadBagDurationNs(const fs::path & input);
 std::vector<FrameHandle> ResolveBagFrames(
   const fs::path & input, const std::string & topic = "/b2/points", const std::string & imu_topic = "",
   lidar_viewer::InputLoadState * load = nullptr);

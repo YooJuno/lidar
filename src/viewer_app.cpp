@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -417,6 +418,11 @@ struct ViewerState
   std::vector<FrameHandle> frames;
   std::vector<FileGroup> file_groups;
   std::vector<BagSource> bag_sources;
+  using BagDurations=std::vector<std::pair<fs::path,std::optional<std::uint64_t>>>;
+  std::unordered_map<fs::path,std::string> bag_durations;
+  std::unique_ptr<lidar_viewer::BackgroundWorker> duration_worker;
+  std::future<BagDurations> duration_future;
+  std::shared_ptr<std::atomic_bool> duration_cancel;
   std::optional<std::size_t> current_bag_source;
   std::optional<std::size_t> loading_bag_source;
   std::shared_ptr<lidar_viewer::InputLoadState> input_load;
@@ -424,7 +430,7 @@ struct ViewerState
   bool input_load_autoplay{false};
   bool input_load_previous_playing{false};
   std::future<BagLoadResult> bag_load_future;
-  ~ViewerState() {if (input_load) input_load->Cancel();}
+  ~ViewerState() {if (input_load) input_load->Cancel();if (duration_cancel) duration_cancel->store(true);}
   lidar_viewer::FileDialog bag_picker;
   lidar_viewer::LiveSession live;
   lidar_viewer::LiveStats live_stats;
@@ -846,6 +852,43 @@ bool UpdateDetector(ViewerState & state)
     return true;
   }
   return false;
+}
+
+void UpdateSourceDurations(ViewerState & state)
+{
+  if (state.duration_future.valid()) {
+    if (state.duration_future.wait_for(std::chrono::seconds(0))!=std::future_status::ready) return;
+    for (auto & item:state.duration_future.get()) {
+      auto formatted=FormatBagDuration(item.second);
+      if (std::getenv("LIDAR_VIEWER_CATALOG_TRACE"))
+        std::cout<<"Bag duration: "<<item.first<<" | "<<formatted<<std::endl;
+      state.bag_durations.insert_or_assign(item.first,std::move(formatted));
+    }
+  }
+  std::vector<fs::path> missing;
+  for (const auto & source:state.bag_sources)
+    if (!state.bag_durations.count(source.path)) missing.push_back(source.path);
+  if (missing.empty()) return;
+  if (!state.duration_worker) {
+    state.duration_worker=std::make_unique<lidar_viewer::BackgroundWorker>();
+    state.duration_cancel=std::make_shared<std::atomic_bool>(false);
+  }
+  state.duration_future=state.duration_worker->Submit([paths=std::move(missing),cancel=state.duration_cancel] {
+    ViewerState::BagDurations durations;
+    durations.reserve(paths.size());
+    for (const auto & path:paths) {
+      if (cancel->load()) break;
+      durations.emplace_back(path,ReadBagDurationNs(path));
+    }
+    return durations;
+  });
+}
+
+const std::string & SourceDuration(const ViewerState & state,const BagSource & source)
+{
+  static const std::string pending="...";
+  const auto found=state.bag_durations.find(source.path);
+  return found==state.bag_durations.end() ? pending : found->second;
 }
 
 void BuildFileGroups(ViewerState & state)
@@ -2647,17 +2690,17 @@ void Tip(const char * value)
   }
 }
 
-std::string BagLabel(const BagSource & source)
+std::string BagLabel(const ViewerState & state,const BagSource & source)
 {
   return (source.recording_date.empty() ? "Unknown date" :
-    source.recording_date + "  " + source.recording_time) + "  |  " + source.display_name;
+    source.recording_date + "  " + source.recording_time) + "  |  " + SourceDuration(state,source) + "  |  " + source.display_name;
 }
 
 void BuildSourceSelector(ViewerState & state, float width)
 {
   const auto * group = state.file_groups.empty() ? nullptr : &state.file_groups[state.current_file_group];
   const auto preview = state.live_mode ? std::string("LIVE | ") + state.live_points_topic.data() :
-    state.current_bag_source ? BagLabel(state.bag_sources[*state.current_bag_source]) :
+    state.current_bag_source ? BagLabel(state,state.bag_sources[*state.current_bag_source]) :
     (group ? group->display_name : "No input loaded");
   ImGui::SetNextItemWidth(width);
   const float popup_width = std::min(720.f * state.ui_layout.scale, ImGui::GetIO().DisplaySize.x - 32.f);
@@ -2688,19 +2731,31 @@ void BuildSourceSelector(ViewerState & state, float width)
       auto lower = [](unsigned char c) { return static_cast<char>(std::tolower(c)); };
       std::transform(needle.begin(), needle.end(), needle.begin(), lower);
       std::size_t shown = 0;
-      for (std::size_t i = 0; i < state.bag_sources.size(); ++i) {
-        const auto & source = state.bag_sources[i];
-        const auto date = source.recording_date.empty() ? "Unknown date" : source.recording_date;
-        if (!state.bag_date_filter.empty() && date != state.bag_date_filter) continue;
-        std::string searchable = source.display_name;
-        std::transform(searchable.begin(), searchable.end(), searchable.begin(), lower);
-        if (!needle.empty() && searchable.find(needle) == std::string::npos) continue;
-        ++shown;
-        const bool selected = state.current_bag_source && *state.current_bag_source == i;
-        ImGui::PushID(static_cast<int>(i));
-        if (ImGui::Selectable(BagLabel(source).c_str(), selected)) OpenBagSource(state, i);
-        Tip(source.path.string().c_str());
-        ImGui::PopID();
+      if (ImGui::BeginTable("##BagRecordings",3,ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Recorded",ImGuiTableColumnFlags_WidthFixed,175.f*state.ui_layout.scale);
+        ImGui::TableSetupColumn("Duration",ImGuiTableColumnFlags_WidthFixed,85.f*state.ui_layout.scale);
+        ImGui::TableSetupColumn("Recording",ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableHeadersRow();
+        for (std::size_t i = 0; i < state.bag_sources.size(); ++i) {
+          const auto & source = state.bag_sources[i];
+          const auto date = source.recording_date.empty() ? "Unknown date" : source.recording_date;
+          if (!state.bag_date_filter.empty() && date != state.bag_date_filter) continue;
+          std::string searchable = source.display_name;
+          std::transform(searchable.begin(), searchable.end(), searchable.begin(), lower);
+          if (!needle.empty() && searchable.find(needle) == std::string::npos) continue;
+          ++shown;
+          const bool selected = state.current_bag_source && *state.current_bag_source == i;
+          ImGui::PushID(static_cast<int>(i));
+          ImGui::TableNextRow();ImGui::TableSetColumnIndex(0);
+          const auto recorded=date+(source.recording_time.empty() ? "" : "  "+source.recording_time);
+          if (ImGui::Selectable(recorded.c_str(),selected,ImGuiSelectableFlags_SpanAllColumns)) OpenBagSource(state,i);
+          Tip(source.path.string().c_str());
+          ImGui::TableSetColumnIndex(1);ImGui::TextUnformatted(SourceDuration(state,source).c_str());
+          Tip("Whole recording duration from bag metadata. --:--:-- means timing is unavailable.");
+          ImGui::TableSetColumnIndex(2);ImGui::TextUnformatted(source.display_name.c_str());
+          ImGui::PopID();
+        }
+        ImGui::EndTable();
       }
       if (!shown) ImGui::TextDisabled("No bags match this date or name.");
     }
@@ -3686,21 +3741,6 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     draw->AddText(label,IM_COL32(222,242,245,255),box.name.c_str());
     draw->PopClipRect();
   }
-  if (!has_input && !state.loading_bag_source && !ImGui::IsPopupOpen(nullptr,ImGuiPopupFlags_AnyPopup) && view.w>300*s && view.h>230*s) {
-    const float width=std::min(460*s,view.w-32*s);
-    BeginPanel("Welcome",{view.x+(view.w-width)*.5f,view.y+(view.h-190*s)*.5f,width,190*s},false);
-    ImGui::TextColored({.78f,.9f,.96f,1},"%s",state.live_mode ? "Waiting for LiDAR" :
-      (state.loading_bag_source ? "Opening point cloud..." : "Start inspecting your LiDAR data"));
-    ImGui::Spacing();
-    ImGui::TextWrapped("%s",state.live_mode ? state.live_points_topic.data() :
-      "Open a BIN file or ROS bag. You can also drop a file or a single bag folder here.");
-    ImGui::Spacing();
-    ImGui::BeginDisabled(state.live.Active() || state.loading_bag_source.has_value() || state.bag_picker.Active());
-    if (ImGui::Button("Open file",{135*s,0})) StartBagPicker(state);
-    ImGui::EndDisabled();ImGui::SameLine();
-    if (ImGui::Button(state.live_mode ? "Live settings" : "Connect live",{135*s,0})) state.open_live_dialog=true;
-    ImGui::End();
-  }
   if (has_input && VisiblePoints(state).count==0 && !state.base_frame.points.empty() &&
       !state.loading_bag_source && state.roi_tool==ViewerState::RoiTool::Navigate &&
       !ImGui::IsPopupOpen(nullptr,ImGuiPopupFlags_AnyPopup) && view.w>300*s && view.h>180*s) {
@@ -4114,7 +4154,7 @@ int RunViewer(int argc, char ** argv)
     }
     if (!state.bag_sources.empty()) {
       std::cout << "Bag list: " << state.bag_sources.size() << " recordings" << std::endl;
-      for (const auto & source : state.bag_sources) std::cout << "  " << BagLabel(source) << '\n';
+      for (const auto & source : state.bag_sources) std::cout << "  " << BagLabel(state,source) << '\n';
     }
     if (inspect) {
       std::cout << "ROI: " << (state.roi.enabled ? "on" : "off") << " | " << state.roi.boxes.size()
@@ -4271,6 +4311,7 @@ int RunViewer(int argc, char ** argv)
       glfwPollEvents();
       CompleteBagPicker(state, window);
       CompleteBagLoad(state);
+      UpdateSourceDurations(state);
       const bool geometry_ready=CompleteGeometry(state);
       const bool requested_frame_ready=CompleteFrameRequest(state) || geometry_ready;
       const bool live_detector_ready=UpdateDetector(state);

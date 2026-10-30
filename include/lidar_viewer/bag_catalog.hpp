@@ -1,6 +1,8 @@
 #pragma once
 
 #include <filesystem>
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -30,3 +32,7 @@ std::vector<std::filesystem::path> LoadBagFolders(const std::filesystem::path & 
 void SaveBagFolders(
   const std::filesystem::path & config,
   const std::vector<std::filesystem::path> & folders);
+
+// Whole-recording duration, independent of the selected point-cloud topic.
+// Unknown metadata is displayed distinctly from a valid zero-length recording.
+std::string FormatBagDuration(std::optional<std::uint64_t> nanoseconds);
