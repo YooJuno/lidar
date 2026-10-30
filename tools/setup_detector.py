@@ -81,6 +81,6 @@ def main():
     text=f'python={python}\nmodel_dir={model}\nprovider={"auto" if args.cuda else "cpu"}\n'
     if '\n' in str(python) or '\n' in str(model):raise RuntimeError('Newlines in runtime paths are unsupported')
     temporary=config/'detector.cfg.tmp';temporary.write_text(text,encoding='utf-8');temporary.replace(config/'detector.cfg')
-    print('Ready. Open Objects > Detect objects (or Retry model). Configuration:',config/'detector.cfg')
+    print('Ready. Open Objects > Enable objects (or Retry model). Configuration:',config/'detector.cfg')
 
 if __name__=='__main__':main()

@@ -9,12 +9,38 @@ import io
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
 import numpy as np
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'python'))
 from lidar_detection.centerpoint import pillarize,decode,rotated_iou,suppress,CenterPoint
 from lidar_detection.worker import read_into,reply,RESPONSE
+from lidar_detection.native import backend_name
+from reference_centerpoint import pillarize as reference_pillarize,rotated_iou as reference_iou
 
 class PrePostTests(unittest.TestCase):
+    def test_native_and_numpy_match_frozen_features_bit_for_bit(self):
+        rng=np.random.default_rng(71)
+        dense=rng.normal([1,2,1],[.03,.03,.1],(6000,3)).astype(np.float32)
+        random=rng.uniform([-76.8,-76.8,-4],[76.8,76.8,6],(128000,3)).astype(np.float32)
+        x,y=np.meshgrid(np.arange(220),np.arange(200))
+        sparse=np.column_stack([(x.ravel()+10.5)*.32-76.8,(y.ravel()+10.5)*.32-76.8,np.zeros(x.size)]).astype(np.float32)
+        edges=np.array([[-76.8,-76.8,-4],[76.8,0,0],[0,76.8,0],[0,0,6],
+            [0,np.nan,0],[np.inf,0,0],[-np.inf,0,0],[0,0,0],[-0.,0.,0.]],np.float32)
+        # Include noncontiguous / float64 inputs as accepted by the public API.
+        for points in [dense,random,sparse,edges,random[::3],dense.astype(np.float64),np.empty((0,3),np.float32)]:
+            expected=reference_pillarize(points)
+            actual=pillarize(points)
+            with patch('lidar_detection.native.library',return_value=None):fallback=pillarize(points)
+            for result in [actual,fallback]:
+                np.testing.assert_array_equal(result[0],expected[0]);np.testing.assert_array_equal(result[1],expected[1])
+                for key,value in expected[2].items():self.assertEqual(result[2][key],value)
+        self.assertGreater(reference_pillarize(sparse)[2]['truncated_pillars'],0)
+    def test_scalar_clipping_matches_vector_reference(self):
+        rng=np.random.default_rng(113)
+        for _ in range(400):
+            a=np.r_[rng.uniform(-70,70,2),1,rng.uniform(.2,15,3),rng.uniform(-np.pi,np.pi),.8,0].astype(np.float32)
+            b=a.copy();b[:2]+=rng.uniform(-10,10,2);b[6]=rng.uniform(-np.pi,np.pi)
+            self.assertAlmostEqual(rotated_iou(a,b),reference_iou(a,b),places=11)
     def test_pillar_features_and_padding(self):
         xyz=np.array([[1,2,3],[1.1,2.1,3.2],[np.nan,0,0],[80,0,0]],np.float32)
         features,indices,stats=pillarize(xyz)
@@ -64,7 +90,7 @@ class PrePostTests(unittest.TestCase):
             rejected=False
             for previous in kept:
                 distance=float(np.square(box[:2]-previous[:2]).sum())
-                if distance<.25 or (distance<100 and rotated_iou(box,previous)>.1):
+                if distance<.25 or (distance<100 and reference_iou(box,previous)>.1):
                     rejected=True;break
             if not rejected:kept.append(box)
         np.testing.assert_array_equal(suppress(boxes),np.asarray(kept))
@@ -104,7 +130,9 @@ def model_check(folder,cloud):
     print('Original encoder + direct scatter + head == portable fused model; stats:',stats,'boxes:',len(boxes))
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('--model-dir');parser.add_argument('--cloud');args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--model-dir');parser.add_argument('--cloud')
+    parser.add_argument('--require-native',action='store_true');args=parser.parse_args()
+    if args.require_native and backend_name()!='native':raise SystemExit('Native preprocessing library was not found')
     result=unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(PrePostTests))
     if not result.wasSuccessful():raise SystemExit(1)
     if args.model_dir:model_check(args.model_dir,args.cloud)

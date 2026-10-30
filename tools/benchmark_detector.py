@@ -36,7 +36,7 @@ def main():
         boxes,stats=model.infer(points,.1);timings.append(stats)
         if (index+1)%10==0:rss_samples.append(resident_mib())
     keys=['preprocess_ms','inference_ms','postprocess_ms','latency_ms']
-    result={'platform':platform.platform(),'provider':model.provider,'points':len(points),
+    result={'platform':platform.platform(),'provider':model.provider,'preprocess_backend':stats['preprocess_backend'],'points':len(points),
         'iterations':args.iterations,'startup_s':startup,'cached_boxes':len(boxes),
         'p50_ms':{key:float(np.median([value.get(key,0) for value in timings])) for key in keys},
         'p95_pipeline_ms':float(np.percentile([value['latency_ms'] for value in timings],95)),
