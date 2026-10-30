@@ -2276,18 +2276,47 @@ void AdvanceFrame(ViewerState & state, int direction)
   if (state.live_mode || state.frames.empty() || state.loading_bag_source) {
     return;
   }
+  const auto index=state.requested_frame.value_or(state.geometry_index.value_or(state.current_index));
   if (direction > 0) {
-    if (state.current_index + 1 >= state.frames.size() && !state.loop_playback) {
+    if (index + 1 >= state.frames.size() && !state.loop_playback) {
       state.is_playing = false;
       return;
     }
-    TryLoadFrame(state, (state.current_index + 1) % state.frames.size());
+    TryLoadFrame(state, (index + 1) % state.frames.size());
   } else {
-    if (state.current_index == 0 && !state.loop_playback) {
+    if (index == 0 && !state.loop_playback) {
       return;
     }
-    TryLoadFrame(state, state.current_index == 0 ? state.frames.size() - 1 : state.current_index - 1);
+    TryLoadFrame(state, index == 0 ? state.frames.size() - 1 : index - 1);
   }
+}
+
+void TogglePlayback(ViewerState & state)
+{
+  if (state.roi_gesture.active) {
+    if (state.live_mode) state.roi_gesture.resume_live=!state.roi_gesture.resume_live;
+    else state.roi_gesture.resume_playback=!state.roi_gesture.resume_playback;
+    return;
+  }
+  if (state.live_mode) {SetLivePaused(state,!state.live_paused);return;}
+  if (state.frames.empty() || state.loading_bag_source) return;
+  state.is_playing=!state.is_playing;
+  if (!state.is_playing) state.requested_frame.reset();
+  state.last_frame_advance_time=glfwGetTime();
+}
+
+void HandlePlaybackShortcuts(ViewerState & state)
+{
+  // Window focus alone must not swallow transport keys. ImGui routing owns
+  // them so a focused button/checkbox cannot also activate on the same Space.
+  // Active text editors and popup navigation keep their normal keyboard input.
+  if (state.loading_bag_source || state.bag_picker.Active() || ImGui::GetIO().WantTextInput ||
+      ImGui::IsPopupOpen(nullptr,ImGuiPopupFlags_AnyPopup)) return;
+  constexpr auto flags=ImGuiInputFlags_RouteGlobal|ImGuiInputFlags_RouteOverFocused;
+  if (ImGui::Shortcut(ImGuiKey_Space,flags)) TogglePlayback(state);
+  for (const auto & step:std::array<std::pair<ImGuiKey,int>,4>{{
+      {ImGuiKey_RightArrow,1},{ImGuiKey_N,1},{ImGuiKey_LeftArrow,-1},{ImGuiKey_P,-1}}})
+    if (ImGui::Shortcut(step.first,flags|ImGuiInputFlags_Repeat)) AdvanceFrame(state,step.second);
 }
 
 bool PointerInScene(GLFWwindow *, const ViewerState & state)
@@ -2561,10 +2590,6 @@ void KeyCallback(GLFWwindow * window, int key, int, int action, int mods)
   if (ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureKeyboard) return;
   switch (key) {
     case GLFW_KEY_ESCAPE: glfwSetWindowShouldClose(window, GLFW_TRUE); break;
-    case GLFW_KEY_RIGHT:
-    case GLFW_KEY_N: AdvanceFrame(*state, 1); break;
-    case GLFW_KEY_LEFT:
-    case GLFW_KEY_P: AdvanceFrame(*state, -1); break;
     case GLFW_KEY_F: state->fit_view_requested = true; break;
     case GLFW_KEY_C: state->color_mode = (state->color_mode + 1) % 3; break;
     case GLFW_KEY_Q:
@@ -2574,18 +2599,6 @@ void KeyCallback(GLFWwindow * window, int key, int, int action, int mods)
       break;
     case GLFW_KEY_LEFT_BRACKET: state->camera.point_size = std::max(1.f, state->camera.point_size - 1.f); break;
     case GLFW_KEY_RIGHT_BRACKET: state->camera.point_size = std::min(8.f, state->camera.point_size + 1.f); break;
-    case GLFW_KEY_SPACE:
-      if (state->roi_gesture.active) {
-        if (state->live_mode) state->roi_gesture.resume_live=!state->roi_gesture.resume_live;
-        else state->roi_gesture.resume_playback=!state->roi_gesture.resume_playback;
-        break;
-      }
-      if (state->live_mode) {SetLivePaused(*state, !state->live_paused); break;}
-      if (state->frames.empty() || state->loading_bag_source) break;
-      state->is_playing = !state->is_playing;
-      if (!state->is_playing) state->requested_frame.reset();
-      state->last_frame_advance_time = glfwGetTime();
-      break;
     default: break;
   }
 }
@@ -3602,16 +3615,15 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(.15f, .37f, .46f, 1));
   const bool showing_motion = state.live_mode ? !state.live_paused : state.is_playing;
   if (ImGui::Button(showing_motion ? "Pause" : "Play", {88.f * s, 0})) {
-    if (state.live_mode) SetLivePaused(state, !state.live_paused);
-    else {state.is_playing = !state.is_playing;if (!state.is_playing) state.requested_frame.reset();state.last_frame_advance_time = glfwGetTime();}
+    TogglePlayback(state);
   }
   ImGui::PopStyleColor();
   ImGui::SameLine();
   ImGui::BeginDisabled(!multiple);
-  if (ImGui::Button("<")) {state.is_playing = false; AdvanceFrame(state, -1);}
+  if (ImGui::Button("<")) AdvanceFrame(state, -1);
   Tip("Previous frame  [P]");
   ImGui::SameLine();
-  if (ImGui::Button(">")) {state.is_playing = false; AdvanceFrame(state, 1);}
+  if (ImGui::Button(">")) AdvanceFrame(state, 1);
   Tip("Next frame  [N]");
   ImGui::EndDisabled();
   ImGui::SameLine();
@@ -3658,12 +3670,13 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     timeline_label.c_str(), ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_NoInput);
   if (ImGui::IsItemActivated()) {
     state.timeline_dragging = true;
-    state.is_playing = false;
+    state.requested_frame.reset();
   }
   if (ImGui::IsItemDeactivated()) {
     if (ImGui::IsItemDeactivatedAfterEdit())
       TryLoadFrame(state, first_index + static_cast<std::size_t>(state.seek_draft));
     state.timeline_dragging = false;
+    state.last_frame_advance_time = glfwGetTime();
   }
   ImGui::EndDisabled();
   }
@@ -4334,6 +4347,7 @@ int RunViewer(int argc, char ** argv)
       ImGui_ImplGlfw_NewFrame();
       ImGui::NewFrame();
       BuildViewerInterface(state, window);
+      HandlePlaybackShortcuts(state);
       const bool detector_result_ready=UpdateDetector(state) || live_detector_ready;
       const double frame_begin_time = glfwGetTime();
       bool advanced_frame = requested_frame_ready;
@@ -4342,7 +4356,7 @@ int RunViewer(int argc, char ** argv)
         state.transient_status.clear();
       }
 
-      if (state.is_playing && state.frames.size() > 1 && !state.geometry_future.valid() && !DetectorFramePending(state) && !detector_result_ready) {
+      if (state.is_playing && !state.timeline_dragging && !state.requested_frame && state.frames.size() > 1 && !state.geometry_future.valid() && !DetectorFramePending(state) && !detector_result_ready) {
         const double now_time = glfwGetTime();
         const double frame_interval = 1.0 / std::max(0.1, state.playback_fps);
         if ((now_time - state.last_frame_advance_time) >= frame_interval) {

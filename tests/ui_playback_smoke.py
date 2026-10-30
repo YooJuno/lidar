@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Private Xvfb + synthetic bag: controls stay responsive and ROI drags resume playback."""
+"""Private Xvfb + synthetic bag: transport keys, seek state and ROI drags keep playback consistent."""
 import argparse
 import json
 import math
@@ -46,7 +46,7 @@ def main():
     bag=output/'fixture';write_fixture(bag)
     env=dict(os.environ,XDG_CONFIG_HOME=str(output/'isolated'),GSETTINGS_BACKEND='memory',NO_AT_BRIDGE='1')
     before=settings_inventory(repo);result={'status':'started','checks':{},'output':str(output)}
-    process=x11=window=None;deadline=time.monotonic()+65;log_path=output/'viewer.log'
+    process=x11=window=None;deadline=time.monotonic()+110;log_path=output/'viewer.log'
     crop=(390,180,1540,750);header=(1235,20,1320,48)
     def wait_for(predicate):
         while not predicate():
@@ -90,6 +90,68 @@ def main():
             check('roi_release_restores_motion',changed_pixels(resumed,resumed_later,crop)>80)
             x11.click(window,410,837);frozen=shot('12_explicit_pause');time.sleep(.35)
             check('explicit_pause_still_freezes_cloud',changed_pixels(frozen,shot('13_still_paused'),crop)==0)
+            # The inspector and transport keep keyboard focus after mouse clicks.
+            # Playback shortcuts must work there without a click on the cloud.
+            x11.click(window,50,140)
+            x11.key(window,'space');panel_play=shot('14_space_from_inspector')
+            check('space_from_inspector_resumes_once',changed_pixels(playing,panel_play,header)==0)
+            x11.key(window,'space');panel_pause=shot('15_space_from_inspector_pauses')
+            check('space_from_inspector_pauses_once',changed_pixels(frozen,panel_pause,header)==0)
+            x11.click(window,850,878);seek_pause=shot('16_seek_while_paused');time.sleep(.35)
+            check('paused_seek_keeps_paused_state',changed_pixels(frozen,seek_pause,header)==0)
+            check('paused_seek_changes_cloud',changed_pixels(panel_pause,seek_pause,crop)>80)
+            check('paused_seek_stays_on_selected_frame',changed_pixels(seek_pause,shot('17_seek_stays_paused'),crop)==0)
+            x11.key(window,'Right');right=shot('18_right_from_timeline')
+            check('right_arrow_after_timeline_click_steps_cloud',changed_pixels(seek_pause,right,crop)>80)
+            check('arrow_step_keeps_paused_state',changed_pixels(frozen,right,header)==0)
+            x11.key(window,'Left');left=shot('19_left_from_timeline')
+            check('left_arrow_returns_to_same_frame',changed_pixels(seek_pause,left,crop)==0)
+            x11.click(window,50,140);x11.key(window,'Right');panel_right=shot('20_right_from_inspector')
+            check('right_arrow_from_inspector_steps_cloud',changed_pixels(left,panel_right,crop)>80)
+            x11.key(window,'Left');check('left_arrow_from_inspector_returns',changed_pixels(left,shot('21_left_from_inspector'),crop)==0)
+            x11.key(window,'space');x11.click(window,1280,878)
+            seek_play=shot('22_seek_while_playing');time.sleep(.35)
+            check('playing_seek_keeps_playing_state',changed_pixels(playing,seek_play,header)==0)
+            check('playing_seek_continues_motion',changed_pixels(seek_play,shot('23_seek_resumed_motion'),crop)>80)
+            x11.move(window,780,878);x11.xt.XTestFakeButtonEvent(x11.display,1,True,0);x11.x.XSync(x11.display,False)
+            x11.move(window,1150,878);held_seek=shot('24_scrubbing_playback')
+            check('active_scrub_keeps_playing_state',changed_pixels(playing,held_seek,header)==0)
+            x11.xt.XTestFakeButtonEvent(x11.display,1,False,0);x11.x.XSync(x11.display,False);time.sleep(.3)
+            after_scrub=shot('25_scrub_released');time.sleep(.35)
+            check('scrub_release_continues_playback',changed_pixels(after_scrub,shot('26_scrub_motion'),crop)>80)
+            x11.key(window,'space');x11.click(window,525,837)
+            check('next_button_keeps_paused_state',changed_pixels(frozen,shot('27_next_button_paused'),header)==0)
+            x11.move(window,750,878);x11.xt.XTestFakeButtonEvent(x11.display,1,True,0);x11.x.XSync(x11.display,False)
+            x11.move(window,1400,878)
+            check('paused_scrub_keeps_paused_state',changed_pixels(frozen,shot('27a_paused_scrub'),header)==0)
+            x11.xt.XTestFakeButtonEvent(x11.display,1,False,0);x11.x.XSync(x11.display,False);time.sleep(.3)
+            paused_scrub=shot('27b_paused_scrub_released');time.sleep(.3)
+            check('paused_scrub_release_does_not_start_playback',changed_pixels(paused_scrub,shot('27c_paused_scrub_still'),crop)==0)
+            # Ctrl-click changes the speed widget to a numeric text editor.
+            code=x11.x.XKeysymToKeycode(x11.display,x11.x.XStringToKeysym(b'Control_L'))
+            x11.xt.XTestFakeKeyEvent(x11.display,code,True,0);x11.x.XSync(x11.display,False)
+            x11.click(window,680,837)
+            x11.xt.XTestFakeKeyEvent(x11.display,code,False,0);x11.x.XSync(x11.display,False);time.sleep(.2)
+            editing=shot('28_numeric_editor')
+            for key in ['Right','Left','space','n','p']:x11.key(window,key)
+            edited=shot('29_numeric_editor_keys')
+            check('editing_numbers_does_not_toggle_or_step_playback',changed_pixels(editing,edited,crop)==0 and changed_pixels(frozen,edited,header)==0)
+            x11.key(window,'Return');x11.click(window,1495,30);time.sleep(.2)
+            popup_before=shot('30a_popup_before_keys')
+            for key in ['space','Right','Left']:x11.key(window,key)
+            popup=shot('30_popup_keys')
+            check('popup_keyboard_does_not_control_playback',changed_pixels(popup_before,popup,crop)==0 and changed_pixels(popup_before,popup,header)==0)
+            x11.key(window,'Escape');x11.click(window,850,878);x11.click(window,560,837)
+            loop_off=shot('31_loop_focused')
+            code=x11.x.XKeysymToKeycode(x11.display,x11.x.XStringToKeysym(b'space'))
+            x11.xt.XTestFakeKeyEvent(x11.display,code,True,0);x11.x.XSync(x11.display,False);time.sleep(1)
+            hold_space=shot('32_space_held')
+            x11.xt.XTestFakeKeyEvent(x11.display,code,False,0);x11.x.XSync(x11.display,False)
+            check('held_space_toggles_only_once',changed_pixels(playing,hold_space,header)==0)
+            def checkmark_pixels(picture):return sum(1 for r,g,b in picture.crop((554,831,570,845)).convert('RGB').getdata() if r<150 and g>140 and b>170)
+            check('space_does_not_also_toggle_focused_checkbox',checkmark_pixels(loop_off)==0 and checkmark_pixels(hold_space)==0)
+            x11.click(window,525,837)
+            check('next_button_keeps_playing_state',changed_pixels(playing,shot('33_next_button_playing'),header)==0)
             check('original_profiles_unchanged',before==settings_inventory(repo));result['status']='passed'
     except Exception as error:
         result.update(status='failed',error=str(error),traceback=traceback.format_exc())
