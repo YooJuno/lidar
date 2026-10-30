@@ -12,10 +12,14 @@ def f32(value):return struct.unpack('f',struct.pack('f',value))[0]
 
 
 def main():
-    lib=ctypes.CDLL(sys.argv[1]);assert lib.lidar_pillar_abi()==1
+    lib=ctypes.CDLL(sys.argv[1]);assert lib.lidar_pillar_abi()==2
     lib.lidar_pillar_order.argtypes=[ctypes.c_void_p,ctypes.c_void_p,ctypes.c_size_t,ctypes.c_void_p]
     lib.lidar_pillar_features.argtypes=[ctypes.c_void_p,ctypes.c_void_p,ctypes.c_size_t,
         ctypes.c_void_p,ctypes.c_void_p,ctypes.c_void_p,ctypes.c_size_t,ctypes.c_void_p]
+    lib.lidar_pillar_order_v2.argtypes=[ctypes.c_void_p,ctypes.c_void_p,ctypes.c_size_t,ctypes.c_void_p,ctypes.c_uint32]
+    lib.lidar_pillar_features_v2.argtypes=[ctypes.c_void_p,ctypes.c_void_p,ctypes.c_size_t,
+        ctypes.c_void_p,ctypes.c_void_p,ctypes.c_void_p,ctypes.c_size_t,ctypes.c_void_p,
+        ctypes.c_uint32,*([ctypes.c_float]*5),ctypes.c_uint32]
     def address(value):return value.buffer_info()[0]
     assert array('i').itemsize==4 and array('q').itemsize==8 and array('f').itemsize==4
     assert lib.lidar_pillar_order(None,None,0,None)==0
@@ -49,6 +53,19 @@ def main():
         assert lib.lidar_pillar_features(address(points),address(order),size,address(starts),address(counts),address(keys),1,address(features)+4)!=0
     keys=array('i',[-1]);permutation=array('q',[0]);output=array('q',[999])
     assert lib.lidar_pillar_order(address(keys),address(permutation),1,address(output))!=0 and output[0]==999
+    # The quality model has a larger grid, 10 features, and a Z-center offset.
+    rng=random.Random(79);keys=array('i',(rng.randrange(640*640) for _ in range(9000)))
+    permutation=array('q',range(len(keys)));rng.shuffle(permutation);output=array('q',[0]*len(keys))
+    assert lib.lidar_pillar_order_v2(address(keys),address(permutation),len(keys),address(output),640)==0
+    assert output.tolist()==sorted(permutation,key=lambda i:keys[i])
+    points=array('f',[1,2,3,1.01,2.01,3.01]);order=array('q',[1,0]);starts=array('q',[0]);counts=array('q',[2]);keys=array('i',[332*640+326])
+    features=array('f',[0]*(32*10+2));features[0]=features[-1]=12345
+    assert lib.lidar_pillar_features_v2(address(points),address(order),2,address(starts),address(counts),address(keys),1,address(features)+4,640,.16,-51.2,-51.2,-3,8,10)==0
+    assert features[0]==features[-1]==12345 and all(v==0 for v in features[21:-1])
+    assert features[10]==f32(points[5]-1) and features[20]==f32(points[2]-1)
+    assert lib.lidar_pillar_order_v2(None,None,0,None,1025)!=0
+    assert lib.lidar_pillar_features_v2(None,None,0,None,None,None,0,None,640,0,-51.2,-51.2,-3,8,10)!=0
+    assert lib.lidar_pillar_features_v2(None,None,0,None,None,None,0,None,640,.16,-51.2,-51.2,-3,8,11)!=0
     print('detector_native_smoke: stable sorting, float32 features, padding, truncation, bounds and concurrent reuse passed')
     return 0
 

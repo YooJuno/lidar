@@ -1,0 +1,10 @@
+TIER IV AWML CenterPoint-ShortRange base v2.0.0
+Copyright TIER IV, Inc.; original pretrained weights are unchanged.
+License: Apache-2.0 (see AWML-CenterPoint-Apache-2.0.txt).
+Source: https://github.com/tier4/AWML
+Pinned model card: 9e44a974aae03a196003950898dc909cd0c680ad
+projects/CenterPoint/docs/CenterPoint-ShortRange/v2/base.md
+Weights: https://download.autoware-ml-model-zoo.tier4.jp/autoware-ml/models/centerpoint/centerpoint-shortrange/t4base/v2.0.0/
+The optional installer downloads weights and verifies SHA-256 checksums.
+LiDAR Studio adds portable scatter, deterministic preprocessing, ROS box
+conversion and asynchronous display. No training or model weight changes.

@@ -54,6 +54,17 @@ jobs:
           ctest --test-dir build --output-on-failure
       - name: CenterPoint feature, coordinate and NMS regressions
         run: /usr/bin/python3 tests/test_centerpoint.py --require-native
+      - name: Verify original downloaded neural models on CPU
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}/detector-test-config
+          XDG_DATA_HOME: ${{ runner.temp }}/detector-test-data
+        run: |
+          python3 tools/setup_detector.py
+          runtime="$XDG_DATA_HOME/lidar_viewer/detector/runtime/bin/python"
+          "$runtime" tests/test_centerpoint.py --require-native --provider cpu --model short_range \
+            --model-dir "$XDG_DATA_HOME/lidar_viewer/detector/centerpoint-shortrange-v2.0.0"
+          "$runtime" tests/test_centerpoint.py --require-native --provider cpu --model tiny \
+            --model-dir "$XDG_DATA_HOME/lidar_viewer/detector/centerpoint-tiny-v4.1"
       - name: Asynchronous detector playback and ROI GUI test
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'

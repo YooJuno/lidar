@@ -280,17 +280,18 @@ xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_playback_smoke
 xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_app_settings_smoke.py --viewer build/lidar_viewer --output build/test_artifacts/app-settings
 ```
 
-## 사람·차량 인식 — 원본 CenterPoint
+## 사람·차량 인식 — 원본 TIER IV 모델
 
 **Objects → Enable objects → Method**에서 다음 방식을 선택합니다.
 
-- **CenterPoint tiny (learned)**: [CenterPoint 논문(CVPR 2021)](https://arxiv.org/abs/2006.11275)에 기반한 [Autoware의 원본 CenterPoint tiny v4.1 모델](https://huggingface.co/AutowareFoundation/lidar_centerpoint)입니다. **Targets**에서 Person·Bicycle·Car·Truck·Bus를 각각 켜고 끌 수 있고 All/Clear로 전체 선택·해제합니다. 대상과 Min score는 저장된 모델 결과를 즉시 필터링하며, 모델 로딩이나 추론을 다시 하지 않습니다. 선택은 프로파일에 저장합니다.
+- **AWML ShortRange (quality)** — 기본값: [TIER IV AWML CenterPoint-ShortRange base v2.0.0](https://github.com/tier4/AWML/blob/9e44a974aae03a196003950898dc909cd0c680ad/projects/CenterPoint/docs/CenterPoint-ShortRange/v2/base.md)의 원본 ConvNeXt 모델입니다. 공식 T4 평가 5,703프레임에서 mAP 83.9, 보행자 AP 77.5를 보고합니다. 이 수치는 해당 평가셋 결과이며 XT32 현장 정확도가 아닙니다. 앱은 오검출을 줄이는 시작값으로 Min score 0.50을 사용합니다.
+- **CenterPoint tiny (fast)**: [CenterPoint 논문(CVPR 2021)](https://arxiv.org/abs/2006.11275)에 기반한 [Autoware의 원본 CenterPoint tiny v4.1 모델](https://huggingface.co/AutowareFoundation/lidar_centerpoint)입니다. **Targets**에서 Person·Bicycle·Car·Truck·Bus를 각각 켜고 끌 수 있고 All/Clear로 전체 선택·해제합니다. 대상과 Min score는 저장된 모델 결과를 즉시 필터링하며, 모델 로딩이나 추론을 다시 하지 않습니다. 선택은 프로파일에 저장합니다.
 - **Euclidean 3D (clusters)**: 지면분리 후 가까운 장애물 점을 3차원 거리로 묶습니다. 사람·차량 클래스는 만들지 않습니다.
 - **Projected XY (clusters)**: XY 거리와 수직 간격으로 묶습니다. 높이가 떨어진 면을 합칠 수 있으므로 보통 Euclidean 3D부터 사용합니다.
 
 학습 모델은 **지면 제거·ROI 이전의 전체 수평 보정 스캔**을 받습니다. 클러스터가 잘못 합쳐져도 모델 입력이 잘리지 않습니다. CenterPoint 선택 시 **Cluster overlay**에서 기하학 그룹을 함께 볼 수도 있습니다.
 
-이 컴퓨터의 GPU 런타임과 모델은 설치·실행 검증을 마쳤습니다. 기본 뷰어 실행 후 Objects에서 켜면 됩니다.
+이 컴퓨터의 GPU 런타임과 두 모델은 설치·실행 검증을 마쳤습니다. 기본값은 AWML ShortRange이며 기존 실행 중인 앱에서는 새 실행 파일로 다시 시작해야 새 모델 선택지가 나타납니다. 기본 뷰어 실행 후 Objects에서 켜면 됩니다.
 
 ```bash
 source /opt/ros/jazzy/setup.bash
@@ -309,35 +310,37 @@ python3 tools/setup_detector.py --cuda
 
 배포본에도 `python/`과 `tools/setup_detector.py`가 포함됩니다. Ubuntu 설치본의 setup 경로는 `/usr/share/lidar_viewer/tools/setup_detector.py`, macOS는 앱의 `Contents/Resources/tools/setup_detector.py`입니다. 설치 후 실행 중인 앱에서는 **Retry model**을 누르거나 Enable objects를 켭니다. CUDA가 실행되지 않으면 실제 사용 중인 CPU 백엔드를 표시합니다.
 
-모델 두 파일(약 20 MB)은 고정 revision `494c8171def40bd36cc2feb323e0a5acbfab132b`에서 내려받고 각각 SHA-256을 검증합니다. 원본 모델 카드도 함께 저장합니다. 기본 Linux 위치는 `~/.local/share/lidar_viewer/detector/`, 연결 설정은 `~/.config/lidar_viewer/detector.cfg`, 오류 로그는 같은 설정 폴더의 `detector.log`입니다. Windows는 LocalAppData/APPDATA, macOS는 Application Support를 사용합니다. 모델·가상환경은 Git과 배포 파일에 넣지 않습니다.
+설치기는 ShortRange(약 14 MB)와 tiny(약 20 MB)를 함께 설치하고, 모델별 원본 ONNX·모델 카드의 SHA-256을 검증합니다. ShortRange는 AWML 모델 카드 revision `9e44a974aae03a196003950898dc909cd0c680ad`가 지정한 TIER IV model-zoo v2.0.0 파일을 사용합니다. tiny는 revision `494c8171def40bd36cc2feb323e0a5acbfab132b`에 고정합니다. 한 종류만 필요하면 `--model short_range` 또는 `--model tiny`로 설치할 수 있습니다. 기본 Linux 위치는 `~/.local/share/lidar_viewer/detector/`, 연결 설정은 `~/.config/lidar_viewer/detector.cfg`, 오류 로그는 같은 설정 폴더의 `detector.log`입니다. Windows는 LocalAppData/APPDATA, macOS는 Application Support를 사용합니다. 모델·가상환경은 Git과 배포 파일에 넣지 않습니다.
 
-- **Align**에서 지면의 기울기와 높이를 먼저 맞춥니다. 모델 입력은 ±76.8 m XY, Z −4~6 m 범위이며 표시 yaw는 추론에서 되돌린 후 박스에 다시 적용합니다.
+- **Align**에서 지면의 기울기와 높이를 먼저 맞춥니다. ShortRange 입력은 ±51.2 m XY, Z −3~5 m, tiny는 ±76.8 m XY, Z −4~6 m 범위이며 표시 yaw는 추론에서 되돌린 후 박스에 다시 적용합니다.
 - 이 모델의 네 번째 입력은 intensity가 아닌 **시간 차이**입니다. 현재 스캔 하나의 시간 차이 0을 사용하며, 위치 추정 없이 이전 스캔을 억지로 합치지 않습니다. XT32의 미수신 XYZ=0 반환도 높이를 이동하기 전에 제외합니다.
-- 원본 32-point pillar 특징, 9개 encoder 입력, 480×480 BEV와 원본 가중치를 유지합니다. 표준 ONNX ScatterND로 encoder와 head를 연결해 TensorRT 플러그인·별도 CUDA 컴파일 없이 실행합니다. 샘플 선택은 일시정지 시 결과가 흔들리지 않도록 결정적입니다. 40,000 pillar 상한을 넘으면 가까운 pillar를 우선하고 잘린 수를 처리 시간 툴팁에 표시합니다.
+- 원본 32-point pillar 특징을 사용합니다. ShortRange는 0.16 m voxel·10개 특징(Z 중심 오프셋 포함)·640×640 BEV·64,000 pillar, tiny는 0.32 m voxel·9개 특징·480×480 BEV·40,000 pillar로 각각 구분합니다. 표준 ONNX ScatterND로 encoder와 head를 연결해 TensorRT 플러그인·별도 CUDA 컴파일 없이 실행합니다. 샘플 선택은 일시정지 시 결과가 흔들리지 않도록 결정적입니다. 모델별 pillar 상한을 넘으면 가까운 pillar를 우선하고 잘린 수를 처리 시간 툴팁에 표시합니다.
 - 원본 형식의 크기·높이·yaw를 ROS 축으로 변환하고 circle NMS와 회전 BEV IoU NMS로 중복 박스를 억제합니다. 박스 회전과 클래스·점수를 표시하며 겹치는 글자는 숨깁니다. **Min score**는 신경망 분류 점수로, 보정된 확률이 아닙니다. 점수 0.1 이상의 후보를 캐시하므로 슬라이더 조절은 모델을 다시 실행하지 않고 즉시 반영됩니다.
 - 모델 로딩과 추론은 별도 프로세스/작업 스레드에서 실행합니다. 표시할 스캔과 같은 revision의 박스만 적용합니다. 준비 후 추론이 재생보다 느리면 표시 프레임을 기다리지만 UI와 원본 ROS 구독·녹화는 계속 동작합니다. 초기 로딩·오류·2초 이상 지연은 재생을 막지 않습니다. ROI 편집은 저장된 검출의 중심점을 ROI로 필터링합니다.
-- 모델은 한 프로세스와 한 ONNX 세션을 계속 사용합니다. 방식 변경·해제/재활성화·대상 선택은 프로세스를 재시작하지 않습니다. 명시적인 Retry나 실패 복구만 재시작합니다. 검출 입력은 불변 스냅샷으로 공유하고 XYZ 변환·IPC 버퍼는 작업 스레드에서 재사용합니다. 지면 파라미터나 클러스터 거리만 바꾸면 학습 검출을 다시 실행하지 않습니다.
+- 모델은 한 프로세스와 한 ONNX 세션을 계속 사용합니다. 기하학 방식에서 같은 모델로 복귀하거나 해제/재활성화·대상 선택을 할 때는 프로세스를 재시작하지 않습니다. 다른 신경망 모델 선택, 명시적인 Retry 또는 실패 복구 시 세션을 교체합니다. 검출 입력은 불변 스냅샷으로 공유하고 XYZ 변환·IPC 버퍼는 작업 스레드에서 재사용합니다. 지면 파라미터나 클러스터 거리만 바꾸면 학습 검출을 다시 실행하지 않습니다.
 - 중복 박스 억제는 원래 10 m 비교 범위를 공간 해시로 좁혀 같은 판정을 유지합니다. CUDA 라이브러리는 [ONNX Runtime의 사전 로딩 API](https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html#preload-dlls)를 사용하며 PyTorch 전체를 불러오지 않습니다.
 
-2026-10-30, RTX 4060 Laptop / ORT 1.23.2, KITTI drive 0005의 41번 스캔(122,359개 유효 범위 점), 후보 점수 0.1, 준비 4회 후 30회 반복 측정: 변경 전후 검출 프로세스 RSS **1,142 → 719 MiB**, 모델 초기화 **2.92 → 0.48초**, 전체 파이프라인 p50 **69.3 → 62.9 ms**였습니다. 장비·입력·동시 작업에 따라 달라집니다. 원본 모델 그래프와의 수치 비교 및 NMS 완전 탐색 비교를 별도로 검사합니다. 현재 버전의 반복 시간과 메모리 변화는 설치된 검출용 Python으로 재측정할 수 있습니다.
+아래 기존 최적화 측정은 **tiny 모델** 기준입니다. 2026-10-30, RTX 4060 Laptop / ORT 1.23.2, KITTI drive 0005의 41번 스캔(122,359개 유효 범위 점), 후보 점수 0.1, 준비 4회 후 30회 반복 측정: 변경 전후 검출 프로세스 RSS **1,142 → 719 MiB**, 모델 초기화 **2.92 → 0.48초**, 전체 파이프라인 p50 **69.3 → 62.9 ms**였습니다. 장비·입력·동시 작업에 따라 달라집니다. 원본 모델 그래프와의 수치 비교 및 NMS 완전 탐색 비교를 별도로 검사합니다. 현재 버전의 반복 시간과 메모리 변화는 설치된 검출용 Python으로 재측정할 수 있습니다.
 
-추가 최적화에서는 XYZ 배열을 여러 번 복사하지 않고 인덱스만 정렬합니다. 빌드에 포함된 작은 C++ 라이브러리가 안정 계수 정렬과 9개 특징 생성을 처리하며, 원래의 셔플 순서·pillar당 32점·float32 연산 순서·패딩을 유지합니다. 모델 가중치·입력 특징·박스 억제 기준은 동일합니다. Python/NumPy C ABI나 CUDA에 의존하지 않으며 Windows·Ubuntu·macOS 패키지에 포함합니다. 사용할 수 없을 때는 NumPy 구현으로 동작합니다. 실제 사용 경로는 처리 시간 툴팁과 벤치마크의 `preprocess_backend`에서 확인할 수 있습니다.
+추가 최적화에서는 XYZ 배열을 여러 번 복사하지 않고 인덱스만 정렬합니다. 빌드에 포함된 작은 C++ 라이브러리가 안정 계수 정렬과 모델별 특징 생성을 처리하며, 원래의 셔플 순서·pillar당 32점·float32 연산 순서·패딩을 유지합니다. 모델 가중치·입력 특징·박스 억제 기준은 동일합니다. Python/NumPy C ABI나 CUDA에 의존하지 않으며 Windows·Ubuntu·macOS 패키지에 포함합니다. 사용할 수 없을 때는 NumPy 구현으로 동작합니다. 실제 사용 경로는 처리 시간 툴팁과 벤치마크의 `preprocess_backend`에서 확인할 수 있습니다.
 
-같은 PC에서 이전 `18f478e`와 추가 최적화를 **같은 ONNX 세션에서 교차 측정**했습니다. 5회 준비 후 30회, 후보 점수 0.1의 p50입니다.
+같은 PC에서 **tiny 기준** 이전 `18f478e`와 추가 최적화를 **같은 ONNX 세션에서 교차 측정**했습니다. 5회 준비 후 30회, 후보 점수 0.1의 p50입니다.
 
 | 점군 | 전처리 | 후처리 | 전체 검출 파이프라인 |
 | --- | ---: | ---: | ---: |
 | KITTI 41번, 122,490점 | 30.8 → 6.2 ms | 11.6 → 6.5 ms | **61.0 → 31.3 ms** |
 | XT32 100번, 유효 반환 126,196점 | 25.7 → 5.5 ms | 2.3 → 1.9 ms | **42.6 → 21.7 ms** |
 
-두 실제 점군의 특징·인덱스와 동일한 모델 출력으로 만든 최종 박스가 변경 전후 비트 단위로 일치했습니다. 무작위·고밀도·범위 경계·40,000 pillar 초과 입력도 이전 NumPy 구현과 비교합니다. NumPy 1.26/2.2 호환성과 네이티브 버퍼 경계·동시 호출·패키지에서 추출한 라이브러리 실행도 검사합니다. 정렬 작업 공간은 호출 스레드당 약 0.88 MiB로 고정 재사용합니다.
+두 실제 점군의 특징·인덱스와 동일한 모델 출력으로 만든 최종 박스가 변경 전후 비트 단위로 일치했습니다. 무작위·고밀도·범위 경계·40,000 pillar 초과 입력도 이전 NumPy 구현과 비교합니다. NumPy 1.26/2.2 호환성과 네이티브 버퍼 경계·동시 호출·패키지에서 추출한 라이브러리 실행도 검사합니다. 정렬 작업 공간은 호출 스레드당 tiny 약 0.88 MiB, ShortRange 약 1.56 MiB로 재사용합니다.
 
 ```bash
 ~/.local/share/lidar_viewer/detector/runtime/bin/python tools/benchmark_detector.py \
-  --model-dir ~/.local/share/lidar_viewer/detector/centerpoint-tiny-v4.1 \
+  --model tiny --model-dir ~/.local/share/lidar_viewer/detector/centerpoint-tiny-v4.1 \
   --cloud dataset/2011_09_26/2011_09_26_drive_0005_sync/velodyne_points/data/0000000041.bin \
   --iterations 100 --output /tmp/lidar-detector-benchmark.json
 ```
+
+ShortRange 도입 비교(2026-10-30): 사용자가 사람이 없다고 확인한 corrected bag의 547번 프레임, 동일한 높이 보정 +0.57 m에서 사람 후보는 동일한 점수 0.16 기준 **tiny 11개 → ShortRange 2개**, 0.50 기준 **1개 → 0개**였습니다. 별도로 KITTI drive 0005의 보행자 라벨이 있는 22프레임(0–5, 138–153)을 검사해 ShortRange가 22/22에서 점수 0.50 이상·동일 클래스·XY 중심 거리 2 m 이내로 보행자를 검출하는지 확인했습니다. 같은 프레임들의 자전거는 22/22, 차량은 117/118개 라벨과 대응했습니다. RTX 4060 Laptop에서 같은 실제 XT32 점군 125,834점의 전체 검출 파이프라인은 준비 5회 후 30회 측정 p50 약 **112 ms**, p95 **113 ms**였습니다. tiny보다 느린 정확도 우선 선택지입니다. CPU에서는 더 느리므로 속도가 우선이면 tiny를 선택합니다. GPU에서는 ConvNeXt의 depthwise convolution에 맞춰 ONNX Runtime의 NHWC 실행 경로를 사용합니다. 입력·가중치는 FP32를 유지합니다. 이 검사는 공식 KITTI AP 평가가 아니며, 연속 프레임·한 개의 음성 장면을 사용한 제한적인 회귀 확인입니다. 기본값 0.50은 앱의 보수적인 시작값으로, 제조사에서 보정한 확률이나 모든 현장에서의 권장 임계값을 뜻하지 않습니다. 예전 프로파일에 모델 구분 없이 저장된 낮은 점수는 새 기본 모델에서 0.50 이상으로 시작하며, 명시적으로 저장한 모델별 점수는 유지합니다.
 
 실제 KITTI 스캔과 XT32 bag에서 추론·박스 출력까지 확인했지만 **이 XT32 환경의 정답 라벨 기반 AP/recall을 측정한 것은 아닙니다.** 모델의 학습 센서와 장착 위치가 달라 오검출·미검출이 생길 수 있습니다. 현재는 단일 스캔 검출이며 시간 추적 ID나 속도 추정은 제공하지 않습니다. 다른 클래스나 현장 정확도 향상에는 해당 센서 데이터로 평가·추가 학습이 필요합니다.
 
@@ -347,12 +350,12 @@ python3 tools/setup_detector.py --cuda
 ctest --test-dir build --output-on-failure
 python3 tests/test_centerpoint.py
 ~/.local/share/lidar_viewer/detector/runtime/bin/python tests/test_centerpoint.py \
-  --model-dir ~/.local/share/lidar_viewer/detector/centerpoint-tiny-v4.1 \
+  --model tiny --model-dir ~/.local/share/lidar_viewer/detector/centerpoint-tiny-v4.1 \
   --cloud dataset/2011_09_26/2011_09_26_drive_0005_sync/velodyne_points/data/0000000041.bin
 ./build/lidar_viewer /path/to/scan.bin --detect --inspect
 ```
 
-출처와 라이선스는 `third_party/licenses/Autoware-CenterPoint-NOTICE.txt`와 모델 카드에 기록합니다.
+출처와 라이선스는 `third_party/licenses/Autoware-CenterPoint-NOTICE.txt`, `third_party/licenses/AWML-CenterPoint-NOTICE.txt` 및 모델 카드에 기록합니다.
 
 ## 앱 아이콘
 

@@ -40,6 +40,7 @@ def main():
     parser.add_argument('--model-dir',required=True)
     parser.add_argument('--provider',choices=['auto','cpu'],default='auto')
     parser.add_argument('--native-dir')
+    parser.add_argument('--model',choices=['tiny','short_range'],default='tiny')
     args=parser.parse_args()
     source=sys.stdin.buffer;sink=sys.stdout.buffer
     # Some optional native libraries print diagnostic messages to stdout.
@@ -52,7 +53,7 @@ def main():
         try:
             import numpy as np
             from lidar_detection.centerpoint import CenterPoint
-            detector=CenterPoint(args.model_dir,args.provider)
+            detector=CenterPoint(args.model_dir,args.provider,args.model)
             reply(sink,b'LDR1',0,[],0,detector.provider)
         except Exception as error:
             reply(sink,b'LDE1',0,[],0,str(error));return 1

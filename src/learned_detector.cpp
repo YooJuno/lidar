@@ -31,7 +31,7 @@ class Child {
 public:
   ~Child() {Close();}
   void Open(const std::filesystem::path & python,const std::filesystem::path & worker,
-    const std::filesystem::path & model,const std::string & provider,const std::filesystem::path & log) {
+    const std::filesystem::path & model,const std::string & variant,const std::string & provider,const std::filesystem::path & log) {
 #ifdef _WIN32
     SECURITY_ATTRIBUTES sa{sizeof(SECURITY_ATTRIBUTES),nullptr,TRUE};
     HANDLE child_in=nullptr,child_out=nullptr;
@@ -51,6 +51,7 @@ public:
     };
     std::wstring command=quote(python.wstring())+L" -u "+quote(worker.wstring())+L" --model-dir "+quote(model.wstring())+
       L" --provider "+quote(std::wstring(provider.begin(),provider.end()))+
+      L" --model "+quote(std::wstring(variant.begin(),variant.end()))+
       L" --native-dir "+quote(ExecutablePath().parent_path().wstring());
     STARTUPINFOW start{};start.cb=sizeof(start);start.dwFlags=STARTF_USESTDHANDLES;
     start.hStdInput=child_in;start.hStdOutput=child_out;start.hStdError=error;
@@ -69,9 +70,9 @@ public:
     posix_spawn_file_actions_adddup2(&actions,input[0],STDIN_FILENO);
     posix_spawn_file_actions_adddup2(&actions,output[1],STDOUT_FILENO);
     if (error>=0) posix_spawn_file_actions_adddup2(&actions,error,STDERR_FILENO);
-    std::array<std::string,9> args{python.string(),"-u",worker.string(),"--model-dir",model.string(),
-      "--provider",provider,"--native-dir",ExecutablePath().parent_path().string()};
-    std::array<char *,10> argv{};for (std::size_t i=0;i<args.size();++i) argv[i]=args[i].data();
+    std::array<std::string,11> args{python.string(),"-u",worker.string(),"--model-dir",model.string(),
+      "--provider",provider,"--model",variant,"--native-dir",ExecutablePath().parent_path().string()};
+    std::array<char *,12> argv{};for (std::size_t i=0;i<args.size();++i) argv[i]=args[i].data();
     const int rc=posix_spawnp(&pid_,python.c_str(),&actions,nullptr,argv.data(),environ);
     posix_spawn_file_actions_destroy(&actions);close(input[0]);close(output[1]);if (error>=0) close(error);
     if (rc!=0) {pid_=-1;close(input[1]);close(output[0]);throw std::runtime_error("Cannot start detector Python runtime");}
@@ -155,10 +156,11 @@ void LearnedDetector::Stop() {
   if (impl_->thread.joinable()) impl_->thread.join();
   {std::lock_guard<std::mutex> lock(impl_->process_mutex);impl_->child.Close();}
 }
-void LearnedDetector::Start(const std::filesystem::path & root) {
+void LearnedDetector::Start(const std::filesystem::path & root,const std::string & variant) {
+  if (variant!="tiny" && variant!="short_range") throw std::invalid_argument("Unknown detector model");
   Stop();
   const auto config=UserConfigurationDirectory()/"detector.cfg";
-  std::filesystem::path python,model;std::string provider="auto",line;
+  std::filesystem::path python,model,short_model;std::string provider="auto",line;
   std::ifstream file(config);
   while (std::getline(file,line)) {
     if (!line.empty() && line.back()=='\r') line.pop_back();
@@ -166,16 +168,19 @@ void LearnedDetector::Start(const std::filesystem::path & root) {
     const auto value=line.substr(equal+1),key=line.substr(0,equal);
     if (key=="python") python=std::filesystem::u8path(value);
     else if (key=="model_dir") model=std::filesystem::u8path(value);
+    else if (key=="short_range_model_dir") short_model=std::filesystem::u8path(value);
     else if (key=="provider" && value=="cpu") provider=value;
   }
+  if (variant=="short_range") model=!short_model.empty() ? short_model : model.empty() ?
+    std::filesystem::path{} : model.parent_path()/"centerpoint-shortrange-v2.0.0";
   {std::lock_guard<std::mutex> lock(impl_->mutex);
     impl_->stop=false;impl_->result.reset();impl_->status={};
     if (!std::filesystem::is_regular_file(python) || !std::filesystem::is_directory(model)) {
       impl_->status.message="Model runtime is not installed. Run detector setup.";return;
     }
-    impl_->status.configured=true;impl_->status.message="Loading CenterPoint model...";
+    impl_->status.configured=true;impl_->status.message="Loading "+variant+" model...";
   }
-  impl_->thread=std::thread([this,root,python,model,provider,config] {
+  impl_->thread=std::thread([this,root,python,model,variant,provider,config] {
 #ifndef _WIN32
     // A closed worker pipe must raise an error, never terminate the GUI.
     sigset_t blocked;sigemptyset(&blocked);sigaddset(&blocked,SIGPIPE);pthread_sigmask(SIG_BLOCK,&blocked,nullptr);
@@ -183,7 +188,7 @@ void LearnedDetector::Start(const std::filesystem::path & root) {
     try {
       {std::lock_guard<std::mutex> process_lock(impl_->process_mutex);
         std::lock_guard<std::mutex> lock(impl_->mutex);if (impl_->stop) return;
-        impl_->child.Open(python,root/"detector_worker.py",model,provider,config.parent_path()/"detector.log");
+        impl_->child.Open(python,root/"detector_worker.py",model,variant,provider,config.parent_path()/"detector.log");
       }
       auto ready=ReadReply(impl_->child,0);
       if (ready.revision || !ready.error.empty()) throw std::runtime_error(ready.error.empty() ? "Invalid detector startup reply" : ready.error);

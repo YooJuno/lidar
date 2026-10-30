@@ -534,9 +534,10 @@ struct ViewerState
   std::uint64_t detector_revision{1}, detector_submitted{0}, detector_completed{0};
   float detector_yaw{0}, detector_latency_ms{0};
   double detector_submitted_at{0};
-  std::string detector_detail, detector_error;
+  std::string detector_detail, detector_error, detector_active_model;
+  bool detector_model_loaded{false};
   bool detector_retry{false}, detector_cli_override{false};
-  int object_method{0}; // Last selected method while object analysis is disabled.
+  int object_method{3}; // Last selected method while object analysis is disabled.
   std::string dataset_profile{"default"};
   std::unordered_map<std::size_t, FrameData> frame_cache;
   std::deque<std::size_t> frame_cache_order;
@@ -820,9 +821,10 @@ bool UpdateDetector(ViewerState & state)
     }
     return false;
   }
-  if (!state.detector || state.detector_retry) {
+  if (!state.detector || state.detector_retry || state.detector_active_model!=state.algorithm_config.detection.model) {
     if (!state.detector) state.detector=std::make_unique<lidar_viewer::LearnedDetector>();
-    state.detector->Start(lidar_viewer::ProjectResourcePath("python"));
+    state.detector_active_model=state.algorithm_config.detection.model;
+    state.detector->Start(lidar_viewer::ProjectResourcePath("python"),state.detector_active_model);
     state.detector_retry=false;state.detector_submitted=0;state.detector_error.clear();
   }
   if (state.detector_submitted!=state.detector_revision) {
@@ -1937,6 +1939,7 @@ void SaveSettings(ViewerState & state)
   out << "clustering_tolerance_m=" << state.algorithm_config.clustering.tolerance_m << '\n';
   out << "clustering_vertical_gap_m=" << state.algorithm_config.clustering.max_vertical_gap_m << '\n';
   out << "detection_enabled=" << (state.algorithm_config.detection.enabled ? 1 : 0) << '\n';
+  out << "detection_model=" << state.algorithm_config.detection.model << '\n';
   out << "detection_min_score=" << state.algorithm_config.detection.min_confidence << '\n';
   out << "detection_classes=" << state.algorithm_config.detection.classes << '\n';
   out << "object_method=" << state.object_method << '\n';
@@ -2119,6 +2122,9 @@ void LoadSettingsFile(ViewerState & state, const fs::path & path)
         state.algorithm_config.clustering.max_vertical_gap_m=std::clamp(ParseFiniteFloat(value),.1f,2.5f);
       } else if (key == "detection_enabled") {
         state.algorithm_config.detection.enabled = (ParseStrictInt(value) != 0);
+      } else if (key == "detection_model") {
+        if (value!="tiny" && value!="short_range") throw std::invalid_argument("Unknown detector model");
+        state.algorithm_config.detection.model=value;state.detector_model_loaded=true;
       } else if (key == "detection_min_score") {
         state.algorithm_config.detection.min_confidence=std::clamp(ParseFiniteFloat(value),.1f,.9f);
       } else if (key == "detection_classes") {
@@ -2127,7 +2133,7 @@ void LoadSettingsFile(ViewerState & state, const fs::path & path)
         state.algorithm_config.detection.classes=static_cast<std::uint32_t>(mask);
       } else if (key == "object_method") {
         const int method=ParseStrictInt(value);
-        if (method<0 || method>2) throw std::invalid_argument("Unknown object method");
+        if (method<0 || method>3) throw std::invalid_argument("Unknown object method");
         state.object_method=method;
       } else if (key == "calibration_yaw_deg") {
         state.calibration.yaw_deg = std::clamp(ParseFiniteFloat(value), -180.0f, 180.0f);
@@ -2180,6 +2186,7 @@ void LoadSettingsFile(ViewerState & state, const fs::path & path)
 void LoadSettings(ViewerState & state)
 {
   const auto app_scale=state.ui_scale;
+  state.detector_model_loaded=false;
   state.ground_view=ViewerState::GroundView::All;
 #ifdef LIDAR_VIEWER_USER_SETTINGS
   LoadSettingsFile(state,lidar_viewer::ProjectResourcePath(kProfilesDir)/(state.dataset_profile+".cfg"));
@@ -2188,6 +2195,12 @@ void LoadSettings(ViewerState & state)
   if (state.dataset_profile == "default") {
     LoadSettingsFile(state, SettingsPath());
   }
+  // Old tiny profiles stored uncalibrated scores without a model identity.
+  // Preserve explicitly saved model thresholds; migrate legacy defaults only.
+  if (!state.detector_model_loaded && state.algorithm_config.detection.model=="short_range")
+    state.algorithm_config.detection.min_confidence=std::max(.5f,state.algorithm_config.detection.min_confidence);
+  if (state.object_method==0 || state.object_method==3)
+    state.object_method=state.algorithm_config.detection.model=="short_range" ? 3 : 0;
   state.saved_roi=state.roi; state.roi_history.Clear();
   if (state.app_settings_loaded) state.ui_scale=app_scale;
   if (state.detector_cli_override) state.algorithm_config.detection.enabled=true;
@@ -3401,17 +3414,26 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       auto & clustering=state.algorithm_config.clustering;
       SectionTitle("Object analysis");
       bool enabled=detection.enabled || clustering.enabled;
-      if (enabled) state.object_method=detection.enabled ? 0 : (clustering.mode=="euclidean_3d" ? 1 : 2);
+      if (enabled) state.object_method=detection.enabled ? (detection.model=="short_range" ? 3 : 0) : (clustering.mode=="euclidean_3d" ? 1 : 2);
       const bool toggled=ImGui::Checkbox("Enable objects",&enabled);
       ImGui::TextDisabled("Method");ImGui::SetNextItemWidth(-1);
       const bool method_changed=ImGui::Combo("##ObjectMethod",&state.object_method,
-        "CenterPoint tiny (learned)\0Euclidean 3D (clusters)\0Projected XY (clusters)\0");
+        "CenterPoint tiny (fast)\0Euclidean 3D (clusters)\0Projected XY (clusters)\0AWML ShortRange (quality)\0");
+      const bool learned=state.object_method==0 || state.object_method==3;
       if (toggled || method_changed) {
         const bool was_detection=detection.enabled;
         const bool was_clustering=clustering.enabled;
-        detection.enabled=enabled && state.object_method==0;
-        clustering.enabled=enabled && state.object_method!=0;
-        if (state.object_method!=0) clustering.mode=state.object_method==1 ? "euclidean_3d" : "euclidean";
+        if (method_changed && learned) {
+          const std::string model=state.object_method==3 ? "short_range" : "tiny";
+          if (model!=detection.model) {
+            detection.model=model;detection.min_confidence=model=="short_range" ? .5f : .35f;
+            ++state.detector_revision;state.detector_completed=0;
+            state.full_detections.clear();state.detector_error.clear();
+          }
+        }
+        detection.enabled=enabled && learned;
+        clustering.enabled=enabled && !learned;
+        if (!learned) clustering.mode=state.object_method==1 ? "euclidean_3d" : "euclidean";
         if (was_detection && !detection.enabled) state.detector_cli_override=false;
         if (detection.enabled && !was_detection) {
           refresh_detector=true;
@@ -3421,9 +3443,11 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         if (clustering.enabled && !state.ground_removal_enabled) {state.ground_removal_enabled=true;reprocess=true;}
         FilterDetections(state);
       }
-      if (state.object_method==0) {
-        ImGui::TextDisabled("Autoware CenterPoint tiny v4.1");
-        Tip("Original trained ONNX model. Uses the full gravity-aligned scan before ground/ROI filtering. Ground height and IMU alignment must be correct.");
+      if (learned) {
+        ImGui::TextDisabled("%s",detection.model=="short_range" ? "TIER IV AWML / ConvNeXt 2.0" : "Autoware CenterPoint tiny v4.1");
+        Tip(detection.model=="short_range" ?
+          "Original AWML model; XY range +/-51.2 m. Uses the full gravity-aligned scan before ground/ROI filtering. Ground height and IMU alignment must be correct." :
+          "Original Autoware tiny model; XY range +/-76.8 m. Uses the full gravity-aligned scan before ground/ROI filtering. Ground height and IMU alignment must be correct.");
         ImGui::Spacing();SectionTitle("Targets");
         const std::array<int,5> classes={3,4,0,2,1};
         bool filter_changed=false;
@@ -3445,6 +3469,10 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         filter_changed|=ImGui::SliderFloat("##DetectionScore",&detection.min_confidence,.1f,.9f,"Min score: %.2f",ImGuiSliderFlags_AlwaysClamp);
         Tip("Class and score selections filter cached model results instantly. They do not reload the model or rerun inference. Scores are not calibrated probabilities.");
         if (filter_changed) FilterDetections(state);
+        if (detection.min_confidence<(detection.model=="short_range" ? .5f : .35f)) {
+          ImGui::TextColored({1,.74f,.4f,1},"Low-confidence candidates visible");
+          Tip("Lower scores increase false positives. The quality preset starts at 0.50; this is an application default, not a calibrated probability.");
+        }
         if (enabled) {
           ImGui::Spacing();SectionTitle("Runtime");
           const auto status=state.detector ? state.detector->Status() : lidar_viewer::DetectorStatus{};
@@ -3472,7 +3500,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         ImGui::TextWrapped("Groups nearby obstacle points. No person or vehicle classification.");
         Metric("Clusters",std::to_string(state.clusters.size()));
       }
-      if (state.object_method!=0 || clustering.enabled) {
+      if (!learned || clustering.enabled) {
         ImGui::Spacing();SectionTitle("Clustering");
         ImGui::BeginDisabled(!enabled);
         ImGui::SetNextItemWidth(-1);
@@ -4106,7 +4134,7 @@ int RunViewer(int argc, char ** argv)
           std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
         if (!state.detector_error.empty()) throw std::runtime_error(state.detector_error);
-        std::cout<<"Detector: CenterPoint tiny v4.1 | "<<state.detector->Status().provider<<" | "<<state.detector_latency_ms<<" ms | "<<state.detections.size()<<" boxes\n";
+        std::cout<<"Detector: "<<state.algorithm_config.detection.model<<" | "<<state.detector->Status().provider<<" | "<<state.detector_latency_ms<<" ms | "<<state.detections.size()<<" boxes\n";
         for (const auto & detection:state.detections) {
           const auto & b=detection.oriented_bounds;
           std::cout<<"  "<<lidar_viewer::algorithms::DetectionClassName(detection.class_id)<<" score "<<detection.confidence<<

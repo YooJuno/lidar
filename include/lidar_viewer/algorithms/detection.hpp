@@ -2,6 +2,7 @@
 
 #include "lidar_viewer/algorithms/clustering.hpp"
 #include <cstdint>
+#include <string>
 
 namespace lidar_viewer::algorithms
 {
@@ -19,7 +20,8 @@ enum DetectionClassId
 struct DetectionParams
 {
   bool enabled{false};
-  float min_confidence{0.35f};
+  std::string model{"short_range"};
+  float min_confidence{0.50f};
   static constexpr std::uint32_t AllClasses = (1u << 5) - 1;
   std::uint32_t classes{AllClasses};
   bool Accepts(const Detection & detection) const {
