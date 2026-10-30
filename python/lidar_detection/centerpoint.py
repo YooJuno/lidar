@@ -139,18 +139,26 @@ def suppress(boxes):
     if not len(boxes):return boxes
     # Original 0.5 m circle NMS, followed by rotated BEV IoU NMS (0.1).
     boxes=boxes[np.argsort(-boxes[:,7],kind='stable')]
-    kept=[];corners=[];aabbs=[]
+    kept=[];corners=[];aabbs=[];cells={}
     for box in boxes:
         corner=box_corners(box);aabb=np.r_[corner.min(axis=0),corner.max(axis=0)]
         rejected=False
-        for previous,previous_corners,previous_aabb in zip(kept,corners,aabbs):
+        # The original suppression rule only compares centers within 10 m.
+        # Search nine spatial buckets instead of every previously kept box.
+        cell=(math.floor(float(box[0])/10),math.floor(float(box[1])/10))
+        neighbors=(index for y in range(cell[1]-1,cell[1]+2) for x in range(cell[0]-1,cell[0]+2)
+            for index in cells.get((x,y),()))
+        for index in neighbors:
+            previous,previous_corners,previous_aabb=kept[index],corners[index],aabbs[index]
             distance=float(np.square(box[:2]-previous[:2]).sum())
             if distance<.25:rejected=True;break
             if distance>=100:continue
             overlap=np.minimum(aabb[2:],previous_aabb[2:])-np.maximum(aabb[:2],previous_aabb[:2])
             if np.any(overlap<=0):continue
             if rotated_iou(box,previous,corner,previous_corners)>.1:rejected=True;break
-        if not rejected:kept.append(box);corners.append(corner);aabbs.append(aabb)
+        if not rejected:
+            cells.setdefault(cell,[]).append(len(kept))
+            kept.append(box);corners.append(corner);aabbs.append(aabb)
     return np.asarray(kept,dtype=np.float32).reshape(-1,9)
 
 
@@ -182,16 +190,30 @@ class CenterPoint:
         self.folder=Path(folder);verify_weights(self.folder)
         path=self.folder/FUSED_NAME
         if not path.is_file():fuse_model(self.folder)
-        # Use the host's existing PyTorch CUDA/cuDNN runtime when available.
-        # No custom CUDA compiler, TensorRT plugin or ROS node is required.
-        if provider!='cpu':
-            try:import torch  # noqa: F401
-            except ImportError:pass
-            try:ort.preload_dlls()
+        # ORT can preload the NVIDIA wheels directly. Importing all of PyTorch
+        # only to load CUDA libraries wastes startup time and resident memory.
+        available=ort.get_available_providers()
+        if provider!='cpu' and 'CUDAExecutionProvider' in available:
+            # With system-site-packages, NVIDIA wheels may live outside ORT's
+            # own venv. Resolve the actual cuDNN package before ORT's default
+            # relative-directory search; do not import the training framework.
+            import importlib.util
+            import platform
+            try:
+                spec=importlib.util.find_spec('nvidia.cudnn')
+            except ImportError:spec=None
+            try:
+                locations=(spec.submodule_search_locations or []) if spec else []
+                for root in locations:
+                    directory=Path(root)/('bin' if platform.system()=='Windows' else 'lib')
+                    library='cudnn64_9.dll' if platform.system()=='Windows' else 'libcudnn.so.9'
+                    if (directory/library).is_file():
+                        ort.preload_dlls(cuda=False,cudnn=True,directory=str(directory));break
+                ort.preload_dlls()
             except AttributeError:pass
         options=ort.SessionOptions();options.intra_op_num_threads=2;options.inter_op_num_threads=1
         providers=['CPUExecutionProvider']
-        if provider!='cpu' and 'CUDAExecutionProvider' in ort.get_available_providers():
+        if provider!='cpu' and 'CUDAExecutionProvider' in available:
             providers=[('CUDAExecutionProvider',{'cudnn_conv_algo_search':'HEURISTIC','arena_extend_strategy':'kSameAsRequested'}),*providers]
         self.session=ort.InferenceSession(str(path),sess_options=options,providers=providers)
         self.provider=self.session.get_providers()[0]

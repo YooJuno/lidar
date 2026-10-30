@@ -31,6 +31,10 @@ public:
   DetectorStatus Status() const;
   void Submit(std::uint64_t revision, const std::vector<KittiPoint> & full_scan,
     float threshold, float display_yaw_rad);
+  // Immutable snapshot shared with the latest-only queue. Packing and yaw
+  // conversion happen on the worker, after superseded requests are discarded.
+  void Submit(std::uint64_t revision, std::shared_ptr<const std::vector<KittiPoint>> full_scan,
+    float threshold, float display_yaw_rad);
   std::optional<DetectorResult> Poll();
 private:
   struct Impl;

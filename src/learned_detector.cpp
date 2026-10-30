@@ -35,8 +35,10 @@ public:
 #ifdef _WIN32
     SECURITY_ATTRIBUTES sa{sizeof(SECURITY_ATTRIBUTES),nullptr,TRUE};
     HANDLE child_in=nullptr,child_out=nullptr;
-    if (!CreatePipe(&child_in,&write_,&sa,0) || !CreatePipe(&read_,&child_out,&sa,0))
-      throw std::runtime_error("Cannot create detector pipes");
+    if (!CreatePipe(&child_in,&write_,&sa,0)) throw std::runtime_error("Cannot create detector pipes");
+    if (!CreatePipe(&read_,&child_out,&sa,0)) {
+      CloseHandle(child_in);throw std::runtime_error("Cannot create detector pipes");
+    }
     SetHandleInformation(write_,HANDLE_FLAG_INHERIT,0);SetHandleInformation(read_,HANDLE_FLAG_INHERIT,0);
     HANDLE error=CreateFileW(log.c_str(),GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,&sa,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     auto quote=[](const std::wstring & value) {
@@ -116,7 +118,8 @@ private:
 #endif
 };
 struct Request {
-  std::uint64_t revision{0};float threshold{.35f},yaw{0};std::vector<float> xyz;
+  std::uint64_t revision{0};float threshold{.35f},yaw{0};
+  std::shared_ptr<const std::vector<KittiPoint>> scan;
 };
 DetectorResult ReadReply(Child & child,float yaw) {
   std::array<char,4> magic{};DetectorResult result;std::uint32_t count=0,length=0;
@@ -183,19 +186,27 @@ void LearnedDetector::Start(const std::filesystem::path & root) {
       auto ready=ReadReply(impl_->child,0);
       if (ready.revision || !ready.error.empty()) throw std::runtime_error(ready.error.empty() ? "Invalid detector startup reply" : ready.error);
       {std::lock_guard<std::mutex> lock(impl_->mutex);impl_->status.ready=true;impl_->status.provider=ready.detail;impl_->status.message="Ready";}
+      std::vector<float> xyz; // Reuse IPC storage across scans, outside the GUI.
       while (true) {
         Request request;
         {std::unique_lock<std::mutex> lock(impl_->mutex);impl_->cv.wait(lock,[this]{return impl_->stop || impl_->pending.has_value();});
           if (impl_->stop) break;
           request=std::move(*impl_->pending);impl_->pending.reset();}
-        const std::uint32_t count=static_cast<std::uint32_t>(request.xyz.size()/3);
+        xyz.clear();xyz.reserve(request.scan->size()*3);
+        const float c=std::cos(request.yaw),s=std::sin(request.yaw);
+        for (const auto & point:*request.scan) {
+          xyz.push_back(c*point.x+s*point.y);xyz.push_back(-s*point.x+c*point.y);xyz.push_back(point.z);
+        }
+        request.scan.reset();
+        const std::uint32_t count=static_cast<std::uint32_t>(xyz.size()/3);
         impl_->child.Write("LDQ1",4);impl_->child.Write(&request.revision,8);impl_->child.Write(&count,4);impl_->child.Write(&request.threshold,4);
-        impl_->child.Write(request.xyz.data(),request.xyz.size()*sizeof(float));
+        impl_->child.Write(xyz.data(),xyz.size()*sizeof(float));
         auto result=ReadReply(impl_->child,request.yaw);
         if (result.revision!=request.revision) throw std::runtime_error("Detector frame revision mismatch");
         std::lock_guard<std::mutex> lock(impl_->mutex);impl_->result=std::move(result);
       }
     } catch (const std::exception & error) {
+      {std::lock_guard<std::mutex> process_lock(impl_->process_mutex);impl_->child.Close();}
       std::lock_guard<std::mutex> lock(impl_->mutex);
       if (!impl_->stop) {impl_->status.failed=true;impl_->status.ready=false;impl_->status.message=error.what();}
     }
@@ -203,10 +214,13 @@ void LearnedDetector::Start(const std::filesystem::path & root) {
 }
 DetectorStatus LearnedDetector::Status() const {std::lock_guard<std::mutex> lock(impl_->mutex);return impl_->status;}
 void LearnedDetector::Submit(std::uint64_t revision,const std::vector<KittiPoint> & scan,float threshold,float yaw) {
-  if (scan.size()>4000000) throw std::runtime_error("Detector supports at most 4 million points per scan");
-  Request request;request.revision=revision;request.threshold=threshold;request.yaw=yaw;request.xyz.reserve(scan.size()*3);
-  const float c=std::cos(yaw),s=std::sin(yaw);
-  for (const auto & point:scan) {request.xyz.push_back(c*point.x+s*point.y);request.xyz.push_back(-s*point.x+c*point.y);request.xyz.push_back(point.z);}
+  Submit(revision,std::make_shared<const std::vector<KittiPoint>>(scan),threshold,yaw);
+}
+void LearnedDetector::Submit(std::uint64_t revision,std::shared_ptr<const std::vector<KittiPoint>> scan,float threshold,float yaw) {
+  if (!scan || scan->size()>4000000) throw std::runtime_error("Detector supports at most 4 million points per scan");
+  if (!std::isfinite(yaw) || !std::isfinite(threshold) || threshold<.01f || threshold>.99f)
+    throw std::invalid_argument("Invalid detector threshold or yaw");
+  Request request;request.revision=revision;request.threshold=threshold;request.yaw=yaw;request.scan=std::move(scan);
   {std::lock_guard<std::mutex> lock(impl_->mutex);if (impl_->stop || !impl_->status.configured || impl_->status.failed) return;impl_->pending=std::move(request);}
   impl_->cv.notify_one();
 }

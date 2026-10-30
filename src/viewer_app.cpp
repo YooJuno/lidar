@@ -23,6 +23,7 @@
 #include "lidar_viewer/live_io.hpp"
 #include "lidar_viewer/learned_detector.hpp"
 #include "lidar_viewer/platform.hpp"
+#include "lidar_viewer/background_worker.hpp"
 
 #include <algorithm>
 #include <array>
@@ -396,6 +397,8 @@ struct ViewerState
   {
     std::vector<FrameHandle> frames;
     FrameData first_frame;
+    std::unique_ptr<ViewerState> prepared;
+    float ground_offset{0};
   };
   struct FolderScanResult
   {
@@ -526,19 +529,29 @@ struct ViewerState
   std::vector<lidar_viewer::algorithms::Cluster> clusters;
   std::vector<lidar_viewer::algorithms::Detection> detections;
   std::unique_ptr<lidar_viewer::LearnedDetector> detector;
-  std::vector<KittiPoint> detector_input;
+  std::shared_ptr<const std::vector<KittiPoint>> detector_input;
   std::vector<lidar_viewer::algorithms::Detection> full_detections;
   std::uint64_t detector_revision{1}, detector_submitted{0}, detector_completed{0};
   float detector_yaw{0}, detector_latency_ms{0};
   double detector_submitted_at{0};
   std::string detector_detail, detector_error;
   bool detector_retry{false}, detector_cli_override{false};
+  int object_method{0}; // Last selected method while object analysis is disabled.
   std::string dataset_profile{"default"};
   std::unordered_map<std::size_t, FrameData> frame_cache;
   std::deque<std::size_t> frame_cache_order;
+  std::unique_ptr<lidar_viewer::BackgroundWorker> frame_reader;
   std::future<FrameData> prefetch_future;
   std::optional<std::size_t> requested_frame;
   std::optional<std::size_t> prefetched_index;
+  std::unique_ptr<lidar_viewer::BackgroundWorker> geometry_worker;
+  std::future<std::unique_ptr<ViewerState>> geometry_future;
+  bool async_geometry{false}, geometry_updates_detector{true}, geometry_roi_only{false};
+  std::optional<std::size_t> geometry_index;
+  std::optional<std::uint64_t> geometry_live_sequence;
+  std::uint64_t geometry_config{0}, submitted_geometry_config{0};
+  std::uint64_t geometry_ground_config{0}, geometry_alignment_config{0};
+  std::uint64_t submitted_ground_config{0}, submitted_alignment_config{0};
 };
 
 struct VisiblePointRange {std::size_t first{0}, count{0};};
@@ -777,7 +790,7 @@ void FilterDetections(ViewerState & state)
   if (state.algorithm_config.detection.enabled && state.detector_completed==state.detector_revision) {
     const lidar_viewer::PreparedRoi roi(state.roi,state.roi_frame);
     for (const auto & detection:state.full_detections)
-      if (detection.confidence>=state.algorithm_config.detection.min_confidence &&
+      if (state.algorithm_config.detection.Accepts(detection) &&
           roi.Contains(detection.oriented_bounds.center)) state.detections.push_back(detection);
   }
   RebuildClusterBoxes(state);
@@ -801,7 +814,7 @@ bool DetectorFramePending(const ViewerState & state)
 bool UpdateDetector(ViewerState & state)
 {
   if (!state.algorithm_config.detection.enabled) return false;
-  if (state.detector_input.empty()) {
+  if (!state.detector_input || state.detector_input->empty()) {
     if (state.detector_completed!=state.detector_revision) {
       state.detector_completed=state.detector_revision;state.full_detections.clear();FilterDetections(state);
     }
@@ -815,7 +828,11 @@ bool UpdateDetector(ViewerState & state)
   if (state.detector_submitted!=state.detector_revision) {
     // Lower candidates never suppress a higher-scoring NMS survivor. Cache
     // down to the UI minimum once; changing score is then an immediate filter.
-    state.detector->Submit(state.detector_revision,state.detector_input,.1f,state.detector_yaw);
+    try {state.detector->Submit(state.detector_revision,state.detector_input,.1f,state.detector_yaw);}
+    catch (const std::exception & error) {
+      state.detector_error=error.what();state.detector_completed=state.detector_revision;
+      state.full_detections.clear();FilterDetections(state);return false;
+    }
     state.detector_submitted=state.detector_revision;state.detector_submitted_at=DetectorClock();
   }
   if (auto result=state.detector->Poll();result && result->revision==state.detector_revision) {
@@ -1006,8 +1023,33 @@ void ApplyRoiResult(ViewerState & state, const FrameData & processed, std::size_
   state.roi_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
 }
 
+void PrepareDetectorInput(ViewerState & state, const FrameData & aligned, const FrameData & raw, float yaw)
+{
+  auto points=std::make_shared<std::vector<KittiPoint>>();points->reserve(aligned.points.size());
+  for (std::size_t i=0;i<aligned.points.size();++i)
+    if (raw.points[i].x!=0 || raw.points[i].y!=0 || raw.points[i].z!=0) points->push_back(aligned.points[i]);
+  state.detector_input=std::move(points);state.detector_yaw=yaw;
+  ++state.detector_revision;state.full_detections.clear();state.detections.clear();state.detector_error.clear();
+}
+
+void RefreshDetectorInput(ViewerState & state)
+{
+  // Enabling a detector does not require running ground segmentation again.
+  if (state.detector_input) {FilterDetections(state);return;}
+  const auto leveling=state.imu_level_enabled ? lidar_viewer::ComputeImuLeveling(state.base_frame.imu,state.imu_mount) :
+    lidar_viewer::ImuLevelingResult{};
+  const auto resolved=lidar_viewer::ResolveDisplayAlignment(state.calibration,state.imu_level_enabled,leveling);
+  FrameData aligned=state.base_frame;
+  const auto transform=BuildCalibrationTransform(resolved.effective);
+  for (auto & point:aligned.points) {
+    const auto p=ApplyCalibrationTransform({point.x,point.y,point.z},transform);
+    point.x=p.x;point.y=p.y;point.z=p.z;
+  }
+  PrepareDetectorInput(state,aligned,state.base_frame,resolved.effective.yaw_deg*kPi/180.f);
+}
+
 void ApplyCalibration(ViewerState & state, const FrameData * source = nullptr,
-  std::optional<float> source_ground_offset = std::nullopt)
+  std::optional<float> source_ground_offset = std::nullopt, bool update_detector=true)
 {
   const auto started=std::chrono::steady_clock::now();
   FrameData frame=source ? *source : state.base_frame;
@@ -1026,16 +1068,15 @@ void ApplyCalibration(ViewerState & state, const FrameData * source = nullptr,
     const auto rotated=ApplyCalibrationTransform({point.x,point.y,point.z},transform);
     point.x=rotated.x; point.y=rotated.y; point.z=rotated.z;
   }
-  ++state.detector_revision;state.full_detections.clear();state.detections.clear();state.detector_error.clear();
-  state.detector_yaw=resolved.effective.yaw_deg*kPi/180.f;
-  state.detector_input.clear();
-  if (state.algorithm_config.detection.enabled) {
+  if (update_detector) {
+    state.detector_input.reset();
+    if (state.algorithm_config.detection.enabled) {
     // Organized XT32 scans contain zero XYZ for missing returns. Do not turn
     // those into a dense artificial pillar when height alignment translates Z.
-    const auto & raw=(source ? *source : state.base_frame).points;
-    state.detector_input.reserve(frame.points.size());
-    for (std::size_t i=0;i<frame.points.size();++i)
-      if (raw[i].x!=0 || raw[i].y!=0 || raw[i].z!=0) state.detector_input.push_back(frame.points[i]);
+      PrepareDetectorInput(state,frame,source ? *source : state.base_frame,resolved.effective.yaw_deg*kPi/180.f);
+    } else {
+      ++state.detector_revision;state.full_detections.clear();state.detections.clear();state.detector_error.clear();
+    }
   }
   std::size_t obstacles=frame.points.size();
   if (state.ground_removal_enabled && !frame.points.empty()) {
@@ -1057,6 +1098,44 @@ void ApplyCalibration(ViewerState & state, const FrameData * source = nullptr,
     std::cout << "IMU leveling " << (leveling.applied ? "active: " : "unavailable: ") << leveling.status << std::endl;
   state.imu_level_result=std::move(leveling);
   state.processing_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
+}
+
+void CancelGeometry(ViewerState & state)
+{
+  if (state.geometry_worker) state.geometry_worker->CancelPending();
+  state.geometry_future={};state.geometry_index.reset();state.geometry_live_sequence.reset();
+}
+
+void QueueGeometry(ViewerState & state, FrameData base, std::optional<std::size_t> index={},
+  std::optional<std::uint64_t> sequence={}, bool update_detector=true, bool roi_only=false)
+{
+  if (state.loading_bag_source) return;
+  update_detector=update_detector || (state.algorithm_config.detection.enabled && !state.detector_input);
+  // The worker owns a snapshot; it never reads mutable UI state or uses OpenGL.
+  auto work=std::make_unique<ViewerState>();
+  work->base_frame=std::move(base);work->global_ground_offset=state.global_ground_offset;
+  work->calibration=state.calibration;work->imu_level_enabled=state.imu_level_enabled;
+  work->imu_mount=state.imu_mount;work->algorithm_config=state.algorithm_config;
+  work->ground_removal_enabled=state.ground_removal_enabled;work->ground_sequence=state.ground_sequence;
+  work->roi=state.roi;work->roi_frame=state.roi_frame;
+  if (roi_only) {
+    work->processed_frame=state.processed_frame;work->processed_obstacles=state.processed_obstacles;
+    work->imu_level_result=state.imu_level_result;work->processing_ms=state.processing_ms;
+  }
+  if (!state.geometry_worker) state.geometry_worker=std::make_unique<lidar_viewer::BackgroundWorker>();
+  state.geometry_future=state.geometry_worker->Submit([work=std::move(work),update_detector,roi_only]() mutable {
+    if (roi_only) {
+      ApplyRoiResult(*work,work->processed_frame,work->processed_obstacles,work->roi_frame);
+      if (update_detector) RefreshDetectorInput(*work);
+    }
+    else ApplyCalibration(*work,nullptr,std::nullopt,update_detector);
+    return std::move(work);
+  });
+  state.geometry_index=index;state.geometry_live_sequence=sequence;
+  state.geometry_updates_detector=update_detector;state.geometry_roi_only=roi_only;
+  state.submitted_geometry_config=state.geometry_config;state.roi_pending=false;
+  state.submitted_ground_config=state.geometry_ground_config;
+  state.submitted_alignment_config=state.geometry_alignment_config;
 }
 
 void RebuildGrid(ViewerState & state)
@@ -1088,6 +1167,7 @@ void RebuildGrid(ViewerState & state)
 }
 
 constexpr std::size_t kMaxCachedFrames = 3;
+constexpr std::size_t kFrameCacheBytes = 64u*1024u*1024u;
 
 void StoreFrameInCache(ViewerState & state, std::size_t index, FrameData frame)
 {
@@ -1100,9 +1180,14 @@ void StoreFrameInCache(ViewerState & state, std::size_t index, FrameData frame)
   }
 
   state.frame_cache.emplace(index, std::move(frame));
-  while (state.frame_cache_order.size() > kMaxCachedFrames) {
+  std::size_t bytes=0;
+  for (const auto & entry:state.frame_cache) bytes+=entry.second.points.capacity()*sizeof(KittiPoint);
+  // Retain one oversized frame so it can still be consumed without reloading.
+  while (state.frame_cache_order.size() > 1 &&
+      (state.frame_cache_order.size() > kMaxCachedFrames || bytes > kFrameCacheBytes)) {
     const std::size_t evict_index = state.frame_cache_order.front();
     state.frame_cache_order.pop_front();
+    bytes-=state.frame_cache.at(evict_index).points.capacity()*sizeof(KittiPoint);
     state.frame_cache.erase(evict_index);
   }
 }
@@ -1150,7 +1235,8 @@ void QueueFramePrefetch(ViewerState & state, std::size_t next_index)
 
   const FrameHandle handle = state.frames[next_index];
   state.prefetched_index = next_index;
-  state.prefetch_future = std::async(std::launch::async, [handle]() {
+  if (!state.frame_reader) state.frame_reader=std::make_unique<lidar_viewer::BackgroundWorker>();
+  state.prefetch_future = state.frame_reader->Submit([handle]() {
     return LoadFrame(handle);
   });
 }
@@ -1158,6 +1244,68 @@ void QueueFramePrefetch(ViewerState & state, std::size_t next_index)
 void QueueNextFramePrefetch(ViewerState & state)
 {
   if (state.frames.size()>1) QueueFramePrefetch(state,(state.current_index+1)%state.frames.size());
+}
+
+bool CompleteGeometry(ViewerState & state)
+{
+  if (!state.geometry_future.valid() || state.roi_gesture.active ||
+      state.geometry_future.wait_for(std::chrono::seconds(0))!=std::future_status::ready) return false;
+  try {
+    auto work=state.geometry_future.get();
+    // A settings edit supersedes an in-flight result. Recompute the requested
+    // source with the newest settings instead of showing boxes in old axes.
+    if (state.submitted_geometry_config!=state.geometry_config) {
+      if (state.submitted_ground_config!=state.geometry_ground_config) {
+        QueueGeometry(state,std::move(work->base_frame),state.geometry_index,state.geometry_live_sequence,
+          state.geometry_updates_detector || state.submitted_alignment_config!=state.geometry_alignment_config,false);
+      } else {
+        // ROI/cluster edits reuse the in-flight segmentation too. Preserve the
+        // fresh scan's aligned detector snapshot instead of computing it twice.
+        work->roi=state.roi;work->algorithm_config.clustering=state.algorithm_config.clustering;
+        work->algorithm_config.detection=state.algorithm_config.detection;
+        const bool prepare_detector=work->algorithm_config.detection.enabled &&
+          (state.geometry_updates_detector || !state.detector_input);
+        state.geometry_updates_detector|=prepare_detector;
+        state.geometry_future=state.geometry_worker->Submit([work=std::move(work),prepare_detector]() mutable {
+          ApplyRoiResult(*work,work->processed_frame,work->processed_obstacles,work->roi_frame);
+          if (prepare_detector) RefreshDetectorInput(*work);
+          return std::move(work);
+        });
+        state.submitted_geometry_config=state.geometry_config;
+      }
+      return false;
+    }
+    state.base_frame=std::move(work->base_frame);state.frame=std::move(work->frame);
+    state.processed_frame=std::move(work->processed_frame);state.processed_obstacles=work->processed_obstacles;
+    state.ground_removed_count=work->ground_removed_count;state.clusters=std::move(work->clusters);
+    state.roi_frame=work->roi_frame;state.roi_ms=work->roi_ms;state.processing_ms=work->processing_ms;
+    state.ground_passes+=work->ground_passes;state.imu_level_result=std::move(work->imu_level_result);
+    if (state.geometry_updates_detector) {
+      state.detector_input=std::move(work->detector_input);state.detector_yaw=work->detector_yaw;
+      ++state.detector_revision;state.full_detections.clear();state.detector_error.clear();
+    }
+    RebuildRoiGeometry(state);FilterDetections(state);state.frame_dirty=true;
+    if (state.geometry_roi_only)
+      std::cout<<"ROI applied: "<<state.roi.boxes.size()<<" boxes | "<<state.frame.points.size()<<" points | "
+        <<state.roi_ms<<" ms | ground passes "<<state.ground_passes<<std::endl;
+    if (state.geometry_index) {
+      state.current_index=*state.geometry_index;UpdateCurrentFileGroup(state);QueueNextFramePrefetch(state);
+    }
+    if (state.geometry_live_sequence) {
+      state.live_display_sequence=*state.geometry_live_sequence;
+      if (!state.live_has_frame) {
+        state.fit_view_requested=true;
+        std::cout<<"Live first frame: "<<state.frame.points.size()<<" points"<<std::endl;
+      }
+      state.live_has_frame=true;
+    }
+    state.geometry_index.reset();state.geometry_live_sequence.reset();
+    return true;
+  } catch (const std::exception & error) {
+    state.ui_error=std::string("Frame processing failed: ")+error.what();state.is_playing=false;
+    if (state.live_mode) state.live_paused=true;
+    state.geometry_index.reset();state.geometry_live_sequence.reset();return false;
+  }
 }
 
 void LoadFrameByIndex(ViewerState & state, std::size_t index)
@@ -1187,6 +1335,12 @@ void LoadFrameByIndex(ViewerState & state, std::size_t index)
   }
   ApplyGlobalAlignment(next_base, offset);
   if (state.alignment_initialized && next_index!=state.current_index+1) ++state.ground_sequence;
+  if (state.async_geometry) {
+    state.global_ground_offset=offset;state.alignment_initialized=true;
+    QueueGeometry(state,std::move(next_base),next_index);
+    if (state.frames.size()>1) QueueFramePrefetch(state,(next_index+1)%state.frames.size());
+    return;
+  }
   ApplyCalibration(state, &next_base, offset);
   state.base_frame = std::move(next_base);
   state.global_ground_offset = offset;
@@ -1201,6 +1355,7 @@ bool TryLoadFrame(ViewerState & state, std::size_t index)
   try {
     if (state.frames.empty()) return false;
     index%=state.frames.size();
+    if (state.geometry_future.valid() && state.geometry_index==index) return false;
     ConsumeReadyPrefetch(state);
     if (state.frame_cache.find(index)==state.frame_cache.end()) {
       state.requested_frame=index;
@@ -1211,7 +1366,7 @@ bool TryLoadFrame(ViewerState & state, std::size_t index)
     LoadFrameByIndex(state, index);
     state.ui_error.clear();
     state.last_frame_advance_time = glfwGetTime();
-    return true;
+    return !state.async_geometry;
   } catch (const std::exception & error) {
     state.is_playing = false;
     state.ui_error = std::string("Frame could not be loaded: ") + error.what();
@@ -1288,6 +1443,10 @@ void SyncPlaybackFpsToInput(ViewerState & state)
   }
 }
 
+void LoadSettings(ViewerState & state);
+fs::path AlgorithmsConfigPath();
+std::string DetectDatasetProfile(const fs::path & input_path);
+
 void OpenBagSource(ViewerState & state, std::size_t index)
 {
   if (state.live.Active() || state.loading_bag_source || index >= state.bag_sources.size() ||
@@ -1301,13 +1460,44 @@ void OpenBagSource(ViewerState & state, std::size_t index)
     const auto topic = state.bag_topic;
     const auto imu_topic = state.bag_imu_topic;
     auto load=std::make_shared<lidar_viewer::InputLoadState>();
-    state.bag_load_future = std::async(std::launch::async, [path, topic, imu_topic, load]() {
+    auto prepared=std::make_unique<ViewerState>();
+    auto & staged=*prepared;
+    const auto profile=DetectDatasetProfile(path);
+    const bool change_profile = state.dataset_profile != profile;
+    staged.dataset_profile = profile;
+    staged.detector_cli_override=state.detector_cli_override;
+    if (change_profile) {
+      staged.calibration = {0, 0, 0, 0};
+      staged.algorithm_config = lidar_viewer::LoadPipelineConfig(AlgorithmsConfigPath());
+      LoadSettings(staged);
+      SetProjectionMode(staged,state.camera.projection_mode);
+      if (state.bag_sensor_height_override) staged.calibration.z_m = *state.bag_sensor_height_override;
+      if (state.imu_level_cli_override) staged.imu_level_enabled = true;
+    } else {
+      staged.calibration = state.calibration;
+      staged.algorithm_config = state.algorithm_config;
+      staged.ground_removal_enabled = state.ground_removal_enabled;
+      staged.ground_view=state.ground_view;
+      staged.imu_level_enabled = state.imu_level_enabled;
+      staged.imu_mount = state.imu_mount;
+      staged.roi = state.roi;
+      staged.selected_roi = state.selected_roi;
+      staged.object_method=state.object_method;
+    }
+    CancelGeometry(state);
+    if (!state.geometry_worker) state.geometry_worker=std::make_unique<lidar_viewer::BackgroundWorker>();
+    state.bag_load_future = state.geometry_worker->Submit([path, topic, imu_topic, load, prepared=std::move(prepared)]() mutable {
       ViewerState::BagLoadResult result;
       result.frames = ResolveInputFrames(path, topic, imu_topic, load.get());
       if (result.frames.empty()) throw std::runtime_error("No point cloud frames in this bag");
       load->Stage(lidar_viewer::InputLoadStage::ReadingFirstFrame);
       result.first_frame = LoadFrame(result.frames.front());
       load->Stage(lidar_viewer::InputLoadStage::PreparingDisplay);
+      result.ground_offset=result.frames.front().format==InputFormat::KittiXyzi ? result.first_frame.ground_z : 0.f;
+      ApplyGlobalAlignment(result.first_frame,result.ground_offset);
+      ApplyCalibration(*prepared,&result.first_frame,result.ground_offset);
+      result.prepared=std::move(prepared);
+      load->CheckCancelled();
       return result;
     });
     state.input_load=std::move(load);
@@ -1320,10 +1510,6 @@ void OpenBagSource(ViewerState & state, std::size_t index)
     state.is_playing=state.input_load_previous_playing;
   }
 }
-
-void LoadSettings(ViewerState & state);
-fs::path AlgorithmsConfigPath();
-std::string DetectDatasetProfile(const fs::path & input_path);
 
 void StartBagPicker(ViewerState & state)
 {
@@ -1410,36 +1596,15 @@ void CompleteBagLoad(ViewerState & state)
   try {
     auto result = state.bag_load_future.get();
     if (state.input_load) state.input_load->CheckCancelled();
-    // Fit/process the replacement before discarding any currently displayed data.
-    ViewerState staged;
-    const auto profile=DetectDatasetProfile(state.bag_sources[selected].path);
-    const bool change_profile = state.dataset_profile != profile;
-    staged.dataset_profile = profile;
-    staged.detector_cli_override=state.detector_cli_override;
-    if (change_profile) {
-      staged.calibration = {0, 0, 0, 0};
-      staged.algorithm_config = lidar_viewer::LoadPipelineConfig(AlgorithmsConfigPath());
-      LoadSettings(staged);
-      SetProjectionMode(staged,state.camera.projection_mode);
-      if (state.bag_sensor_height_override) staged.calibration.z_m = *state.bag_sensor_height_override;
-      if (state.imu_level_cli_override) staged.imu_level_enabled = true;
-    } else {
-      staged.calibration = state.calibration;
-      staged.algorithm_config = state.algorithm_config;
-      staged.ground_removal_enabled = state.ground_removal_enabled;
-      staged.ground_view=state.ground_view;
-      staged.imu_level_enabled = state.imu_level_enabled;
-      staged.imu_mount = state.imu_mount;
-      staged.roi = state.roi;
-      staged.selected_roi = state.selected_roi;
-    }
-    const float ground_offset=result.frames.front().format==InputFormat::KittiXyzi ? result.first_frame.ground_z : 0.f;
-    ApplyGlobalAlignment(result.first_frame,ground_offset);
-    ApplyCalibration(staged, &result.first_frame,ground_offset);
-    // Cache keys are frame indices. Drain the previous reader before reusing them.
-    if (state.prefetch_future.valid()) {
-      try { state.prefetch_future.get(); } catch (...) {}
-    }
+    auto & staged=*result.prepared;
+    const auto & profile=staged.dataset_profile;
+    const bool change_profile=state.dataset_profile!=profile;
+    const float ground_offset=result.ground_offset;
+    // A packaged-task future can be discarded without waiting for old disk I/O.
+    // The old job owns its handle and cannot insert into the replacement cache.
+    if (state.frame_reader) state.frame_reader->CancelPending();
+    state.prefetch_future={};
+    CancelGeometry(state);
     state.prefetched_index.reset();
     state.requested_frame.reset();
     state.frame_cache.clear();
@@ -1474,6 +1639,7 @@ void CompleteBagLoad(ViewerState & state)
       state.imu_level_enabled = staged.imu_level_enabled;
       state.imu_mount = staged.imu_mount;
       state.algorithm_config = staged.algorithm_config;
+      state.object_method=staged.object_method;
       state.ground_removal_enabled = staged.ground_removal_enabled;
       state.ground_view=staged.ground_view;
       state.camera = staged.camera;
@@ -1550,12 +1716,14 @@ void ConnectLive(ViewerState & state)
     if (state.bag_sensor_height_override) state.calibration.z_m = *state.bag_sensor_height_override;
     if (state.imu_level_cli_override) state.imu_level_enabled = true;
   }
-  if (state.prefetch_future.valid()) {try {state.prefetch_future.get();} catch (...) {}}
+  if (state.frame_reader) state.frame_reader->CancelPending();
+  state.prefetch_future={};
+  CancelGeometry(state);
   state.prefetched_index.reset(); state.requested_frame.reset(); state.frame_cache.clear(); state.frame_cache_order.clear();
   state.frames.clear(); state.file_groups.clear(); state.current_bag_source.reset();
   state.base_frame = {}; state.frame = {}; state.processed_frame={}; state.processed_obstacles=0;
   state.roi_gesture.active=false; state.roi_pending=false; state.roi_tool=ViewerState::RoiTool::Navigate;
-  state.clusters.clear(); state.detections.clear();state.full_detections.clear();state.detector_input.clear();++state.detector_revision;
+  state.clusters.clear(); state.detections.clear();state.full_detections.clear();state.detector_input.reset();++state.detector_revision;
   RebuildClusterBoxes(state);
   state.roi_renderer.vertices.clear(); state.roi_renderer.dirty = true;
   state.global_ground_offset = 0; state.alignment_initialized = true;
@@ -1572,10 +1740,11 @@ void UpdateLiveFrame(ViewerState & state)
 {
   if (!state.live_mode) return;
   state.live_stats = state.live.Stats();
-  if (!state.live_stats.connected || state.live_paused || DetectorFramePending(state)) return;
+  if (!state.live_stats.connected || state.live_paused || state.geometry_future.valid() || DetectorFramePending(state)) return;
   auto next = state.live.TakeLatest();
   if (!next) return;
   try {
+    if (state.async_geometry) {QueueGeometry(state,std::move(next->frame),{},next->sequence);return;}
     ApplyCalibration(state, &next->frame, 0);
     state.base_frame = std::move(next->frame);
     state.live_display_sequence = next->sequence;
@@ -1769,6 +1938,8 @@ void SaveSettings(ViewerState & state)
   out << "clustering_vertical_gap_m=" << state.algorithm_config.clustering.max_vertical_gap_m << '\n';
   out << "detection_enabled=" << (state.algorithm_config.detection.enabled ? 1 : 0) << '\n';
   out << "detection_min_score=" << state.algorithm_config.detection.min_confidence << '\n';
+  out << "detection_classes=" << state.algorithm_config.detection.classes << '\n';
+  out << "object_method=" << state.object_method << '\n';
   out << "calibration_yaw_deg=" << state.calibration.yaw_deg << '\n';
   out << "calibration_pitch_deg=" << state.calibration.pitch_deg << '\n';
   out << "calibration_roll_deg=" << state.calibration.roll_deg << '\n';
@@ -1950,6 +2121,14 @@ void LoadSettingsFile(ViewerState & state, const fs::path & path)
         state.algorithm_config.detection.enabled = (ParseStrictInt(value) != 0);
       } else if (key == "detection_min_score") {
         state.algorithm_config.detection.min_confidence=std::clamp(ParseFiniteFloat(value),.1f,.9f);
+      } else if (key == "detection_classes") {
+        const int mask=ParseStrictInt(value);
+        if (mask<0 || mask>31) throw std::invalid_argument("Invalid detection classes");
+        state.algorithm_config.detection.classes=static_cast<std::uint32_t>(mask);
+      } else if (key == "object_method") {
+        const int method=ParseStrictInt(value);
+        if (method<0 || method>2) throw std::invalid_argument("Unknown object method");
+        state.object_method=method;
       } else if (key == "calibration_yaw_deg") {
         state.calibration.yaw_deg = std::clamp(ParseFiniteFloat(value), -180.0f, 180.0f);
       } else if (key == "calibration_pitch_deg") {
@@ -2311,6 +2490,7 @@ void KeyCallback(GLFWwindow * window, int key, int, int action, int mods)
       state->open_app_settings=false;if (state->app_settings_dirty) SaveAppSettings(*state);return;
     }
     if (key==GLFW_KEY_ESCAPE && state->input_load) {state->input_load->Cancel();return;}
+    if (state->loading_bag_source) return;
     if (key==GLFW_KEY_ESCAPE && (state->roi_gesture.active || state->roi_tool!=ViewerState::RoiTool::Navigate)) {
       FinishRoiGesture(*state,true); state->roi_tool=ViewerState::RoiTool::Navigate; return;
     }
@@ -2895,7 +3075,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
 {
   const auto layout = state.ui_layout;
   const float s = layout.scale;
-  bool reprocess = false;
+  bool reprocess = false, alignment_changed=false, refresh_objects=false, refresh_detector=false;
   const bool has_input = state.live_mode ? state.live_has_frame : !state.frames.empty();
   BeginPanel("Header", layout.header, false);
   ImGui::SetCursorPosY(15.f * s);
@@ -2952,6 +3132,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     ImGui::PopStyleVar();
     return open;
   };
+  ImGui::BeginDisabled(state.loading_bag_source.has_value());
   if (tabs_open) {
     if (begin_tab("View")) {
       SectionTitle("Point appearance");
@@ -3107,6 +3288,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       ImGui::TextWrapped("Display coordinates only. Raw input and recorded bags are unchanged.");
       ImGui::EndTabItem();
     }
+    alignment_changed=reprocess;
     if (begin_tab("Ground")) {
       auto & ground = state.algorithm_config.ground_removal;
       SectionTitle("Ground segmentation");
@@ -3215,62 +3397,95 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       ImGui::EndTabItem();
     }
     if (begin_tab("Objects")) {
-      SectionTitle("Object detection");
-      if (ImGui::Checkbox("Detect objects",&state.algorithm_config.detection.enabled)) {
-        reprocess=true;
-        if (!state.algorithm_config.detection.enabled) state.detector_cli_override=false;
-        else if (state.detector && (!state.detector->Status().configured || state.detector->Status().failed)) state.detector_retry=true;
-      }
-      ImGui::TextDisabled("CenterPoint tiny  /  Autoware v4.1");
-      Tip("Original trained ONNX weights. Five classes, full 360 degree scan, single-frame XYZT. Requires gravity-aligned LiDAR and correct ground height in Align.");
-      ImGui::TextUnformatted("Person / Bicycle\nCar / Truck / Bus");
-      if (state.algorithm_config.detection.enabled) {
-        const auto status=state.detector ? state.detector->Status() : lidar_viewer::DetectorStatus{};
-        if (status.ready) {
-          Metric("Backend",status.provider=="CUDAExecutionProvider" ? "CUDA GPU" : "CPU");
-          Metric("Detections",std::to_string(state.detections.size()));
-          if (state.detector_completed==state.detector_revision) {
-            ImGui::TextDisabled("Inference pipeline: %.1f ms",state.detector_latency_ms);
-            Tip(state.detector_detail.c_str());
-          } else ImGui::TextDisabled("Processing current frame...");
-        } else ImGui::TextWrapped("%s",status.message.empty() ? (state.detector_input.empty() ? "Waiting for valid LiDAR returns." : "Starting detector...") : status.message.c_str());
-        if (!state.detector_error.empty()) ImGui::TextWrapped("%s",state.detector_error.c_str());
-        if (!status.configured || status.failed) {
-          ImGui::TextWrapped("Setup: python3 tools/setup_detector.py\nNVIDIA GPU: add --cuda");
-          if (ImGui::Button("Retry model",{-1,0})) state.detector_retry=true;
+      auto & detection=state.algorithm_config.detection;
+      auto & clustering=state.algorithm_config.clustering;
+      SectionTitle("Object analysis");
+      bool enabled=detection.enabled || clustering.enabled;
+      if (enabled) state.object_method=detection.enabled ? 0 : (clustering.mode=="euclidean_3d" ? 1 : 2);
+      const bool toggled=ImGui::Checkbox("Enable objects",&enabled);
+      ImGui::TextDisabled("Method");ImGui::SetNextItemWidth(-1);
+      const bool method_changed=ImGui::Combo("##ObjectMethod",&state.object_method,
+        "CenterPoint tiny (learned)\0Euclidean 3D (clusters)\0Projected XY (clusters)\0");
+      if (toggled || method_changed) {
+        const bool was_detection=detection.enabled;
+        const bool was_clustering=clustering.enabled;
+        detection.enabled=enabled && state.object_method==0;
+        clustering.enabled=enabled && state.object_method!=0;
+        if (state.object_method!=0) clustering.mode=state.object_method==1 ? "euclidean_3d" : "euclidean";
+        if (was_detection && !detection.enabled) state.detector_cli_override=false;
+        if (detection.enabled && !was_detection) {
+          refresh_detector=true;
+          if (state.detector && (!state.detector->Status().configured || state.detector->Status().failed)) state.detector_retry=true;
         }
+        refresh_objects=was_clustering!=clustering.enabled || clustering.enabled;
+        if (clustering.enabled && !state.ground_removal_enabled) {state.ground_removal_enabled=true;reprocess=true;}
+        FilterDetections(state);
+      }
+      if (state.object_method==0) {
+        ImGui::TextDisabled("Autoware CenterPoint tiny v4.1");
+        Tip("Original trained ONNX model. Uses the full gravity-aligned scan before ground/ROI filtering. Ground height and IMU alignment must be correct.");
+        ImGui::Spacing();SectionTitle("Targets");
+        const std::array<int,5> classes={3,4,0,2,1};
+        bool filter_changed=false;
+        if (ImGui::SmallButton("All")) {detection.classes=lidar_viewer::algorithms::DetectionParams::AllClasses;filter_changed=true;}
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Clear")) {detection.classes=0;filter_changed=true;}
+        if (ImGui::BeginTable("##TargetClasses",2,ImGuiTableFlags_SizingStretchSame)) {
+          for (const int id:classes) {
+            ImGui::TableNextColumn();bool selected=(detection.classes & (1u<<id))!=0;
+            if (ImGui::Checkbox(lidar_viewer::algorithms::DetectionClassName(id),&selected)) {
+              if (selected) detection.classes|=1u<<id;else detection.classes&=~(1u<<id);
+              filter_changed=true;
+            }
+          }
+          ImGui::EndTable();
+        }
+        if (!detection.classes) ImGui::TextColored({1,.74f,.4f,1},"No targets selected");
         ImGui::SetNextItemWidth(-1);
-        if (ImGui::SliderFloat("##DetectionScore",&state.algorithm_config.detection.min_confidence,.1f,.9f,"Min score: %.2f",ImGuiSliderFlags_AlwaysClamp)) {
-          FilterDetections(state);
+        filter_changed|=ImGui::SliderFloat("##DetectionScore",&detection.min_confidence,.1f,.9f,"Min score: %.2f",ImGuiSliderFlags_AlwaysClamp);
+        Tip("Class and score selections filter cached model results instantly. They do not reload the model or rerun inference. Scores are not calibrated probabilities.");
+        if (filter_changed) FilterDetections(state);
+        if (enabled) {
+          ImGui::Spacing();SectionTitle("Runtime");
+          const auto status=state.detector ? state.detector->Status() : lidar_viewer::DetectorStatus{};
+          if (status.ready) {
+            Metric("Backend",status.provider=="CUDAExecutionProvider" ? "CUDA GPU" : "CPU");
+            Metric("Shown / found",std::to_string(state.detections.size())+" / "+std::to_string(state.full_detections.size()));
+            if (state.detector_completed==state.detector_revision) {
+              ImGui::TextDisabled("Pipeline: %.1f ms",state.detector_latency_ms);Tip(state.detector_detail.c_str());
+            } else ImGui::TextDisabled("Processing current frame...");
+          } else ImGui::TextWrapped("%s",status.message.empty() ? "Waiting for LiDAR data..." : status.message.c_str());
+          if (!state.detector_error.empty()) ImGui::TextWrapped("%s",state.detector_error.c_str());
+          if (!status.configured || status.failed) {
+            ImGui::TextWrapped("Setup: python3 tools/setup_detector.py\nNVIDIA GPU: add --cuda");
+            if (ImGui::Button("Retry model",{-1,0})) state.detector_retry=true;
+          }
         }
-        Tip("Neural classification score, not a calibrated probability. Raising it hides uncertain detections. No ground-truth accuracy has been measured for this sensor.");
-      }
-      ImGui::Spacing();ImGui::Separator();ImGui::Spacing();
-      if (ImGui::CollapsingHeader("Geometry clusters")) {
-        if (ImGui::Checkbox("Show obstacle clusters",&state.algorithm_config.clustering.enabled)) {
-          if (state.algorithm_config.clustering.enabled) state.ground_removal_enabled=true;
-          reprocess=true;
+        if (ImGui::CollapsingHeader("Cluster overlay")) {
+          if (ImGui::Checkbox("Show obstacle clusters",&clustering.enabled)) {
+            refresh_objects=true;
+            if (clustering.enabled && !state.ground_removal_enabled) {state.ground_removal_enabled=true;reprocess=true;}
+          }
+          Tip("Geometric groups have no semantic class. This optional overlay is independent of CenterPoint.");
         }
-        Tip("Optional geometric grouping, independent of the learned detector. Ground is classified first to avoid road points joining separate objects.");
+      } else {
+        ImGui::TextWrapped("Groups nearby obstacle points. No person or vehicle classification.");
         Metric("Clusters",std::to_string(state.clusters.size()));
-        if (state.algorithm_config.clustering.enabled && !state.ground_removal_enabled)
-          ImGui::TextWrapped("Enable Classify ground in Ground to isolate obstacles.");
-        ImGui::BeginDisabled(!state.algorithm_config.clustering.enabled);
-        int metric=state.algorithm_config.clustering.mode=="euclidean_3d" ? 0 : 1;
+      }
+      if (state.object_method!=0 || clustering.enabled) {
+        ImGui::Spacing();SectionTitle("Clustering");
+        ImGui::BeginDisabled(!enabled);
         ImGui::SetNextItemWidth(-1);
-        if (ImGui::Combo("##ClusterMetric",&metric,"3D distance\0Projected XY distance\0")) {
-          state.algorithm_config.clustering.mode=metric==0 ? "euclidean_3d" : "euclidean";reprocess=true;
-        }
+        refresh_objects|=ImGui::SliderFloat("##ClusterDistance",&clustering.tolerance_m,.1f,1.5f,"Distance: %.2f m",ImGuiSliderFlags_AlwaysClamp);
         ImGui::SetNextItemWidth(-1);
-        reprocess|=ImGui::SliderFloat("##ClusterDistance",&state.algorithm_config.clustering.tolerance_m,.1f,1.5f,"Distance: %.2f m",ImGuiSliderFlags_AlwaysClamp);
-        ImGui::SetNextItemWidth(-1);
-        reprocess|=ImGui::SliderFloat("##ClusterVerticalGap",&state.algorithm_config.clustering.max_vertical_gap_m,.1f,2.5f,"Vertical gap: %.2f m",ImGuiSliderFlags_AlwaysClamp);
+        refresh_objects|=ImGui::SliderFloat("##ClusterVerticalGap",&clustering.max_vertical_gap_m,.1f,2.5f,"Vertical gap: %.2f m",ImGuiSliderFlags_AlwaysClamp);
         ImGui::EndDisabled();
       }
       ImGui::EndTabItem();
     }
     ImGui::EndTabBar();
   }
+  ImGui::EndDisabled();
   if (!state.roi_tab_active && !state.roi_tab_requested && !state.roi_gesture.active) state.roi_tool=ViewerState::RoiTool::Navigate;
   if (!state.ui_error.empty()) {
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, .56f, .48f, 1));
@@ -3396,7 +3611,8 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   ImGui::PopClipRect();
   if (layout.status.w > 700.f * s) {
     ImGui::SameLine(std::max(450.f * s, layout.status.w - 360.f * s));
-    ImGui::TextDisabled("Process %.1f ms  |  ROI %.1f ms  |  %.0f fps",state.processing_ms,state.roi_ms,state.current_view_fps);
+    if (state.geometry_future.valid()) ImGui::TextDisabled("Updating frame...  |  %.0f fps",state.current_view_fps);
+    else ImGui::TextDisabled("Process %.1f ms  |  ROI %.1f ms  |  %.0f fps",state.processing_ms,state.roi_ms,state.current_view_fps);
   }
   ImGui::End();
   ImGui::PopStyleVar();
@@ -3526,19 +3742,36 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     bounded(state.grid_settings.thickness, 1, 6, 1);
     bounded(state.ui_scale, .75f, 1.5f, 1);
   }
+  if (state.loading_bag_source) return;
   const bool apply_to_next_frame=(state.is_playing && state.frames.size()>1) ||
     (state.live_mode && !state.live_paused && state.live_stats.connected && state.live_stats.cloud_age_ms<200);
+  if (reprocess || refresh_objects || refresh_detector || state.roi_pending) ++state.geometry_config;
+  if (reprocess) ++state.geometry_ground_config;
+  if (alignment_changed) ++state.geometry_alignment_config;
   if (reprocess) ++state.ground_sequence;
   if (reprocess && !apply_to_next_frame) {
-    try { ApplyCalibration(state); state.ui_error.clear(); }
-    catch (const std::exception & error) { state.is_playing = false; state.ui_error = error.what(); }
-  } else if (state.roi_pending && !state.roi_gesture.active) {
     try {
-      ApplyRoiResult(state,state.processed_frame,state.processed_obstacles,state.roi_frame);
+      if (state.async_geometry) QueueGeometry(state,state.base_frame,{},{},alignment_changed || refresh_detector);
+      else ApplyCalibration(state,nullptr,std::nullopt,alignment_changed || refresh_detector);
       state.ui_error.clear();
-      std::cout<<"ROI applied: "<<state.roi.boxes.size()<<" boxes | "<<state.frame.points.size()<<" points | "
-        <<state.roi_ms<<" ms | ground passes "<<state.ground_passes<<std::endl;
+    }
+    catch (const std::exception & error) { state.is_playing = false; state.ui_error = error.what(); }
+  } else if ((state.roi_pending || refresh_objects) && !state.roi_gesture.active) {
+    try {
+      if (state.async_geometry) QueueGeometry(state,state.base_frame,{},{},false,true);
+      else {
+        ApplyRoiResult(state,state.processed_frame,state.processed_obstacles,state.roi_frame);
+        std::cout<<"ROI applied: "<<state.roi.boxes.size()<<" boxes | "<<state.frame.points.size()<<" points | "
+          <<state.roi_ms<<" ms | ground passes "<<state.ground_passes<<std::endl;
+      }
+      state.ui_error.clear();
     } catch (const std::exception & error) {state.roi_pending=false;state.ui_error=error.what();}
+  }
+  if (refresh_detector && !reprocess && !state.geometry_future.valid()) {
+    try {
+      if (!state.detector_input && state.async_geometry) QueueGeometry(state,state.base_frame,{},{},true,true);
+      else RefreshDetectorInput(state);
+    } catch (const std::exception & error) {state.ui_error=error.what();}
   }
 }
 
@@ -3863,7 +4096,7 @@ int RunViewer(int argc, char ** argv)
                 << state.frame.points.size()-std::min(state.frame.points.size(),state.ground_removed_count)
                 << " | ground passes " << state.ground_passes << '\n';
       if (state.imu_level_enabled) std::cout << "IMU leveling: " << state.imu_level_result.status << '\n';
-      if (detect_objects && !state.detector_input.empty()) {
+      if (detect_objects && state.detector_input && !state.detector_input->empty()) {
         const double deadline=DetectorClock()+90;
         while (state.detector_completed!=state.detector_revision) {
           UpdateDetector(state);
@@ -3880,7 +4113,7 @@ int RunViewer(int argc, char ** argv)
             " center "<<b.center.x<<' '<<b.center.y<<' '<<b.center.z<<" yaw "<<std::atan2(b.axis_x.y,b.axis_x.x)<<'\n';
         }
       }
-      if (detect_objects && state.detector_input.empty()) std::cout<<"Detector: no valid LiDAR returns | 0 boxes\n";
+      if (detect_objects && (!state.detector_input || state.detector_input->empty())) std::cout<<"Detector: no valid LiDAR returns | 0 boxes\n";
       return 0;
     }
 
@@ -3996,6 +4229,7 @@ int RunViewer(int argc, char ** argv)
 
     state.fps_measurement_started_at = glfwGetTime();
     state.playback_measurement_started_at = state.fps_measurement_started_at;
+    state.async_geometry=true;
 
     if (start_live) ConnectLive(state);
     if (async_initial_bag && state.current_bag_source) {
@@ -4009,9 +4243,10 @@ int RunViewer(int argc, char ** argv)
       glfwPollEvents();
       CompleteBagPicker(state, window);
       CompleteBagLoad(state);
-      const bool requested_frame_ready=CompleteFrameRequest(state);
+      const bool geometry_ready=CompleteGeometry(state);
+      const bool requested_frame_ready=CompleteFrameRequest(state) || geometry_ready;
       const bool live_detector_ready=UpdateDetector(state);
-      if (!live_detector_ready) UpdateLiveFrame(state);
+      if (!live_detector_ready && !geometry_ready) UpdateLiveFrame(state);
       int fb_width = 0, fb_height = 0, window_width = 0, window_height = 0;
       glfwGetFramebufferSize(window, &fb_width, &fb_height);
       glfwGetWindowSize(window, &window_width, &window_height);
@@ -4038,7 +4273,7 @@ int RunViewer(int argc, char ** argv)
         state.transient_status.clear();
       }
 
-      if (state.is_playing && state.frames.size() > 1 && !DetectorFramePending(state) && !detector_result_ready) {
+      if (state.is_playing && state.frames.size() > 1 && !state.geometry_future.valid() && !DetectorFramePending(state) && !detector_result_ready) {
         const double now_time = glfwGetTime();
         const double frame_interval = 1.0 / std::max(0.1, state.playback_fps);
         if ((now_time - state.last_frame_advance_time) >= frame_interval) {

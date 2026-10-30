@@ -103,4 +103,5 @@ detection:
   # Objects tab enables the separately installed original CenterPoint model.
   enabled: false
   min_confidence: 0.35
-  min_points: 10
+  # Bit mask: Car=1, Bus=2, Truck=4, Person=8, Bicycle=16.
+  classes: 31

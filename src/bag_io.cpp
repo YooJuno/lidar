@@ -397,10 +397,8 @@ std::vector<FrameHandle> ResolveBagFrames(
 FrameData LoadBagFrame(const FrameHandle & handle)
 {
   const fs::path path = BagPath(handle.path);
-  // std::async prefetch uses a fresh thread for each frame. A thread-local
-  // reader would reopen the complete bag (and its index) on every prefetch.
-  // Retain only one storage reader process-wide; serialize the complete cursor
-  // operation, including decode, so concurrent UI/prefetch requests cannot
+  // Retain only one storage reader process-wide. Serialize the complete cursor
+  // operation, including decode, so concurrent loader/prefetch requests cannot
   // seek one another's reader between selecting and loading a frame.
   static ReaderCache cache;
   static std::mutex reader_mutex;

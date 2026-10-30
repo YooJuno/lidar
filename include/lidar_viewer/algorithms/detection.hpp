@@ -1,6 +1,7 @@
 #pragma once
 
 #include "lidar_viewer/algorithms/clustering.hpp"
+#include <cstdint>
 
 namespace lidar_viewer::algorithms
 {
@@ -19,7 +20,12 @@ struct DetectionParams
 {
   bool enabled{false};
   float min_confidence{0.35f};
-  int min_points{10};
+  static constexpr std::uint32_t AllClasses = (1u << 5) - 1;
+  std::uint32_t classes{AllClasses};
+  bool Accepts(const Detection & detection) const {
+    return detection.class_id>=0 && detection.class_id<5 &&
+      (classes & (1u << detection.class_id)) && detection.confidence>=min_confidence;
+  }
 };
 
 const char * DetectionClassName(int class_id);

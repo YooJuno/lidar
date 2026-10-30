@@ -76,6 +76,14 @@ while True:
     const float invalid[]={0,0,0,-1,1,1,0,.9f,0};bool rejected=false;
     try {algorithms::DecodeCenterPointBox(invalid,0);} catch (...) {rejected=true;}
     Check(rejected,"Invalid neural box dimensions accepted");
+    algorithms::DetectionParams filters;
+    algorithms::Detection car,person,bicycle;car.class_id=0;person.class_id=3;bicycle.class_id=4;
+    car.confidence=person.confidence=bicycle.confidence=.8f;
+    Check(filters.Accepts(car) && filters.Accepts(person) && filters.Accepts(bicycle),"Default targets omit a supported class");
+    filters.classes=1u<<3;
+    Check(filters.Accepts(person) && !filters.Accepts(car) && !filters.Accepts(bicycle),"Person selection leaks other classes");
+    filters.min_confidence=.9f;Check(!filters.Accepts(person),"Class selection bypasses the score filter");
+    filters.classes=0;filters.min_confidence=.1f;Check(!filters.Accepts(person),"No targets still displays a class");
     std::filesystem::remove(folder/"detector.cfg");
     {LearnedDetector missing;missing.Start(temporary);Check(!missing.Status().configured,"Missing runtime was presented as working detection");}
     ConfigEnvironment(previous);std::filesystem::remove_all(temporary.parent_path());
