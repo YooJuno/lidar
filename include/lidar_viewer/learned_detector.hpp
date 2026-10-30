@@ -26,7 +26,7 @@ public:
   ~LearnedDetector();
   LearnedDetector(const LearnedDetector &)=delete;
   LearnedDetector & operator=(const LearnedDetector &)=delete;
-  void Start(const std::filesystem::path & python_root);
+  void Start(const std::filesystem::path & python_root,const std::string & model="tiny");
   void Stop();
   DetectorStatus Status() const;
   void Submit(std::uint64_t revision, const std::vector<KittiPoint> & full_scan,

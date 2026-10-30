@@ -11,12 +11,9 @@ import sys
 import urllib.request
 import venv
 
-REVISION='494c8171def40bd36cc2feb323e0a5acbfab132b'
-FILES={
- 'MODEL_CARD.md':'3cbb8f0f196ef999d3406d88b0d349b808e3d826e2a02a3860dcce94762fc4cf',
- 'pts_voxel_encoder.onnx':'2c53465715c1fd2e9dc5727ef3fca74f4cdf0538f74286b0946e219d0ca5693b',
- 'pts_backbone_neck_head.onnx':'9bb0b634f3664bd098ce7d6a3d8a9fb7cc8d9b8252b27f302c71e43316bab551',
-}
+ROOT=Path(__file__).resolve().parent.parent
+sys.path.insert(0,str(ROOT/'python'))
+from lidar_detection.models import MODELS
 
 def directories():
     home=Path.home()
@@ -34,6 +31,7 @@ def directories():
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--model',choices=['all','short_range','tiny'],default='all')
     parser.add_argument('--cuda',action='store_true',help='ONNX Runtime CUDA 12 + cuDNN 9 (Linux/Windows x64)')
     parser.add_argument('--runtime-python',type=Path,help='Use an existing isolated Python with numpy, onnx and onnxruntime; install no packages')
     args=parser.parse_args()
@@ -41,7 +39,8 @@ def main():
         parser.error('Use Python 3.10 through 3.13 for the pinned model runtime')
     if args.cuda and (sys.platform=='darwin' or platform.machine().lower() not in ('x86_64','amd64')):
         parser.error('CUDA runtime requires Linux or Windows x64')
-    config,data=directories();model=data/'centerpoint-tiny-v4.1';model.mkdir(parents=True,exist_ok=True)
+    config,data=directories();data.mkdir(parents=True,exist_ok=True)
+    selected=list(MODELS) if args.model=='all' else [args.model]
     if args.runtime_python:
         python=args.runtime_python.expanduser().absolute()
     else:
@@ -52,33 +51,30 @@ def main():
         runtime_package='onnxruntime-gpu[cuda,cudnn]==1.23.2' if args.cuda else 'onnxruntime==1.23.2'
         subprocess.run([str(python),'-m','pip','install','--disable-pip-version-check','numpy==2.2.6','onnx==1.20.1',runtime_package],check=True)
     subprocess.run([str(python),'-c','import numpy,onnx,onnxruntime'],check=True)
-    for name,digest in FILES.items():
-        target=model/name
-        if target.exists() and hashlib.sha256(target.read_bytes()).hexdigest()==digest:continue
-        print('Downloading original Autoware weight:',name,flush=True)
-        temporary=target.with_suffix('.download')
-        try:
-            remote='README.md' if name=='MODEL_CARD.md' else 'tiny/'+name
-            request=urllib.request.Request(f'https://huggingface.co/AutowareFoundation/lidar_centerpoint/resolve/{REVISION}/{remote}',headers={'User-Agent':'LiDAR-Studio-model-setup'})
-            with urllib.request.urlopen(request,timeout=120) as source,temporary.open('wb') as output:
-                while True:
-                    chunk=source.read(1024*1024)
-                    if not chunk:break
-                    output.write(chunk)
-            if hashlib.sha256(temporary.read_bytes()).hexdigest()!=digest:raise RuntimeError('Model checksum mismatch: '+name)
-            temporary.replace(target)
-        finally:temporary.unlink(missing_ok=True)
-    root=Path(__file__).resolve().parent.parent
-    python_root=root/'python'
-    if not (python_root/'lidar_detection').is_dir():raise RuntimeError('Cannot locate the packaged detector adapter')
-    # Validate the actual model and provider before publishing configuration.
-    subprocess.run([str(python),'-c',
-        'import sys;sys.path.insert(0,sys.argv[1]);from lidar_detection.centerpoint import CenterPoint;'
-        'from lidar_detection.centerpoint import fuse_model;fuse_model(sys.argv[2]);'
-        'm=CenterPoint(sys.argv[2],sys.argv[3]);print("Validated:",m.provider)',
-        str(python_root),str(model),'auto' if args.cuda else 'cpu'],check=True)
+    python_root=ROOT/'python'
+    for variant in selected:
+        spec=MODELS[variant];model=data/spec.folder;model.mkdir(parents=True,exist_ok=True)
+        for name,url,digest in spec.files:
+            target=model/name
+            if target.exists() and hashlib.sha256(target.read_bytes()).hexdigest()==digest:continue
+            print('Downloading original model:',spec.title,name,flush=True)
+            temporary=target.with_suffix('.download')
+            try:
+                request=urllib.request.Request(url,headers={'User-Agent':'LiDAR-Studio-model-setup'})
+                with urllib.request.urlopen(request,timeout=120) as source,temporary.open('wb') as output:
+                    while True:
+                        chunk=source.read(1024*1024)
+                        if not chunk:break
+                        output.write(chunk)
+                if hashlib.sha256(temporary.read_bytes()).hexdigest()!=digest:raise RuntimeError('Model checksum mismatch: '+name)
+                temporary.replace(target)
+            finally:temporary.unlink(missing_ok=True)
+        subprocess.run([str(python),'-c',
+            'import sys;sys.path.insert(0,sys.argv[1]);from lidar_detection.centerpoint import CenterPoint;'
+            'm=CenterPoint(sys.argv[2],sys.argv[3],sys.argv[4]);print("Validated:",m.spec.title,m.provider)',
+            str(python_root),str(model),'auto' if args.cuda else 'cpu',variant],check=True)
     config.mkdir(parents=True,exist_ok=True)
-    text=f'python={python}\nmodel_dir={model}\nprovider={"auto" if args.cuda else "cpu"}\n'
+    text=f'python={python}\nmodel_dir={data/MODELS["tiny"].folder}\nshort_range_model_dir={data/MODELS["short_range"].folder}\nprovider={"auto" if args.cuda else "cpu"}\n'
     if '\n' in str(python) or '\n' in str(model):raise RuntimeError('Newlines in runtime paths are unsupported')
     temporary=config/'detector.cfg.tmp';temporary.write_text(text,encoding='utf-8');temporary.replace(config/'detector.cfg')
     print('Ready. Open Objects > Enable objects (or Retry model). Configuration:',config/'detector.cfg')

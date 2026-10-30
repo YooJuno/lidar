@@ -17,6 +17,7 @@ def resident_mib():
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--model',choices=['tiny','short_range'],default='short_range')
     parser.add_argument('--model-dir',type=Path,required=True)
     parser.add_argument('--cloud',type=Path,required=True)
     parser.add_argument('--provider',choices=['auto','cpu'],default='auto')
@@ -28,7 +29,7 @@ def main():
     sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'python'))
     from lidar_detection.centerpoint import CenterPoint
     points=np.fromfile(args.cloud,np.float32).reshape(-1,4)[:,:3].copy()
-    started=time.perf_counter();model=CenterPoint(args.model_dir,args.provider)
+    started=time.perf_counter();model=CenterPoint(args.model_dir,args.provider,args.model)
     startup=time.perf_counter()-started
     for _ in range(5):model.infer(points,.1)
     rss_warm=resident_mib();timings=[];rss_samples=[]
@@ -36,7 +37,7 @@ def main():
         boxes,stats=model.infer(points,.1);timings.append(stats)
         if (index+1)%10==0:rss_samples.append(resident_mib())
     keys=['preprocess_ms','inference_ms','postprocess_ms','latency_ms']
-    result={'platform':platform.platform(),'provider':model.provider,'preprocess_backend':stats['preprocess_backend'],'points':len(points),
+    result={'model':args.model,'platform':platform.platform(),'provider':model.provider,'preprocess_backend':stats['preprocess_backend'],'points':len(points),
         'iterations':args.iterations,'startup_s':startup,'cached_boxes':len(boxes),
         'p50_ms':{key:float(np.median([value.get(key,0) for value in timings])) for key in keys},
         'p95_pipeline_ms':float(np.percentile([value['latency_ms'] for value in timings],95)),

@@ -24,7 +24,7 @@ def main():
     args.output.mkdir(parents=True,exist_ok=True);out=Path(tempfile.mkdtemp(prefix='detector-ui-',dir=args.output.resolve()))
     private=out/'private';(private/'build').mkdir(parents=True);shutil.copytree(repo/'config',private/'config')
     (private/'python').mkdir()
-    (private/'config/profiles/rosbag.cfg').write_text('ground_removal_enabled=0\nclustering_enabled=0\ndetection_enabled=1\nroi_enabled=0\nroi_count=0\nimu_level_enabled=0\ncalibration_z_m=.57\ncolor_mode=0\n')
+    (private/'config/profiles/rosbag.cfg').write_text('ground_removal_enabled=0\nclustering_enabled=0\ndetection_enabled=1\ndetection_model=tiny\nroi_enabled=0\nroi_count=0\nimu_level_enabled=0\ncalibration_z_m=.57\ncolor_mode=0\n')
     # Versioned protocol fixture, deliberately slower than some UI frames.
     (private/'python/detector_worker.py').write_text('''import sys,struct,time,os
 from pathlib import Path
@@ -46,7 +46,7 @@ while True:
     viewer=private/'build/lidar_viewer';shutil.copy2(args.viewer.resolve(),viewer)
     bag=out/'fixture';write_fixture(bag)
     config=out/'settings/lidar_viewer';config.mkdir(parents=True)
-    (config/'detector.cfg').write_text(f'python={os.sys.executable}\nmodel_dir={private}\nprovider=cpu\n')
+    (config/'detector.cfg').write_text(f'python={os.sys.executable}\nmodel_dir={private}\nshort_range_model_dir={private}\nprovider=cpu\n')
     env=dict(os.environ,XDG_CONFIG_HOME=str(out/'settings'),LIDAR_VIEWER_DETECTOR_TRACE='1',GSETTINGS_BACKEND='memory',NO_AT_BRIDGE='1')
     before=settings_inventory(repo);result={'status':'started','checks':{},'output':str(out)}
     process=x11=window=None;log_path=out/'viewer.log'
@@ -108,6 +108,13 @@ while True:
             x11.click(window,410,837);wait(lambda:len(rows())>settled+3)
             check('resume_continues_current_revision_detection',True)
             capture(x11,window,out/'02_resumed_roi.png')
+            # A different neural model requires a fresh session, then keeps it.
+            x11.click(window,410,837);time.sleep(.4);x11.click(window,280,140)
+            old_count=len(rows());method(3);wait(lambda:len(rows())>old_count)
+            check('quality_model_starts_its_own_worker',len((private/'python/starts.txt').read_text().splitlines())==2)
+            capture(x11,window,out/'03_quality_model.png')
+            old_count=len(rows());method(1);method(3);time.sleep(.3)
+            check('return_to_same_quality_model_reuses_worker',len(rows())==old_count and len((private/'python/starts.txt').read_text().splitlines())==2)
             check('original_profiles_unchanged',before==settings_inventory(repo));result['status']='passed'
     except Exception as error:
         result.update(status='failed',error=str(error),traceback=traceback.format_exc())

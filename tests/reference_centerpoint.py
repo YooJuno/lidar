@@ -5,13 +5,21 @@ import numpy as np
 import math
 from lidar_detection.centerpoint import RANGE_MIN,RANGE_MAX,VOXEL_SIZE,GRID_SIZE,MAX_VOXELS,MAX_POINTS
 
-def pillarize(points):
+def pillarize(points,model="tiny"):
     """32 points/pillar, XYZ+time+cluster offsets+XY center offsets (9 features)."""
+    # Independent manifest values for AWML ShortRange v2.0.0. The original
+    # tiny calculation below remains unchanged for the frozen regression.
+    if model=="short_range":
+        RANGE_MIN=np.array([-51.2,-51.2,-3],np.float32);RANGE_MAX=np.array([51.2,51.2,5],np.float32)
+        VOXEL_SIZE=np.float32(.16);GRID_SIZE=640;MAX_VOXELS=64000;dimensions=10
+    else:
+        from lidar_detection.centerpoint import RANGE_MIN,RANGE_MAX,VOXEL_SIZE,GRID_SIZE,MAX_VOXELS
+        dimensions=9
     points=np.asarray(points,dtype=np.float32)
     if points.ndim!=2 or points.shape[1]!=3:raise ValueError('Expected Nx3 XYZ points')
     valid=np.isfinite(points).all(axis=1)&(points>=RANGE_MIN).all(axis=1)&(points<RANGE_MAX).all(axis=1)
     xyz=points[valid]
-    if not len(xyz):return np.zeros((0,32,9),np.float32),np.zeros((0,3),np.int64),{'pillars':0,'truncated_pillars':0,'points_in_range':0}
+    if not len(xyz):return np.zeros((0,32,dimensions),np.float32),np.zeros((0,3),np.int64),{'pillars':0,'truncated_pillars':0,'points_in_range':0}
     # Autoware shuffles before its bounded voxelization. A fixed permutation
     # avoids scan-order bias while keeping a paused frame reproducible.
     xyz=xyz[np.random.default_rng(0).permutation(len(xyz))]
@@ -32,7 +40,7 @@ def pillarize(points):
     rank=np.arange(len(keys))-np.repeat(starts,counts)
     pick=(rank<MAX_POINTS)&keep[group]
     remap=np.cumsum(keep)-1;ids=remap[group[pick]];rank=rank[pick];selected=xyz[pick]
-    num=int(keep.sum());features=np.zeros((num,MAX_POINTS,9),dtype=np.float32)
+    num=int(keep.sum());features=np.zeros((num,MAX_POINTS,dimensions),dtype=np.float32)
     num_points=np.minimum(counts[keep],MAX_POINTS).astype(np.float32)
     means=np.stack([np.bincount(ids,weights=selected[:,axis],minlength=num) for axis in range(3)],axis=1).astype(np.float32)
     means/=num_points[:,None]
@@ -41,6 +49,7 @@ def pillarize(points):
     features[ids,rank,:3]=selected
     features[ids,rank,4:7]=selected-means[ids]
     features[ids,rank,7:9]=selected[:,:2]-centers[ids]
+    if dimensions==10:features[ids,rank,9]=selected[:,2]-np.float32(1)
     indices=np.column_stack([np.zeros(num,dtype=np.int64),voxel_xy[:,1],voxel_xy[:,0]]).astype(np.int64)
     return features,indices,{'pillars':num,'truncated_pillars':total_pillars-num,'points_in_range':len(xyz)}
 

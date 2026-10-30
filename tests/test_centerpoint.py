@@ -35,6 +35,29 @@ class PrePostTests(unittest.TestCase):
                 np.testing.assert_array_equal(result[0],expected[0]);np.testing.assert_array_equal(result[1],expected[1])
                 for key,value in expected[2].items():self.assertEqual(result[2][key],value)
         self.assertGreater(reference_pillarize(sparse)[2]['truncated_pillars'],0)
+    def test_short_range_original_ten_features_and_cap(self):
+        rng=np.random.default_rng(29)
+        x,y=np.meshgrid(np.arange(300),np.arange(240))
+        cap=np.column_stack([(x.ravel()+10.5)*.16-51.2,(y.ravel()+10.5)*.16-51.2,np.zeros(x.size)]).astype(np.float32)
+        cases=[rng.uniform([-51.2,-51.2,-3],[51.2,51.2,5],(128000,3)).astype(np.float32),
+            rng.normal([1,2,3],[.01,.01,.01],(300,3)).astype(np.float32),cap,
+            np.array([[-51.2,-51.2,-3],[51.2,0,0],[0,51.2,0],[0,0,5],[0,np.nan,0],[0,0,0]],np.float32),
+            np.empty((0,3),np.float32)]
+        for points in cases:
+            expected=reference_pillarize(points,'short_range');actual=pillarize(points,'short_range')
+            with patch('lidar_detection.native.library',return_value=None):fallback=pillarize(points,'short_range')
+            for result in [actual,fallback]:
+                np.testing.assert_array_equal(result[0],expected[0]);np.testing.assert_array_equal(result[1],expected[1])
+                for key,value in expected[2].items():self.assertEqual(result[2][key],value)
+        self.assertEqual(reference_pillarize(cap,'short_range')[2]['truncated_pillars'],8000)
+    def test_short_range_decoder_geometry(self):
+        arrays={name:np.zeros((1,ch,160,160),np.float32) for name,ch in [('heatmap',5),('reg',2),('height',1),('dim',3),('rot',2)]}
+        arrays['heatmap'][:]=-20;arrays['heatmap'][0,4,100,80]=2
+        arrays['reg'][0,:,100,80]=[.25,.5];arrays['height'][0,0,100,80]=.9
+        arrays['dim'][0,:,100,80]=np.log([.6,1.2,1.8]);arrays['rot'][0,:,100,80]=[0,1]
+        box=decode(arrays,.5,'short_range')[0]
+        np.testing.assert_allclose(box[:7],[.16,13.12,.9,1.2,.6,1.8,-np.pi/2],atol=1e-5)
+        with self.assertRaises(ValueError):decode(arrays,.5,'tiny')
     def test_scalar_clipping_matches_vector_reference(self):
         rng=np.random.default_rng(113)
         for _ in range(400):
@@ -109,19 +132,18 @@ class PrePostTests(unittest.TestCase):
         data=sink.getvalue();self.assertEqual(RESPONSE.unpack_from(data),(b'LDR1',23,2,1.5,5))
         self.assertEqual(data[RESPONSE.size:],b'ready'+boxes.tobytes())
 
-def model_check(folder,cloud):
+def model_check(folder,cloud,variant,provider):
     import onnxruntime as ort
-    from lidar_detection.centerpoint import GRID_SIZE
-    model=CenterPoint(folder)
+    model=CenterPoint(folder,provider,variant,use_tf32=False)
     points=np.fromfile(cloud,np.float32).reshape(-1,4)[:,:3].copy() if cloud else np.array([[1,1,0],[1.1,1.1,1],[4,2,.5]],np.float32)
-    features,indices,_=pillarize(points)
+    features,indices,_=pillarize(points,variant)
     options=ort.SessionOptions();options.intra_op_num_threads=2
-    providers=[('CUDAExecutionProvider',{'cudnn_conv_algo_search':'HEURISTIC'}),'CPUExecutionProvider'] if model.provider=='CUDAExecutionProvider' else ['CPUExecutionProvider']
+    providers=[('CUDAExecutionProvider',{'cudnn_conv_algo_search':'HEURISTIC','use_tf32':0}),'CPUExecutionProvider'] if model.provider=='CUDAExecutionProvider' else ['CPUExecutionProvider']
     encoder=ort.InferenceSession(str(Path(folder)/'pts_voxel_encoder.onnx'),sess_options=options,providers=providers)
     head=ort.InferenceSession(str(Path(folder)/'pts_backbone_neck_head.onnx'),sess_options=options,providers=providers)
     vectors=encoder.run(None,{encoder.get_inputs()[0].name:features})[0][:,0,:]
     # Independent direct NCHW scatter, matching Autoware scatter_kernel.cu.
-    spatial=np.zeros((1,32,GRID_SIZE,GRID_SIZE),np.float32)
+    spatial=np.zeros((1,32,model.spec.grid,model.spec.grid),np.float32)
     for index,vector in zip(indices,vectors):spatial[0,:,index[1],index[2]]=vector
     reference=head.run(None,{head.get_inputs()[0].name:spatial})
     fused=model.session.run(None,{'vfe/input_features':features,'voxel_indices':indices})
@@ -131,8 +153,10 @@ def model_check(folder,cloud):
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser();parser.add_argument('--model-dir');parser.add_argument('--cloud')
+    parser.add_argument('--model',choices=['tiny','short_range'],default='tiny')
+    parser.add_argument('--provider',choices=['auto','cpu'],default='auto')
     parser.add_argument('--require-native',action='store_true');args=parser.parse_args()
     if args.require_native and backend_name()!='native':raise SystemExit('Native preprocessing library was not found')
     result=unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(PrePostTests))
     if not result.wasSuccessful():raise SystemExit(1)
-    if args.model_dir:model_check(args.model_dir,args.cloud)
+    if args.model_dir:model_check(args.model_dir,args.cloud,args.model,args.provider)

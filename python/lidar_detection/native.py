@@ -26,12 +26,13 @@ def library():
         if not path.is_file():continue
         try:
             loaded=ctypes.CDLL(str(path));loaded.lidar_pillar_abi.restype=ctypes.c_int
-            if loaded.lidar_pillar_abi()!=1:continue
-            loaded.lidar_pillar_order.argtypes=[ctypes.c_void_p,ctypes.c_void_p,ctypes.c_size_t,ctypes.c_void_p]
-            loaded.lidar_pillar_order.restype=ctypes.c_int
-            loaded.lidar_pillar_features.argtypes=[ctypes.c_void_p,ctypes.c_void_p,ctypes.c_size_t,
-                ctypes.c_void_p,ctypes.c_void_p,ctypes.c_void_p,ctypes.c_size_t,ctypes.c_void_p]
-            loaded.lidar_pillar_features.restype=ctypes.c_int
+            if loaded.lidar_pillar_abi()!=2:continue
+            loaded.lidar_pillar_order_v2.argtypes=[ctypes.c_void_p,ctypes.c_void_p,ctypes.c_size_t,ctypes.c_void_p,ctypes.c_uint32]
+            loaded.lidar_pillar_order_v2.restype=ctypes.c_int
+            loaded.lidar_pillar_features_v2.argtypes=[ctypes.c_void_p,ctypes.c_void_p,ctypes.c_size_t,
+                ctypes.c_void_p,ctypes.c_void_p,ctypes.c_void_p,ctypes.c_size_t,ctypes.c_void_p,
+                ctypes.c_uint32,*([ctypes.c_float]*5),ctypes.c_uint32]
+            loaded.lidar_pillar_features_v2.restype=ctypes.c_int
             return loaded
         except (OSError,AttributeError):continue
     return None
@@ -40,7 +41,7 @@ def library():
 def backend_name(point_count=0):return 'native' if point_count<=4_000_000 and library() else 'numpy'
 
 
-def stable_order(keys,permutation):
+def stable_order(keys,permutation,grid=480):
     keys=np.ascontiguousarray(keys,dtype=np.int32)
     permutation=np.ascontiguousarray(permutation,dtype=np.int64)
     if keys.ndim!=1 or permutation.shape!=keys.shape:raise ValueError('Mismatched pillar ordering arrays')
@@ -48,12 +49,12 @@ def stable_order(keys,permutation):
     if native is None or len(keys)>4_000_000:
         return permutation[np.argsort(keys[permutation],kind='stable')]
     output=np.empty(len(keys),np.int64)
-    if native.lidar_pillar_order(keys.ctypes.data,permutation.ctypes.data,len(keys),output.ctypes.data):
+    if native.lidar_pillar_order_v2(keys.ctypes.data,permutation.ctypes.data,len(keys),output.ctypes.data,grid):
         raise ValueError('Invalid native pillar ordering input')
     return output
 
 
-def fill_features(points,order,starts,counts,keys,features):
+def fill_features(points,order,starts,counts,keys,features,grid=480,voxel=.32,minimum=(-76.8,-76.8,-4.),voxel_z=10.):
     native=library()
     if native is None or len(points)>4_000_000:return False
     starts=np.ascontiguousarray(starts,dtype=np.int64)
@@ -62,10 +63,11 @@ def fill_features(points,order,starts,counts,keys,features):
     if (points.dtype!=np.float32 or points.ndim!=2 or points.shape[1]!=3 or not points.flags.c_contiguous or
         order.dtype!=np.int64 or order.shape!=(len(points),) or not order.flags.c_contiguous or
         starts.ndim!=1 or starts.shape!=counts.shape or starts.shape!=keys.shape or
-        features.dtype!=np.float32 or features.shape!=(len(keys),32,9) or
+        features.dtype!=np.float32 or features.shape[:2]!=(len(keys),32) or features.ndim!=3 or features.shape[2] not in [9,10] or
         not features.flags.c_contiguous or not features.flags.writeable):
         raise ValueError('Invalid native pillar feature arrays')
-    if native.lidar_pillar_features(points.ctypes.data,order.ctypes.data,len(points),
-            starts.ctypes.data,counts.ctypes.data,keys.ctypes.data,len(keys),features.ctypes.data):
+    if native.lidar_pillar_features_v2(points.ctypes.data,order.ctypes.data,len(points),
+            starts.ctypes.data,counts.ctypes.data,keys.ctypes.data,len(keys),features.ctypes.data,
+            grid,voxel,*minimum,voxel_z,features.shape[2]):
         raise ValueError('Invalid native pillar feature input')
     return True

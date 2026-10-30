@@ -193,6 +193,9 @@ void ApplyDetectionValue(
     params.enabled = ParseBool(value);
   } else if (key == "min_confidence") {
     params.min_confidence = ParseFloat(value);
+  } else if (key == "model") {
+    if (value!="tiny" && value!="short_range") throw std::invalid_argument("Unknown detector model");
+    params.model=value;
   } else if (key == "classes") {
     const int mask=ParseInt(value);
     if (mask<0 || mask>static_cast<int>(algorithms::DetectionParams::AllClasses))
