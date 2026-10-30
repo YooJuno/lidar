@@ -103,6 +103,11 @@ int main()
   const auto root = fs::temp_directory_path() / ("lidar-bag-catalog-" +
     std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
   try {
+    Check(FormatBagDuration(std::nullopt)=="--:--:--", "Missing duration looks like an empty recording");
+    Check(FormatBagDuration(0)=="00:00:00", "A valid zero duration is hidden");
+    Check(FormatBagDuration(1692672385512ULL)=="00:28:12", "Bag nanoseconds were rounded or formatted incorrectly");
+    Check(FormatBagDuration(3661000000000ULL)=="01:01:01", "Hour duration formatting is incorrect");
+    Check(FormatBagDuration(360000000000000ULL)=="100:00:00", "Long recordings wrapped at a day");
     fs::create_directories(root);
     const auto latest = Bag(root, "sensors_20261023_120204_157971");
     const auto earlier = Bag(root, "sensors_20261023_102818_576475");

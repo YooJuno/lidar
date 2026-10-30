@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstring>
 #include <future>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -37,6 +38,42 @@ void Throws(Function function, const std::string & message)
     return;
   }
   throw std::runtime_error(message);
+}
+
+void TestSummaryDuration()
+{
+  const auto path=fs::temp_directory_path()/("lidar-summary-"+
+    std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+".mcap");
+  struct Cleanup {fs::path path;~Cleanup() {std::error_code ec;fs::remove(path,ec);}} cleanup{path};
+  auto write=[&](std::uint64_t first,std::uint64_t last,std::uint64_t messages,bool summary) {
+    const std::string magic("\x89MCAP0\r\n",8);
+    std::ofstream file(path,std::ios::binary);
+    auto number=[&](std::uint64_t value,int width=8) {
+      for (int i=0;i<width;++i) file.put(static_cast<char>((value>>(8*i))&255));
+    };
+    file.write(magic.data(),8);file<<std::string(1024,'x');
+    const auto start=static_cast<std::uint64_t>(file.tellp());
+    file.put(0x0b);number(46);number(messages);number(0,2);
+    for (int i=0;i<4;++i) number(0,4);
+    number(first);number(last);number(0,4);
+    file.put(0x02);number(20);number(summary ? start : 0);number(0);number(0,4);
+    file.write(magic.data(),8);
+  };
+  write(5000000000ULL,125200000000ULL,2,true);
+  Check(ReadBagDurationNs(path)==120200000000ULL,"MCAP summary timing is wrong");
+  write(0,0,1,true);Check(ReadBagDurationNs(path)==0,"Single-frame MCAP lost valid zero duration");
+  write(10,9,2,true);Check(!ReadBagDurationNs(path),"Reversed summary clocks accepted");
+  write(0,0,0,true);Check(!ReadBagDurationNs(path),"No messages presented as a valid zero-length recording");
+  write(1,100,2,false);Check(!ReadBagDurationNs(path),"Unindexed MCAP triggered a fallback scan");
+  for (const auto offset : {1033,1096}) {
+    write(1,100,2,true);
+    std::fstream file(path,std::ios::binary|std::ios::in|std::ios::out);
+    file.seekp(offset);for (int i=0;i<8;++i) file.put(static_cast<char>(255));file.close();
+    Check(!ReadBagDurationNs(path),"Out-of-file summary offset or oversized record accepted");
+  }
+  std::ofstream(path,std::ios::binary)<<"truncated";
+  Check(!ReadBagDurationNs(path),"Truncated MCAP timing accepted");
+  fs::remove(path);Check(!ReadBagDurationNs(path),"Missing recording timing accepted");
 }
 
 #ifdef LIDAR_VIEWER_HAS_ROSBAG
@@ -214,6 +251,11 @@ void TestStorage(const std::string & storage_id)
       writer.close();
     }
     Check(IsRos2BagInput(folder) && IsRos2BagInput(folder / "metadata.yaml"), "Bag detection failed");
+    Check(ReadBagDurationNs(folder)==4000000ULL,"Bag duration did not include all recorded topics");
+    Check(ReadBagDurationNs(folder/"metadata.yaml")==4000000ULL,"Selected metadata duration is wrong");
+    for (const auto & item:fs::directory_iterator(folder))
+      if (item.path().extension()==".mcap" || item.path().extension()==".db3")
+        Check(ReadBagDurationNs(item.path())==4000000ULL,"Loose storage and bag metadata timing differ");
     lidar_viewer::InputLoadState load;
     const auto handles = ResolveBagFrames(folder,"/b2/points","",&load);
     const auto progress=load.Snapshot();
@@ -277,6 +319,7 @@ void TestStorage(const std::string & storage_id)
 int main(int argc, char ** argv)
 {
   try {
+    TestSummaryDuration();
 #ifdef LIDAR_VIEWER_HAS_ROSBAG
     Check(RosbagInputAvailable(), "Bag-enabled build reports unavailable");
     TestPointLayouts();

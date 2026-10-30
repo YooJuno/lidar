@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -18,6 +19,8 @@
 #include <rclcpp/serialization.hpp>
 #include <rclcpp/serialized_message.hpp>
 #include <rosbag2_cpp/reader.hpp>
+#include <rosbag2_cpp/info.hpp>
+#include <rosbag2_storage/metadata_io.hpp>
 #include <rosbag2_storage/storage_filter.hpp>
 #include <sensor_msgs/msg/point_field.hpp>
 #include <sensor_msgs/msg/imu.hpp>
@@ -43,6 +46,80 @@ bool RosbagInputAvailable()
 #else
   return false;
 #endif
+}
+
+namespace
+{
+std::uint64_t Little64(const unsigned char * bytes)
+{
+  std::uint64_t value=0;
+  for (int i=0;i<8;++i) value|=static_cast<std::uint64_t>(bytes[i])<<(8*i);
+  return value;
+}
+
+std::optional<std::uint64_t> McapDuration(const fs::path & path)
+{
+  // MCAP v0 Footer and Statistics, https://mcap.dev/spec . Seek over every
+  // schema/chunk index; do not read/decompress messages or scan unfinished bags.
+  std::ifstream file(path,std::ios::binary|std::ios::ate);
+  if (!file) return {};
+  const auto size=file.tellg();
+  if (size<45) return {};
+  constexpr std::array<unsigned char,8> magic{0x89,'M','C','A','P','0','\r','\n'};
+  std::array<unsigned char,8> header{};
+  file.seekg(0);file.read(reinterpret_cast<char *>(header.data()),header.size());
+  if (header!=magic) return {};
+  const auto footer_at=static_cast<std::uint64_t>(size)-37;
+  std::array<unsigned char,37> footer{};
+  file.seekg(static_cast<std::streamoff>(footer_at));
+  file.read(reinterpret_cast<char *>(footer.data()),footer.size());
+  if (!file || footer[0]!=0x02 || Little64(footer.data()+1)!=20 ||
+      !std::equal(magic.begin(),magic.end(),footer.begin()+29)) return {};
+  auto offset=Little64(footer.data()+9);
+  const auto offsets_start=Little64(footer.data()+17);
+  const auto end=offsets_start ? offsets_start : footer_at;
+  if (offset<8 || offset>=end || end>footer_at) return {};
+  // A malformed summary must not create an unbounded loop or allocation.
+  for (std::size_t records=0;offset<end && records<100000;++records) {
+    if (end-offset<9) return {};
+    std::array<unsigned char,9> record{};
+    file.seekg(static_cast<std::streamoff>(offset));
+    file.read(reinterpret_cast<char *>(record.data()),record.size());
+    const auto length=Little64(record.data()+1);
+    if (!file || length>end-offset-9) return {};
+    if (record[0]==0x0b) {
+      if (length<46) return {};
+      std::array<unsigned char,46> stats{};
+      file.read(reinterpret_cast<char *>(stats.data()),stats.size());
+      if (!file || !Little64(stats.data())) return {};
+      const auto first=Little64(stats.data()+26),last=Little64(stats.data()+34);
+      return last>=first ? std::optional<std::uint64_t>(last-first) : std::nullopt;
+    }
+    offset+=9+length;
+  }
+  return {};
+}
+} // namespace
+
+std::optional<std::uint64_t> ReadBagDurationNs(const fs::path & input)
+{
+  try {
+    const auto path=input.filename()=="metadata.yaml" ? input.parent_path() : input;
+    if (path.extension()==".mcap" && fs::is_regular_file(path)) return McapDuration(path);
+#ifdef LIDAR_VIEWER_HAS_ROSBAG
+    rosbag2_storage::BagMetadata metadata;
+    if (fs::is_directory(path) && fs::is_regular_file(path/"metadata.yaml") &&
+        fs::file_size(path/"metadata.yaml")<=4*1024*1024) {
+      metadata=rosbag2_storage::MetadataIo().read_metadata(path.string());
+    } else if (path.extension()==".db3" && fs::is_regular_file(path)) {
+      metadata=rosbag2_cpp::Info().read_metadata(path.string(),"sqlite3");
+    } else return {};
+    if (!metadata.message_count || metadata.duration.count()<0) return {};
+    return static_cast<std::uint64_t>(metadata.duration.count());
+#else
+    return {};
+#endif
+  } catch (const std::exception &) {return {};}
 }
 
 #ifdef LIDAR_VIEWER_HAS_ROSBAG
