@@ -193,8 +193,11 @@ void ApplyDetectionValue(
     params.enabled = ParseBool(value);
   } else if (key == "min_confidence") {
     params.min_confidence = ParseFloat(value);
-  } else if (key == "min_points") {
-    params.min_points = ParseInt(value);
+  } else if (key == "classes") {
+    const int mask=ParseInt(value);
+    if (mask<0 || mask>static_cast<int>(algorithms::DetectionParams::AllClasses))
+      throw std::invalid_argument("Detection classes must be a mask from 0 to 31");
+    params.classes=static_cast<std::uint32_t>(mask);
   }
 }
 }  // namespace

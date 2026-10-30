@@ -37,16 +37,18 @@ int main()
     Check(resource == fs::path(LIDAR_VIEWER_SOURCE_DIR) / "config/algorithms.yaml",
       "Resource lookup depends on the working directory");
     const auto config_path = temporary / "test.yaml";
-    Write(config_path, "ground_removal:\n  mode: fast_grid\n  enabled: true\nclustering:\n  min_cluster_size: 12\n");
+    Write(config_path, "ground_removal:\n  mode: fast_grid\n  enabled: true\nclustering:\n  min_cluster_size: 12\ndetection:\n  classes: 8\n");
     const auto config = lidar_viewer::LoadPipelineConfig(config_path);
     Check(config.ground_removal.enabled && config.ground_removal.mode == "fast_grid" &&
-      config.clustering.min_cluster_size == 12, "Valid algorithm configuration changed");
+      config.clustering.min_cluster_size == 12 && config.detection.classes==8, "Valid algorithm configuration changed");
     for (const auto & contents : {
       "ground_removal:\n  distance_threshold_m: nan\n",
       "ground_removal:\n  distance_threshold_m: inf\n",
       "ground_removal:\n  distance_threshold_m: 0.2junk\n",
       "clustering:\n  min_cluster_size: 12junk\n",
-      "clustering:\n  enabled: maybe\n"}) {
+      "clustering:\n  enabled: maybe\n",
+      "detection:\n  classes: -1\n",
+      "detection:\n  classes: 32\n"}) {
       Write(config_path, contents);
       bool rejected = false;
       try { lidar_viewer::LoadPipelineConfig(config_path); }

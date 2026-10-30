@@ -5,12 +5,14 @@ Optional --model-dir checks fused-vs-original neural graph numerically on a
 real cloud (--cloud KITTI_XYZI.bin), then reports actual inference timings.
 """
 import argparse
+import io
 from pathlib import Path
 import sys
 import unittest
 import numpy as np
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'python'))
 from lidar_detection.centerpoint import pillarize,decode,rotated_iou,suppress,CenterPoint
+from lidar_detection.worker import read_into,reply,RESPONSE
 
 class PrePostTests(unittest.TestCase):
     def test_pillar_features_and_padding(self):
@@ -50,6 +52,36 @@ class PrePostTests(unittest.TestCase):
         low=a.copy();low[0]=10;low[7]=.2
         candidates=np.stack([a,b,far,low]);cached=suppress(candidates)
         np.testing.assert_array_equal(cached[cached[:,7]>=.35],suppress(candidates[candidates[:,7]>=.35]))
+    def test_spatial_nms_matches_exhaustive_search(self):
+        rng=np.random.default_rng(17)
+        boxes=rng.uniform(-80,80,(350,9)).astype(np.float32)
+        boxes[:,2]=1;boxes[:,3:6]=rng.uniform(.4,8,(350,3));boxes[:,6]=rng.uniform(-np.pi,np.pi,350)
+        boxes[:,7]=rng.uniform(.1,1,350);boxes[:,8]=rng.integers(0,5,350)
+        # Include neighbors straddling negative and positive bucket boundaries.
+        boxes[:6,:2]=[[-10.01,-.01],[-9.99,.01],[-.01,9.99],[.01,10.01],[9.99,-10.01],[10.01,-9.99]]
+        kept=[]
+        for box in boxes[np.argsort(-boxes[:,7],kind='stable')]:
+            rejected=False
+            for previous in kept:
+                distance=float(np.square(box[:2]-previous[:2]).sum())
+                if distance<.25 or (distance<100 and rotated_iou(box,previous)>.1):
+                    rejected=True;break
+            if not rejected:kept.append(box)
+        np.testing.assert_array_equal(suppress(boxes),np.asarray(kept))
+    def test_worker_reuses_receive_storage_and_handles_short_io(self):
+        class ShortReader(io.BytesIO):
+            def readinto(self,target):return super().readinto(target[:3])
+        storage=bytearray(64)
+        read_into(ShortReader(b'abcdefgh'),memoryview(storage)[:8])
+        read_into(ShortReader(b'xyz'),memoryview(storage)[:3])
+        self.assertEqual(storage[:8],b'xyzdefgh')
+        with self.assertRaises(EOFError):read_into(ShortReader(b'x'),memoryview(storage)[:3])
+        class ShortWriter(io.BytesIO):
+            def write(self,data):return super().write(data[:2])
+        sink=ShortWriter();boxes=np.arange(18,dtype=np.float32).reshape(2,9)
+        reply(sink,b'LDR1',23,boxes,1.5,'ready')
+        data=sink.getvalue();self.assertEqual(RESPONSE.unpack_from(data),(b'LDR1',23,2,1.5,5))
+        self.assertEqual(data[RESPONSE.size:],b'ready'+boxes.tobytes())
 
 def model_check(folder,cloud):
     import onnxruntime as ort
