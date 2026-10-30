@@ -12,6 +12,7 @@ import hashlib
 import math
 import time
 import numpy as np
+from .native import stable_order,fill_features,backend_name
 
 MODEL_REVISION='494c8171def40bd36cc2feb323e0a5acbfab132b'
 MODEL_FILES={
@@ -64,43 +65,47 @@ def fuse_model(folder):
 
 
 def pillarize(points):
-    """32 points/pillar, XYZ+time+cluster offsets+XY center offsets (9 features)."""
+    """Original deterministic 32-point pillars and nine float32 features."""
     points=np.asarray(points,dtype=np.float32)
     if points.ndim!=2 or points.shape[1]!=3:raise ValueError('Expected Nx3 XYZ points')
-    valid=np.isfinite(points).all(axis=1)&(points>=RANGE_MIN).all(axis=1)&(points<RANGE_MAX).all(axis=1)
+    x,y,z=points[:,0],points[:,1],points[:,2]
+    valid=(x>=RANGE_MIN[0])&(x<RANGE_MAX[0])&(y>=RANGE_MIN[1])&(y<RANGE_MAX[1])&(z>=RANGE_MIN[2])&(z<RANGE_MAX[2])
     xyz=points[valid]
-    if not len(xyz):return np.zeros((0,32,9),np.float32),np.zeros((0,3),np.int64),{'pillars':0,'truncated_pillars':0,'points_in_range':0}
-    # Autoware shuffles before its bounded voxelization. A fixed permutation
-    # avoids scan-order bias while keeping a paused frame reproducible.
-    xyz=xyz[np.random.default_rng(0).permutation(len(xyz))]
-    xy=np.clip(np.floor((xyz[:,:2]-RANGE_MIN[:2])/VOXEL_SIZE).astype(np.int32),0,GRID_SIZE-1)
-    keys=xy[:,1]*GRID_SIZE+xy[:,0]
-    order=np.argsort(keys,kind='stable');xyz=xyz[order];xy=xy[order];keys=keys[order]
+    if not len(xyz):return np.zeros((0,32,9),np.float32),np.zeros((0,3),np.int64),{'pillars':0,'truncated_pillars':0,'points_in_range':0,'preprocess_backend':backend_name()}
+    x=np.clip(np.floor((xyz[:,0]-RANGE_MIN[0])/VOXEL_SIZE).astype(np.int32),0,GRID_SIZE-1)
+    y=np.clip(np.floor((xyz[:,1]-RANGE_MIN[1])/VOXEL_SIZE).astype(np.int32),0,GRID_SIZE-1)
+    keys=y*GRID_SIZE+x
+    permutation=np.random.default_rng(0).permutation(len(xyz))
+    # Sort indices, not XYZ/XY copies. Counting sort preserves the original
+    # shuffle exactly; both native and NumPy paths keep identical samples.
+    order=stable_order(keys,permutation)
+    keys=keys[order]
     starts=np.r_[0,np.flatnonzero(keys[1:]!=keys[:-1])+1]
     counts=np.diff(np.r_[starts,len(keys)])
+    voxel_keys=keys[starts];voxel_xy=np.column_stack([voxel_keys%GRID_SIZE,voxel_keys//GRID_SIZE])
     total_pillars=len(starts)
-    # Near pillars get priority only when the documented 40000-pillar cap is
-    # exceeded; report the truncation rather than hiding it.
     if total_pillars>MAX_VOXELS:
-        centers=(xy[starts].astype(np.float32)+.5)*VOXEL_SIZE+RANGE_MIN[:2]
+        centers=(voxel_xy.astype(np.float32)+.5)*VOXEL_SIZE+RANGE_MIN[:2]
         keep=np.zeros(total_pillars,dtype=bool)
         keep[np.argsort((centers*centers).sum(axis=1),kind='stable')[:MAX_VOXELS]]=True
     else:keep=np.ones(total_pillars,dtype=bool)
-    group=np.repeat(np.arange(total_pillars),counts)
-    rank=np.arange(len(keys))-np.repeat(starts,counts)
-    pick=(rank<MAX_POINTS)&keep[group]
-    remap=np.cumsum(keep)-1;ids=remap[group[pick]];rank=rank[pick];selected=xyz[pick]
     num=int(keep.sum());features=np.zeros((num,MAX_POINTS,9),dtype=np.float32)
-    num_points=np.minimum(counts[keep],MAX_POINTS).astype(np.float32)
-    means=np.stack([np.bincount(ids,weights=selected[:,axis],minlength=num) for axis in range(3)],axis=1).astype(np.float32)
-    means/=num_points[:,None]
-    voxel_xy=xy[starts][keep]
-    centers=(voxel_xy.astype(np.float32)+.5)*VOXEL_SIZE+RANGE_MIN[:2]
-    features[ids,rank,:3]=selected
-    features[ids,rank,4:7]=selected-means[ids]
-    features[ids,rank,7:9]=selected[:,:2]-centers[ids]
+    if not fill_features(xyz,order,starts[keep],counts[keep],voxel_keys[keep],features):
+        group=np.repeat(np.arange(total_pillars),counts)
+        rank=np.arange(len(keys))-np.repeat(starts,counts)
+        pick=(rank<MAX_POINTS)&keep[group]
+        remap=np.cumsum(keep)-1;ids=remap[group[pick]];rank=rank[pick];selected=xyz[order[pick]]
+        num_points=np.minimum(counts[keep],MAX_POINTS).astype(np.float32)
+        means=np.stack([np.bincount(ids,weights=selected[:,axis],minlength=num) for axis in range(3)],axis=1).astype(np.float32)
+        means/=num_points[:,None]
+        selected_xy=voxel_xy[keep]
+        centers=(selected_xy.astype(np.float32)+.5)*VOXEL_SIZE+RANGE_MIN[:2]
+        features[ids,rank,:3]=selected
+        features[ids,rank,4:7]=selected-means[ids]
+        features[ids,rank,7:9]=selected[:,:2]-centers[ids]
+    voxel_xy=voxel_xy[keep]
     indices=np.column_stack([np.zeros(num,dtype=np.int64),voxel_xy[:,1],voxel_xy[:,0]]).astype(np.int64)
-    return features,indices,{'pillars':num,'truncated_pillars':total_pillars-num,'points_in_range':len(xyz)}
+    return features,indices,{'pillars':num,'truncated_pillars':total_pillars-num,'points_in_range':len(xyz),'preprocess_backend':backend_name(len(xyz))}
 
 
 def box_corners(box):
@@ -117,48 +122,44 @@ def polygon_area(polygon):
 
 
 def rotated_iou(a,b,corners_a=None,corners_b=None):
-    polygon=list(box_corners(a) if corners_a is None else corners_a)
+    # Four/eight vertices: scalar double arithmetic avoids allocating tiny
+    # NumPy arrays for every edge intersection. Keep the same area reduction.
+    polygon=[(float(p[0]),float(p[1])) for p in (box_corners(a) if corners_a is None else corners_a)]
     clip=box_corners(b) if corners_b is None else corners_b
     for i in range(4):
-        edge_a,edge_b=clip[i],clip[(i+1)%4];edge=edge_b-edge_a
-        def side(p):return float(edge[0]*(p[1]-edge_a[1])-edge[1]*(p[0]-edge_a[0]))
+        ax,ay=float(clip[i,0]),float(clip[i,1]);bx,by=float(clip[(i+1)%4,0]),float(clip[(i+1)%4,1]);ex,ey=bx-ax,by-ay
         if not polygon:return 0.
-        incoming=polygon;polygon=[];previous=incoming[-1];previous_side=side(previous)
-        for current in incoming:
-            current_side=side(current)
-            if (current_side>=0)!=(previous_side>=0):
-                t=previous_side/(previous_side-current_side)
-                polygon.append(previous+(current-previous)*t)
-            if current_side>=0:polygon.append(current)
-            previous,previous_side=current,current_side
+        incoming=polygon;polygon=[];px,py=incoming[-1];previous_side=ex*(py-ay)-ey*(px-ax)
+        for cx,cy in incoming:
+            side=ex*(cy-ay)-ey*(cx-ax)
+            if (side>=0)!=(previous_side>=0):
+                t=previous_side/(previous_side-side)
+                polygon.append((px+(cx-px)*t,py+(cy-py)*t))
+            if side>=0:polygon.append((cx,cy))
+            px,py,previous_side=cx,cy,side
     intersection=polygon_area(polygon)
     return intersection/max(float(a[3]*a[4]+b[3]*b[4])-intersection,1e-8)
 
-
 def suppress(boxes):
     if not len(boxes):return boxes
-    # Original 0.5 m circle NMS, followed by rotated BEV IoU NMS (0.1).
     boxes=boxes[np.argsort(-boxes[:,7],kind='stable')]
     kept=[];corners=[];aabbs=[];cells={}
     for box in boxes:
-        corner=box_corners(box);aabb=np.r_[corner.min(axis=0),corner.max(axis=0)]
+        corner=box_corners(box);lo=corner.min(axis=0);hi=corner.max(axis=0)
+        aabb=(float(lo[0]),float(lo[1]),float(hi[0]),float(hi[1]))
         rejected=False
-        # The original suppression rule only compares centers within 10 m.
-        # Search nine spatial buckets instead of every previously kept box.
+        # Original 0.5 m circle and 0.1 IoU suppression, within 10 m only.
         cell=(math.floor(float(box[0])/10),math.floor(float(box[1])/10))
-        neighbors=(index for y in range(cell[1]-1,cell[1]+2) for x in range(cell[0]-1,cell[0]+2)
-            for index in cells.get((x,y),()))
+        neighbors=(index for y in range(cell[1]-1,cell[1]+2) for x in range(cell[0]-1,cell[0]+2) for index in cells.get((x,y),()))
         for index in neighbors:
-            previous,previous_corners,previous_aabb=kept[index],corners[index],aabbs[index]
-            distance=float(np.square(box[:2]-previous[:2]).sum())
+            previous,previous_corners,p=kept[index],corners[index],aabbs[index]
+            dx=box[0]-previous[0];dy=box[1]-previous[1];distance=float(dx*dx+dy*dy)
             if distance<.25:rejected=True;break
             if distance>=100:continue
-            overlap=np.minimum(aabb[2:],previous_aabb[2:])-np.maximum(aabb[:2],previous_aabb[:2])
-            if np.any(overlap<=0):continue
+            if min(aabb[2],p[2])<=max(aabb[0],p[0]) or min(aabb[3],p[3])<=max(aabb[1],p[1]):continue
             if rotated_iou(box,previous,corner,previous_corners)>.1:rejected=True;break
         if not rejected:
-            cells.setdefault(cell,[]).append(len(kept))
-            kept.append(box);corners.append(corner);aabbs.append(aabb)
+            cells.setdefault(cell,[]).append(len(kept));kept.append(box);corners.append(corner);aabbs.append(aabb)
     return np.asarray(kept,dtype=np.float32).reshape(-1,9)
 
 

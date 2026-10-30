@@ -50,7 +50,8 @@ public:
       result.append(slashes*2,L'\\');return result+L'"';
     };
     std::wstring command=quote(python.wstring())+L" -u "+quote(worker.wstring())+L" --model-dir "+quote(model.wstring())+
-      L" --provider "+quote(std::wstring(provider.begin(),provider.end()));
+      L" --provider "+quote(std::wstring(provider.begin(),provider.end()))+
+      L" --native-dir "+quote(ExecutablePath().parent_path().wstring());
     STARTUPINFOW start{};start.cb=sizeof(start);start.dwFlags=STARTF_USESTDHANDLES;
     start.hStdInput=child_in;start.hStdOutput=child_out;start.hStdError=error;
     PROCESS_INFORMATION process{};
@@ -68,8 +69,9 @@ public:
     posix_spawn_file_actions_adddup2(&actions,input[0],STDIN_FILENO);
     posix_spawn_file_actions_adddup2(&actions,output[1],STDOUT_FILENO);
     if (error>=0) posix_spawn_file_actions_adddup2(&actions,error,STDERR_FILENO);
-    std::array<std::string,7> args{python.string(),"-u",worker.string(),"--model-dir",model.string(),"--provider",provider};
-    std::array<char *,8> argv{};for (std::size_t i=0;i<args.size();++i) argv[i]=args[i].data();
+    std::array<std::string,9> args{python.string(),"-u",worker.string(),"--model-dir",model.string(),
+      "--provider",provider,"--native-dir",ExecutablePath().parent_path().string()};
+    std::array<char *,10> argv{};for (std::size_t i=0;i<args.size();++i) argv[i]=args[i].data();
     const int rc=posix_spawnp(&pid_,python.c_str(),&actions,nullptr,argv.data(),environ);
     posix_spawn_file_actions_destroy(&actions);close(input[0]);close(output[1]);if (error>=0) close(error);
     if (rc!=0) {pid_=-1;close(input[1]);close(output[0]);throw std::runtime_error("Cannot start detector Python runtime");}

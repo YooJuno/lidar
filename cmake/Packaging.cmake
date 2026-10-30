@@ -65,6 +65,9 @@ install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/config/" DESTINATION "${resource_
   FILES_MATCHING PATTERN "*.cfg" PATTERN "*.yaml")
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/python/" DESTINATION "${resource_destination}/python"
   FILES_MATCHING PATTERN "*.py" PATTERN "__pycache__" EXCLUDE)
+install(TARGETS lidar_viewer_native
+  RUNTIME DESTINATION "${resource_destination}/python/lidar_detection"
+  LIBRARY DESTINATION "${resource_destination}/python/lidar_detection")
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/tools/setup_detector.py" DESTINATION "${resource_destination}/tools")
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/README.md" DESTINATION "${resource_destination}")
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/third_party/licenses/" DESTINATION "${resource_destination}/third-party-licenses")

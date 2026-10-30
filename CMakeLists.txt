@@ -156,6 +156,14 @@ if(LIDAR_VIEWER_ENABLE_ROSBAG AND rosbag2_cpp_FOUND AND sensor_msgs_FOUND AND tf
 endif()
 
 find_package(Threads REQUIRED)
+add_library(lidar_viewer_native SHARED src/detector_native.cpp)
+lidar_warnings(lidar_viewer_native)
+# Do not fuse or reassociate float32 feature operations: preserve NumPy bits.
+if(MSVC)
+  target_compile_options(lidar_viewer_native PRIVATE /fp:strict)
+else()
+  target_compile_options(lidar_viewer_native PRIVATE -ffp-contract=off)
+endif()
 add_library(lidar_viewer_detector STATIC src/learned_detector.cpp src/algorithms/detection.cpp)
 target_include_directories(lidar_viewer_detector PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(lidar_viewer_detector PUBLIC Threads::Threads)
@@ -177,6 +185,7 @@ add_executable(lidar_viewer
 )
 
 lidar_warnings(lidar_viewer)
+add_dependencies(lidar_viewer lidar_viewer_native)
 target_compile_definitions(lidar_viewer PRIVATE LIDAR_VIEWER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 if(LIDAR_VIEWER_USER_SETTINGS)
   target_compile_definitions(lidar_viewer PRIVATE LIDAR_VIEWER_USER_SETTINGS=1)
@@ -225,6 +234,13 @@ if(BUILD_TESTING)
   set_tests_properties(background_worker_smoke_test PROPERTIES TIMEOUT 15)
   find_package(Python3 QUIET COMPONENTS Interpreter)
   if(Python3_Interpreter_FOUND)
+    add_test(NAME detector_native_smoke_test COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/detector_native_smoke.py $<TARGET_FILE:lidar_viewer_native>)
+    set_tests_properties(detector_native_smoke_test PROPERTIES TIMEOUT 30)
+    add_custom_target(check-native-package
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/native_package_smoke.py
+        --packages ${CMAKE_BINARY_DIR}/packages
+      COMMENT "Verifying the native helper in the packaged archive" VERBATIM)
     add_executable(learned_detector_smoke_test tests/learned_detector_smoke.cpp)
     target_link_libraries(learned_detector_smoke_test PRIVATE lidar_viewer_detector)
     add_test(NAME learned_detector_smoke_test COMMAND learned_detector_smoke_test ${Python3_EXECUTABLE})
