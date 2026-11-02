@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Private Xvfb: sensor exclusions reach real segmentation and detector IPC.
+"""Private Xvfb: ground-only ROI, visible skipped points and cached detection.
 
 The protocol recorder checks the bytes sent to inference, without substituting
 any production model. Ground comparisons run each original algorithm against
@@ -80,7 +80,7 @@ while True:
         completed=subprocess.run([str(viewer),str(cloud),'--inspect']+(['--detect'] if detect else []),
             cwd=private,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=30)
         display=re.search(r'Display: \w+ \| visible (\d+) \| ground (\d+) \| obstacles (\d+) \| ground passes (\d+)',completed.stdout)
-        exclusion=re.search(r'Exclusions: removed (\d+) before analysis \| detector input (\d+) points',completed.stdout)
+        exclusion=re.search(r'Ground ROI: skipped (\d+) \| input (\d+) \| detector input (\d+) points',completed.stdout)
         if completed.returncode or not display or not exclusion:raise AssertionError(completed.stdout)
         return tuple(map(int,display.groups())),tuple(map(int,exclusion.groups()))
     def write_profile(text):
@@ -111,12 +111,16 @@ while True:
         action();wait(lambda:len(rows())>count and (removed is None or rows()[-1][0]==removed))
         wait(lambda:len(requests())>request_count)
         return rows()[-1]
-    def apply(removed=None):return changed(lambda:x11.click(window,245,219),removed)
+    def apply(removed=None,playing=False):
+        count=len(rows());previous=len(requests());x11.click(window,245,219)
+        wait(lambda:len(rows())>count and (removed is None or rows()[-1][0]==removed))
+        time.sleep(.1)
+        if not playing:check('roi_apply_reuses_cached_neural_input',len(requests())==previous)
+        return rows()[-1]
     def stage(action,label):
         before_rows=len(rows());old=rows()[-1] if rows() else (0,len(points),1)
-        previous=len(requests());action();wait(lambda:len(rows())>before_rows)
-        time.sleep(.1)
-        check(label,rows()[-1]==old and len(requests())==previous)
+        previous=len(requests());action();time.sleep(.3)
+        check(label,len(rows())==before_rows and (not rows() or rows()[-1]==old) and len(requests())==previous)
     def drag(a,b):
         x11.move(window,*a);x11.xt.XTestFakeButtonEvent(x11.display,1,True,0);x11.x.XSync(x11.display,False)
         x11.move(window,*b);x11.xt.XTestFakeButtonEvent(x11.display,1,False,0);x11.x.XSync(x11.display,False);time.sleep(.3)
@@ -136,22 +140,31 @@ while True:
             write_profile(algorithm+mask);actual,counts=inspect()
             write_profile(algorithm+'roi_enabled=0\nroi_count=0\n');expected,_=inspect(reference)
             result.setdefault('segmentation_reference',{})[mode]={'actual':actual,'expected':expected,'input_counts':counts}
-            check('presegmentation_reference_'+mode,actual==expected and counts==(len(points)-len(filtered),len(filtered)))
+            skipped=len(points)-len(filtered)
+            check('presegmentation_reference_'+mode,actual==(len(points),expected[1],expected[2]+skipped,expected[3]) and
+                  counts==(skipped,len(filtered),len(points)))
         write_profile(base+mask);inspect(detect=True)
         captured=list(struct.iter_unpack('<3f',(private/'python/last-input.bin').read_bytes()))
-        expected=collections.Counter(tuple(round(v,5) for v in (p[0],p[1],p[2]+.57)) for p in filtered)
-        check('detector_receives_only_unmasked_points',collections.Counter(tuple(round(v,5) for v in p) for p in captured)==expected)
+        expected=collections.Counter(tuple(round(v,5) for v in (p[0],p[1],p[2]+.57)) for p in points)
+        check('ground_roi_preserves_full_detector_input',collections.Counter(tuple(round(v,5) for v in p) for p in captured)==expected)
         zeros=private/'zeros.bin';zeros.write_bytes(fixture.read_bytes()+struct.pack('<4f',0,0,0,0))
         write_profile(base+'roi_enabled=0\nroi_count=0\n');_,counts=inspect(zeros,detect=True)
         captured=list(struct.iter_unpack('<3f',(private/'python/last-input.bin').read_bytes()))
         full_expected=collections.Counter(tuple(round(v,5) for v in (p[0],p[1],p[2]+.57)) for p in points)
-        check('raw_zero_returns_removed_before_height_alignment',counts==(0,len(points)) and
+        check('raw_zero_returns_removed_before_height_alignment',counts==(0,len(points)+1,len(points)) and
               collections.Counter(tuple(round(v,5) for v in p) for p in captured)==full_expected)
-        # Include regions still crop only the view; the neural input stays whole.
-        write_profile(base+'roi_enabled=1\nroi_count=2\nroi_box=1 "far" 3 2 .7 1 1 2 0\n'
-                      'roi_exclude_box=1 "mount" 0 0 0 1 1 1 0\n')
+        # Reproduce the reported UI state: old display filter off, eight old
+        # unchecked boxes and one checked sensor box. No global switch gates it.
+        legacy=''.join(f'roi_box=0 "ROI {i+1}" 3 2 .7 1 1 2 0\n' for i in range(8))
+        write_profile(base+'roi_enabled=0\nroi_count=9\n'+legacy+'roi_exclude_box=1 "mount" 0 0 0 1 1 1 0\n')
         display,counts=inspect()
-        check('include_crop_preserves_surrounding_analysis',display[0]==490 and counts==(405,len(points)-405))
+        check('legacy_filter_off_does_not_disable_ground_roi',display[0]==len(points) and counts==(405,len(points)-405,len(points)))
+        write_profile(base+'roi_enabled=1\nroi_count=9\n'+legacy+'roi_exclude_box=0 "mount" 0 0 0 1 1 1 0\n')
+        display,counts=inspect()
+        check('all_boxes_unchecked_preserves_entire_cloud',display[0]==len(points) and counts==(0,len(points),len(points)))
+        write_profile(base+'roi_enabled=0\nroi_count=1\nroi_exclude_box=1 "whole scan" 0 0 0 100 100 100 0\n')
+        display,counts=inspect()
+        check('all_points_skipped_remain_visible_without_ground_labels',display==(len(points),0,len(points),1) and counts==(len(points),0,len(points)))
         (private/'python/starts.txt').unlink();(private/'python/requests.txt').unlink()
         write_profile(base+'roi_enabled=0\nroi_count=0\n')
         x11=X11();subprocess.run(['xrdb','-merge'],input='Xft.dpi: 96\n',text=True,check=True)
@@ -161,26 +174,24 @@ while True:
             wait(lambda:len(requests())==1)
             x11.key(window,'r');x11.key(window,'Escape')
             saved_before=save()
-            stage(lambda:x11.click(window,270,328),'new_exclusion_previews_without_reanalysis')
+            stage(lambda:x11.click(window,65,328),'new_roi_previews_without_reanalysis')
+            x11.click(window,125,328)  # Focus the small sensor box for direct editing.
             text=save();check('unapplied_exclusions_cannot_be_saved',text==saved_before)
             x11.move(window,1400,700);capture(x11,window,out/'00_unapplied_preview.png')
             stepped=changed(lambda:x11.key(window,'Right'),0)
             check('frame_advance_preserves_last_applied_exclusions',stepped[1]==len(points))
             paused=capture(x11,window,out/'paused.png')
             initial=apply(405)
-            check('apply_removes_mount_before_both_analyses',initial[1]==len(points)-405 and initial[2]>stepped[2])
+            check('apply_skips_ground_without_changing_detector_input',initial[1]==len(points) and initial[2]>stepped[2])
             x11.move(window,1400,700)
             applied=capture(x11,window,out/'01_sensor_exclusion.png')
             check('apply_keeps_paused_state',changed_pixels(paused,applied,(1235,20,1320,48))==0)
-            text=save();check('excluded_box_type_and_sensor_coordinates_saved','roi_exclude_box=1 "Exclude 1" 0 0 0 1 1 1 0' in text)
+            text=save();check('ground_roi_and_sensor_coordinates_saved','roi_exclude_box=1 "ROI 1" 0 0 0 1 1 1 0' in text)
             passes=initial[2]
-            stage(lambda:x11.click(window,46,219),'master_toggle_waits_for_apply');apply(0)
-            stage(lambda:x11.click(window,46,219),'master_reenable_waits_for_apply');enabled=apply(405)
-            check('master_apply_rebuilds_ground_and_detector',enabled[2]>passes)
-            stage(lambda:x11.click(window,270,365),'keep_exclude_switch_waits_for_apply');keep=apply(0)
-            stage(lambda:x11.click(window,270,365),'exclude_keep_switch_waits_for_apply');exclude=apply(405)
-            check('type_apply_rebuilds_analysis',exclude[2]>keep[2])
-            previous=len(requests());passes=exclude[2]
+            stage(lambda:x11.click(window,52,370),'uncheck_box_waits_for_apply');apply(0)
+            stage(lambda:x11.click(window,52,370),'check_box_waits_for_apply');enabled=apply(405)
+            check('box_apply_recomputes_ground_only',enabled[2]>passes)
+            previous=len(requests());passes=enabled[2]
             x11.click(window,295,219);time.sleep(.25)
             check('outline_toggle_reuses_analysis',len(requests())==previous and rows()[-1][2]==passes)
             x11.click(window,295,219)
@@ -192,30 +203,30 @@ while True:
             stage(lambda:chord('z'),'second_undo_waits_for_apply');apply(405)
             def draw():x11.key(window,'r');drag((700,250),(850,350))
             stage(draw,'draw_exclusion_previews_without_reanalysis');apply()
-            text=save();check('draw_inherits_exclusion_type',text.count('roi_exclude_box=')==2 and 'roi_count=2' in text)
+            text=save();check('draw_adds_second_ground_roi',text.count('roi_exclude_box=')==2 and 'roi_count=2' in text)
             stage(lambda:chord('z'),'undo_draw_waits_for_apply');apply(405)
             previous=len(requests());passes=rows()[-1][2]
-            x11.click(window,65,328);time.sleep(.35)
-            check('adding_keep_region_reuses_ground_and_model',len(requests())==previous and rows()[-1][2]==passes)
-            x11.click(window,201,328);time.sleep(.25)
+            stage(lambda:x11.click(window,65,328),'second_box_waits_for_apply');apply(405)
+            check('overlapping_boxes_do_not_duplicate_skipped_points','roi_count=2' in save())
+            stage(lambda:x11.click(window,201,328),'delete_second_box_waits_for_apply');apply(405)
             stage(lambda:x11.click(window,201,328),'delete_exclusion_waits_for_apply');apply(0)
-            text=save();check('deleting_last_exclusion_restores_full_cloud','roi_count=0' in text)
+            text=save();check('deleting_last_roi_restores_full_ground_input','roi_count=0' in text)
             stage(lambda:chord('z'),'undo_delete_waits_for_apply');apply(405);save()
             # Applying while playing preserves transport state. New frames
             # continue using the applied mask while the next edit is pending.
             x11.key(window,'space');wait(lambda:len(requests())>=previous+4)
             playing=capture(x11,window,out/'playing.png')
-            x11.click(window,46,219);time.sleep(.4)
+            x11.click(window,52,370);time.sleep(.4)
             check('playing_frames_keep_applied_mask_during_edit',all(row[0]==405 for row in rows()[-3:]))
-            apply(0);time.sleep(.3);after_apply=capture(x11,window,out/'playing_applied.png')
+            apply(0,playing=True);time.sleep(.3);after_apply=capture(x11,window,out/'playing_applied.png')
             check('apply_keeps_playing_state',changed_pixels(playing,after_apply,(1235,20,1320,48))==0 and
                   changed_pixels(paused,after_apply,(1235,20,1320,48))>0)
             x11.key(window,'space');time.sleep(.3)
-            stage(lambda:x11.click(window,46,219),'paused_reenable_waits_for_apply');apply(405);save()
+            stage(lambda:x11.click(window,52,370),'paused_reenable_waits_for_apply');apply(405);save()
             check('editing_exclusions_reuses_detector_process',len((private/'python/starts.txt').read_text().splitlines())==1)
             x11.move(window,1400,700);capture(x11,window,out/'02_restored_exclusion.png')
         process.terminate();process.wait(timeout=5);process=None
-        _,counts=inspect();check('exclusion_survives_restart',counts==(405,len(points)-405))
+        display,counts=inspect();check('ground_roi_survives_restart',display[0]==len(points) and counts==(405,len(points)-405,len(points)))
         check('raw_file_is_unchanged',hashlib.sha256(fixture.read_bytes()).hexdigest()==raw_hash)
         check('original_profiles_unchanged',before==settings_inventory(repo))
         result['status']='passed'

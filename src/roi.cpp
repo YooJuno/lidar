@@ -131,6 +131,25 @@ void PreparedRoi::Filter(std::vector<KittiPoint> & points) const
   }), points.end());
 }
 
+std::size_t PreparedRoi::CountRejected(const std::vector<KittiPoint> & points) const
+{
+  if (!enabled_ || (!includes_required_ && excludes_.empty())) return 0;
+  return static_cast<std::size_t>(std::count_if(points.begin(),points.end(),[&](const auto & p) {
+    return !Contains({p.x,p.y,p.z});
+  }));
+}
+
+std::vector<KittiPoint> PreparedRoi::ExtractRejected(std::vector<KittiPoint> & points) const
+{
+  std::vector<KittiPoint> skipped;
+  if (!enabled_ || (!includes_required_ && excludes_.empty())) return skipped;
+  points.erase(std::remove_if(points.begin(),points.end(),[&](const auto & p) {
+    if (Contains({p.x,p.y,p.z})) return false;
+    skipped.push_back(p);return true;
+  }),points.end());
+  return skipped;
+}
+
 std::string SerializeRoiSettings(const RoiSettings & value)
 {
   ValidateSettings(value);
@@ -227,5 +246,24 @@ RoiSettings ComposeRoiFilters(const RoiSettings & preview, const RoiSettings & a
     if (box.mode==RoiBoxMode::Exclude && box.enabled) result.boxes.push_back(box);
   result.enabled=!result.boxes.empty();
   return result;
+}
+
+RoiSettings GroundExclusionRoi(RoiSettings settings)
+{
+  settings.enabled=true;
+  for (auto & box:settings.boxes) {
+    box.mode=RoiBoxMode::Exclude;
+    // Migrate only the automatic names used by the previous two-type editor.
+    if (box.name.compare(0,8,"Exclude ")==0 && box.name.size()>8 &&
+        std::all_of(box.name.begin()+8,box.name.end(),[](char c) {return c>='0' && c<='9';})) {
+      for (std::size_t i=1;;++i) {
+        const auto name="ROI "+std::to_string(i);
+        if (std::none_of(settings.boxes.begin(),settings.boxes.end(),[&](const auto & b) {return b.name==name;})) {
+          box.name=name;break;
+        }
+      }
+    }
+  }
+  return settings;
 }
 }  // namespace lidar_viewer

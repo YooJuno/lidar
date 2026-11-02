@@ -45,10 +45,10 @@ private:
   std::deque<RoiSettings> undo_, redo_;
 };
 
-inline std::string NextRoiName(const RoiSettings & settings, RoiBoxMode mode=RoiBoxMode::Include)
+inline std::string NextRoiName(const RoiSettings & settings, RoiBoxMode = RoiBoxMode::Include)
 {
   for (std::size_t i=1; ; ++i) {
-    const auto name=std::string(mode==RoiBoxMode::Exclude ? "Exclude " : "ROI ") + std::to_string(i);
+    const auto name=std::string("ROI ") + std::to_string(i);
     if (std::none_of(settings.boxes.begin(), settings.boxes.end(),
         [&](const auto & box) {return box.name==name;})) return name;
   }

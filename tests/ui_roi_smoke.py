@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Private-Xvfb checks for yaw ROI editing, union, restore and profile persistence."""
+"""Private-Xvfb: ground ROI editing, union, Apply and point preservation."""
 import argparse
 import json
 import os
@@ -39,7 +39,7 @@ def main():
             for y in range(-12, 13):
                 for z in range(-3, 2):
                     stream.write(struct.pack("ffff", x, y, z, .5))
-    env = dict(os.environ, XDG_CONFIG_HOME=str(output / "isolated_config"))
+    env = dict(os.environ, XDG_CONFIG_HOME=str(output / "isolated_config"),LIDAR_VIEWER_ROI_TRACE='1')
     before = settings_inventory(repo)
     process = x11 = window = None
     result = {"status": "started", "checks": {}, "output": str(output)}
@@ -75,13 +75,20 @@ def main():
     def roi_lines(text):
         return [line for line in text.splitlines() if line.startswith("roi_")]
 
+    def commit():
+        x11.click(window,245,219)
+        time.sleep(.2)
+        x11.click(window,170,850)
+
     def count(expected, label, boxes=None):
-        x11.click(window, 170, 850)
+        commit()
         inspected = subprocess.run([str(viewer), str(fixture), "--inspect"], cwd=private,
             env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=15)
         match = re.search(r"ROI: .*\| (\d+) boxes \| retained (\d+) / 3125 points", inspected.stdout)
+        skipped=re.search(r"Ground ROI: skipped (\d+)",inspected.stdout)
         result["checks"][label] = (inspected.returncode == 0 and match is not None and
-            int(match[2]) == expected and (boxes is None or int(match[1]) == boxes))
+            skipped is not None and int(match[2])==3125 and int(skipped[1])==expected and
+            (boxes is None or int(match[1]) == boxes))
         if not result["checks"][label]:
             raise AssertionError(f"{label}: expected {expected} points\n{inspected.stdout}")
 
@@ -100,8 +107,8 @@ def main():
             x11.focus(window); x11.resize(window, 1600, 960)
             x11.key(window,"r")  # Opens ROI editor without a fragile tab position.
             x11.key(window,"Escape")  # Cancel drawing mode, keeping the editor open.
-            x11.click(window,65,328)  # A 4 m box at view center, ready for direct editing.
-            count(125,"create_box_at_view_center",1)
+            x11.click(window,65,328)  # A 1 m box at the sensor, ready for editing.
+            count(1,"create_ground_roi_at_sensor",1)
             x11.click(window,120,602)  # Exact fields are optional, below the direct controls.
             user_profile=Path(env["XDG_CONFIG_HOME"])/"lidar_viewer/profiles/default.cfg"
             if user_profile.is_file(): profile=user_profile
@@ -110,7 +117,7 @@ def main():
             enter(120,738,90,False)
             count(45,"direct_center_size_and_yaw_input")
             enter(120,738,45,False)
-            count(21,"yaw_edit_changes_crop")
+            count(21,"yaw_edit_changes_ground_input")
             enter(120,738,90,False)
             count(45,"yaw_restore")
             x11.click(window,163,328)  # Distinct, adjacent duplicate.
@@ -128,59 +135,62 @@ def main():
             x11.click(window,201,328)
             chord("z");count(90,"undo_delete_preserves_unsubmitted_name",2)
             result["checks"]["name_edit_and_delete_are_separate_transactions"]='"nearby"' in profile.read_text()
-            x11.click(window,46,212);count(3125,"crop_off_restores_full_cloud")
-            x11.click(window,46,212);count(90,"crop_on_restores_union")
+            x11.click(window,52,405);count(45,"disable_second_ground_box")
+            x11.click(window,52,405);count(90,"enable_second_ground_box")
             # Draw a new footprint, preserving configured raw height and live freeze semantics.
             x11.key(window,"r")
             drag(800,300,1100,570)
-            x11.click(window,170,850)
+            commit()
             text=profile.read_text();match=re.search(r"roi_count=(\d+)",text)
             result["checks"]["canvas_drag_creates_third_box"]=bool(match and int(match[1])==3)
             capture(x11,window,output/"02_drawn.png")
             chord("z");count(90,"undo_draw",2)
             chord("y")
-            x11.click(window,170,850)
+            commit()
             before_move=profile.read_text()
             # Direct manipulation changes geometry without typing coordinates.
             drag(1100,570,1140,600)
-            x11.click(window,170,850)
+            commit()
             resized=profile.read_text()
             result["checks"]["corner_handle_resizes_box"]=roi_lines(resized)!=roi_lines(before_move)
-            chord("z");x11.click(window,170,850)
+            chord("z");commit()
             result["checks"]["undo_resize_restores_exact_box"]=roi_lines(profile.read_text())==roi_lines(before_move)
             drag(950,270,1115,435)
-            x11.click(window,170,850)
-            last=[line for line in profile.read_text().splitlines() if line.startswith("roi_box=")][-1]
+            commit()
+            last=[line for line in profile.read_text().splitlines() if line.startswith("roi_exclude_box=")][-1]
             result["checks"]["round_handle_rotates_box"]=abs(abs(float(last.split()[-1]))-90)<2
-            chord("z");x11.click(window,170,850)
+            chord("z");commit()
             result["checks"]["undo_rotation_restores_exact_box"]=roi_lines(profile.read_text())==roi_lines(before_move)
             # In top view the footprint is at (800,300)..(1100,570).
             x11.click(window,65,290)  # Edit in the ROI inspector.
             drag(950,420,1000,450)
-            x11.click(window,170,850)
+            commit()
             result["checks"]["canvas_move_changes_box_center"]=profile.read_text()!=before_move
-            chord("z");x11.click(window,170,850)
+            chord("z");commit()
             result["checks"]["undo_move_restores_exact_profile_roi"]=roi_lines(profile.read_text())==roi_lines(before_move)
             # Esc during a gesture restores the complete previous ROI set.
             x11.key(window,"r");drag(700,250,800,350,cancel=True)
-            x11.click(window,170,850)
+            commit()
             result["checks"]["escape_cancels_draw"]=roi_lines(profile.read_text())==roi_lines(before_move)
             # A screen-aligned rectangle remains usable after rotating the top view.
             x11.click(window,1300,700)
             for _ in range(3): x11.key(window,"e")
             x11.key(window,"r");drag(800,300,1100,570)
-            x11.click(window,170,850)
-            rotated_boxes=[line for line in profile.read_text().splitlines() if line.startswith("roi_box=")]
+            commit()
+            rotated_boxes=[line for line in profile.read_text().splitlines() if line.startswith("roi_exclude_box=")]
             result["checks"]["drawing_follows_rotated_top_view"]=len(rotated_boxes)==4 and abs(float(rotated_boxes[-1].split()[-1])-15)<.1
-            chord("z");x11.click(window,170,850)
+            chord("z");commit()
             result["checks"]["undo_rotated_draw_preserves_original_boxes"]=roi_lines(profile.read_text())==roi_lines(before_move)
-            # Ground runs once for this frame; subsequent ROI changes reuse it.
+            # Draft edits keep the previous ground result until Apply.
             x11.click(window,155,140);x11.click(window,46,222)
             x11.key(window,"r");x11.key(window,"Escape")
-            enter(75,618,1,False);x11.click(window,170,850)
-            enter(75,618,2,False);x11.click(window,170,850)
-            passes=re.findall(r"ROI applied: .*ground passes (\d+)",(output/"viewer.log").read_text())
-            result["checks"]["roi_edits_reuse_ground_segmentation"]=len(passes)>=2 and passes[-2:]==["1","1"]
+            before_passes=re.findall(r"Analysis input: .*ground passes (\d+)",(output/"viewer.log").read_text())
+            enter(75,618,1,False);enter(75,618,2,False)
+            draft_passes=re.findall(r"Analysis input: .*ground passes (\d+)",(output/"viewer.log").read_text())
+            result["checks"]["roi_draft_does_not_resegment"]=draft_passes==before_passes
+            commit()
+            passes=re.findall(r"Analysis input: .*ground passes (\d+)",(output/"viewer.log").read_text())
+            result["checks"]["apply_resegments_ground"]=bool(passes and before_passes and int(passes[-1])>int(before_passes[-1]))
             capture(x11,window,output/"03_cached_ground.png")
             # Check compact and HiDPI variants separately through ui_gl_smoke.
             if not all(result["checks"].values()): raise AssertionError(str(result["checks"]))
@@ -197,7 +207,8 @@ def main():
                     env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=15)
                 label = f"pipeline_transform_ground_{ground}"
                 result["checks"][label] = (inspected.returncode == 0 and
-                    "2 boxes | retained 90 / 3125 points" in inspected.stdout)
+                    "2 boxes | retained 3125 / 3125 points" in inspected.stdout and
+                    "Ground ROI: skipped 90 | input 3035" in inspected.stdout)
                 if not result["checks"][label]: raise AssertionError(label + '\n' + inspected.stdout)
             result["checks"]["original_profiles_unchanged"] = before == settings_inventory(repo)
             if not all(result["checks"].values()): raise AssertionError(str(result["checks"]))

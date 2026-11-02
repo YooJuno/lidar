@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Private Xvfb: classified render ranges, ROI intersection and saved ground view."""
+"""Private Xvfb: classified render ranges, ground ROI and saved ground view."""
 import argparse
 import json
 import os
@@ -82,7 +82,7 @@ def main():
         counts=[]
         for mode in ['all','ground','obstacles']:
             profile.write_text(base+roi+f'ground_view={mode}\n');counts.append(inspect())
-        check('roi_and_class_filters_intersect',counts[0][1]<len(points) and counts[1][1]>0 and counts[2][1]>0 and counts[0][1]==counts[1][1]+counts[2][1])
+        check('ground_roi_preserves_full_cloud_and_class_partition',counts[0][1]==len(points) and counts[1][1]>0 and counts[2][1]>0 and counts[0][1]==counts[1][1]+counts[2][1])
         check('saved_restricted_view_overrides_disabled_classifier',counts[1][4]==1 and counts[2][4]==1)
         profile.write_text(base+roi+'ground_view=invalid\n')
         check('invalid_view_falls_back_to_all',inspect()[0]=='all')

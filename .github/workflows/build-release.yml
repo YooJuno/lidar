@@ -89,7 +89,7 @@ jobs:
           source /opt/ros/jazzy/setup.bash
           xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_live_smoke.py \
             --viewer build/lidar_viewer --output build/test_artifacts/live
-      - name: ROI drawing, editing, undo and cached segmentation GUI test
+      - name: Ground ROI drawing, editing, undo and Apply GUI test
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
           PYTHONDONTWRITEBYTECODE: '1'
@@ -105,7 +105,7 @@ jobs:
           source /opt/ros/jazzy/setup.bash
           xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_ground_view_smoke.py \
             --viewer build/lidar_viewer --output build/test_artifacts/ground-view
-      - name: Sensor exclusions before ground and object analysis GUI test
+      - name: Ground ROI input filtering and full cloud preservation GUI test
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
           PYTHONDONTWRITEBYTECODE: '1'

@@ -109,7 +109,7 @@ int main()
     Check(exclusion_text.find("roi_exclude_box=")!=std::string::npos &&
       SameRoi(ParseRoiSettings(exclusion_text),exclude),"exclusion type did not survive persistence");
     const auto exclusion_copy=DuplicateRoi(mount,exclude);
-    Check(exclusion_copy.mode==RoiBoxMode::Exclude && exclusion_copy.name=="Exclude 1", "duplicate lost exclusion type");
+    Check(exclusion_copy.mode==RoiBoxMode::Exclude && exclusion_copy.name=="ROI 1", "duplicate lost ground exclusion type");
     Check(RoiFromDrag({0,0,0},{2,3,0},0,1,"draw",0,RoiBoxMode::Exclude).mode==RoiBoxMode::Exclude,
       "drawing lost exclusion type");
     auto renamed=exclude;renamed.boxes[0].name="renamed";renamed.show_boxes=false;
@@ -163,6 +163,20 @@ int main()
     Check(PreparedRoi(ComposeRoiFilters(maximum_keep,maximum_masks)).Contains({5,0,0}),
       "maximum-size draft could not preview previously applied masks");
     Reject([&] {SerializeRoiSettings(ComposeRoiFilters(maximum_keep,maximum_masks));});
+
+    auto ground_only=GroundExclusionRoi({false,true,{mount,{"legacy",false,{5,0,0},{2,2,2},0}}});
+    Check(ground_only.enabled && ground_only.boxes[0].mode==RoiBoxMode::Exclude &&
+      ground_only.boxes[1].mode==RoiBoxMode::Exclude && !ground_only.boxes[1].enabled,
+      "legacy display switch or box kind changed ground ROI activation");
+    const auto names=GroundExclusionRoi({false,true,{{"ROI 1"},{"Exclude 1"},{"custom mount"}}});
+    Check(names.boxes[1].name=="ROI 2" && names.boxes[2].name=="custom mount","ground ROI migration renamed a custom box or duplicated a name");
+    const PreparedRoi ground_mask(ground_only,{},RoiFilterStage::Preprocessing);
+    points={{0,0,0,.2f},{5,0,0,.3f},{0,0,.5f,.4f},{50,0,0,.5f}};
+    Check(ground_mask.CountRejected(points)==2,"wrong count of points skipped by ground ROI");
+    auto skipped=ground_mask.ExtractRejected(points);
+    Check(points.size()==2 && points[0].intensity==.3f && points[1].intensity==.5f &&
+      skipped.size()==2 && skipped[0].intensity==.2f && skipped[1].intensity==.4f,
+      "ground ROI partition lost point attributes or changed relative order");
 
     const auto serialized = SerializeRoiSettings(settings);
     const auto parsed = ParseRoiSettings("profile=default\n" + serialized);

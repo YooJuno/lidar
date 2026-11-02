@@ -46,6 +46,9 @@ std::string SerializeRoiSettings(const RoiSettings & settings);
 RoiSettings ParseRoiSettings(const std::string & text, const RoiSettings & fallback = {});
 // Ignore names, outlines and include regions when checking analysis invalidation.
 bool SameRoiExclusions(const RoiSettings & a, const RoiSettings & b);
+// The viewer uses every enabled box solely to bypass ground classification.
+// Older display/filter flags and box types do not gate ground exclusion.
+RoiSettings GroundExclusionRoi(RoiSettings settings);
 // Include regions preview immediately; exclusions use the last applied snapshot.
 RoiSettings ComposeRoiFilters(const RoiSettings & preview, const RoiSettings & applied_exclusions);
 
@@ -58,6 +61,8 @@ public:
     RoiFilterStage stage = RoiFilterStage::Display);
   bool Contains(Vec3 point) const;
   void Filter(std::vector<KittiPoint> & points) const;
+  std::size_t CountRejected(const std::vector<KittiPoint> & points) const;
+  std::vector<KittiPoint> ExtractRejected(std::vector<KittiPoint> & points) const;
   bool RejectsAll() const {return enabled_ && includes_required_ && includes_.empty();}
 
 private:
