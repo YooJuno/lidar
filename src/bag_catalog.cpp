@@ -188,7 +188,9 @@ std::vector<BagSource> MergeBagSources(
   return merged;
 }
 
-std::vector<std::filesystem::path> LoadBagFolders(const std::filesystem::path & config)
+namespace
+{
+std::vector<std::filesystem::path> ReadPathList(const std::filesystem::path & config, const char * expected_key)
 {
   namespace fs = std::filesystem;
   std::error_code error;
@@ -208,7 +210,7 @@ std::vector<std::filesystem::path> LoadBagFolders(const std::filesystem::path & 
     if (fields.eof() || fields.peek() == '#') continue;
     std::string key, value;
     fields >> key >> std::ws;
-    if (key != "folder" || fields.peek() != '"' || !(fields >> std::quoted(value))) {
+    if (key != expected_key || fields.peek() != '"' || !(fields >> std::quoted(value))) {
       throw std::runtime_error("Malformed data folder library at line " + std::to_string(number));
     }
     fields >> std::ws;
@@ -218,7 +220,13 @@ std::vector<std::filesystem::path> LoadBagFolders(const std::filesystem::path & 
     folders.push_back(fs::u8path(value));
   }
   if (input.bad()) throw std::runtime_error("Failed to read data folder library: " + config.string());
-  return NormalizeFolders(folders);
+  return folders;
+}
+} // namespace
+
+std::vector<std::filesystem::path> LoadBagFolders(const std::filesystem::path & config)
+{
+  return NormalizeFolders(ReadPathList(config,"folder"));
 }
 
 void SaveBagFolders(
@@ -242,4 +250,46 @@ std::string FormatBagDuration(std::optional<std::uint64_t> nanoseconds)
   result<<std::setfill('0')<<std::setw(2)<<seconds/3600<<':'
     <<std::setw(2)<<(seconds/60)%60<<':'<<std::setw(2)<<seconds%60;
   return result.str();
+}
+
+BagSource MakeBagSource(const std::filesystem::path & path)
+{
+  BagSource source;
+  source.path=AbsoluteIdentity(path);
+  source.display_name=source.path.filename().u8string();
+  ReadFilenameDate(source);
+  return source;
+}
+
+std::vector<std::filesystem::path> LoadHiddenBagSources(const std::filesystem::path & config)
+{
+  std::vector<std::filesystem::path> paths;
+  std::set<std::filesystem::path> seen;
+  for (const auto & path:ReadPathList(config,"hidden")) {
+    auto normalized=AbsoluteIdentity(path);
+    if (seen.insert(normalized).second) paths.push_back(std::move(normalized));
+  }
+  return paths;
+}
+
+void SaveHiddenBagSources(const std::filesystem::path & config,
+  const std::vector<std::filesystem::path> & paths)
+{
+  std::set<std::filesystem::path> normalized;
+  for (const auto & path:paths) normalized.insert(AbsoluteIdentity(path));
+  std::ostringstream contents;contents<<"# LiDAR Studio removed recordings v1\n";
+  for (const auto & path:normalized) contents<<"hidden "<<std::quoted(path.u8string())<<'\n';
+  if (config.has_parent_path()) std::filesystem::create_directories(config.parent_path());
+  lidar_viewer::settings::AtomicWriteText(config,contents.str());
+}
+
+std::vector<BagSource> FilterBagSources(std::vector<BagSource> sources,
+  const std::vector<std::filesystem::path> & hidden)
+{
+  std::set<std::filesystem::path> paths;
+  for (const auto & path:hidden) paths.insert(AbsoluteIdentity(path));
+  sources.erase(std::remove_if(sources.begin(),sources.end(),[&](const BagSource & source) {
+    return paths.count(source.path)!=0;
+  }),sources.end());
+  return sources;
 }

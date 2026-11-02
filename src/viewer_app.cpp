@@ -49,6 +49,7 @@
 #include <system_error>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace
@@ -418,7 +419,12 @@ struct ViewerState
   std::vector<FrameHandle> frames;
   std::vector<FileGroup> file_groups;
   std::vector<BagSource> bag_sources;
-  using BagDurations=std::vector<std::pair<fs::path,std::optional<std::uint64_t>>>;
+  struct BagSourceInfo {fs::path path;std::optional<std::uint64_t> duration;bool read_duration,available;};
+  using BagDurations=std::vector<BagSourceInfo>;
+  std::unordered_set<fs::path> unavailable_sources;
+  std::vector<fs::path> hidden_sources;
+  fs::path hidden_sources_config;
+  bool check_source_availability{false};
   std::unordered_map<fs::path,std::string> bag_durations;
   std::unique_ptr<lidar_viewer::BackgroundWorker> duration_worker;
   std::future<BagDurations> duration_future;
@@ -859,15 +865,24 @@ void UpdateSourceDurations(ViewerState & state)
   if (state.duration_future.valid()) {
     if (state.duration_future.wait_for(std::chrono::seconds(0))!=std::future_status::ready) return;
     for (auto & item:state.duration_future.get()) {
-      auto formatted=FormatBagDuration(item.second);
+      if (std::none_of(state.bag_sources.begin(),state.bag_sources.end(),[&](const BagSource & source) {
+          return source.path==item.path;
+        })) continue;
+      if (item.available) state.unavailable_sources.erase(item.path);
+      else state.unavailable_sources.insert(item.path);
+      if (!item.read_duration) continue;
+      auto formatted=FormatBagDuration(item.duration);
       if (std::getenv("LIDAR_VIEWER_CATALOG_TRACE"))
-        std::cout<<"Bag duration: "<<item.first<<" | "<<formatted<<std::endl;
-      state.bag_durations.insert_or_assign(item.first,std::move(formatted));
+        std::cout<<"Bag duration: "<<item.path<<" | "<<formatted<<std::endl;
+      state.bag_durations.insert_or_assign(item.path,std::move(formatted));
     }
   }
-  std::vector<fs::path> missing;
-  for (const auto & source:state.bag_sources)
-    if (!state.bag_durations.count(source.path)) missing.push_back(source.path);
+  std::vector<std::pair<fs::path,bool>> missing;
+  for (const auto & source:state.bag_sources) {
+    const bool read_duration=!state.bag_durations.count(source.path);
+    if (read_duration || state.check_source_availability) missing.emplace_back(source.path,read_duration);
+  }
+  state.check_source_availability=false;
   if (missing.empty()) return;
   if (!state.duration_worker) {
     state.duration_worker=std::make_unique<lidar_viewer::BackgroundWorker>();
@@ -876,9 +891,12 @@ void UpdateSourceDurations(ViewerState & state)
   state.duration_future=state.duration_worker->Submit([paths=std::move(missing),cancel=state.duration_cancel] {
     ViewerState::BagDurations durations;
     durations.reserve(paths.size());
-    for (const auto & path:paths) {
+    for (const auto & item:paths) {
       if (cancel->load()) break;
-      durations.emplace_back(path,ReadBagDurationNs(path));
+      std::error_code error;
+      const bool available=fs::exists(item.first,error) && !error;
+      durations.push_back({item.first,item.second && available ? ReadBagDurationNs(item.first) : std::nullopt,
+        item.second,available});
     }
     return durations;
   });
@@ -1576,6 +1594,50 @@ void StartBagPicker(ViewerState & state)
   }
 }
 
+void UnhideBagSource(ViewerState & state,const fs::path & path)
+{
+  auto hidden=state.hidden_sources;
+  hidden.erase(std::remove(hidden.begin(),hidden.end(),path),hidden.end());
+  if (hidden==state.hidden_sources) return;
+  SaveHiddenBagSources(state.hidden_sources_config,hidden);
+  state.hidden_sources=std::move(hidden);
+}
+
+void RemoveBagSource(ViewerState & state,const fs::path & path)
+{
+  if (state.loading_bag_source) return;
+  const auto found=std::find_if(state.bag_sources.begin(),state.bag_sources.end(),[&](const BagSource & source) {return source.path==path;});
+  if (found==state.bag_sources.end()) return;
+  const auto index=static_cast<std::size_t>(found-state.bag_sources.begin());
+  auto hidden=state.hidden_sources;hidden.push_back(path);
+  SaveHiddenBagSources(state.hidden_sources_config,hidden);
+  state.hidden_sources=std::move(hidden);
+  state.bag_sources.erase(state.bag_sources.begin()+static_cast<std::ptrdiff_t>(index));
+  if (state.current_bag_source) {
+    if (*state.current_bag_source==index) state.current_bag_source.reset();
+    else if (*state.current_bag_source>index) --*state.current_bag_source;
+  }
+  state.bag_durations.erase(path);state.unavailable_sources.erase(path);
+  SetTransientStatus(state,"Removed from list. Files are kept.");
+  if (std::getenv("LIDAR_VIEWER_CATALOG_TRACE")) std::cout<<"Source removed from list: "<<path<<std::endl;
+}
+
+void RestoreBagSources(ViewerState & state)
+{
+  std::vector<BagSource> sources;
+  for (const auto & path:state.hidden_sources) sources.push_back(MakeBagSource(path));
+  auto merged=MergeBagSources(state.bag_sources,sources);
+  std::optional<fs::path> current;
+  if (state.current_bag_source) current=state.bag_sources[*state.current_bag_source].path;
+  else if (!state.frames.empty() && state.frames.front().format==InputFormat::Ros2Bag) current=state.frames.front().path;
+  SaveHiddenBagSources(state.hidden_sources_config,{});
+  state.hidden_sources.clear();state.bag_sources=std::move(merged);state.current_bag_source.reset();
+  for (std::size_t i=0;i<state.bag_sources.size();++i)
+    if (current && state.bag_sources[i].path==*current) state.current_bag_source=i;
+  state.check_source_availability=true;
+  SetTransientStatus(state,"Removed recordings restored to the list.");
+}
+
 void OpenInputPath(ViewerState & state, const fs::path & input)
 {
   if (state.live.Active() || state.loading_bag_source || state.folder_scan_future.valid())
@@ -1588,6 +1650,7 @@ void OpenInputPath(ViewerState & state, const fs::path & input)
   if (sources.size() != 1)
     throw std::runtime_error("Select metadata.yaml, .db3, .mcap or a .bin point cloud");
   const auto selected = sources.front().path;
+  UnhideBagSource(state,selected);
   std::optional<fs::path> current;
   if (state.current_bag_source) current = state.bag_sources[*state.current_bag_source].path;
   auto merged = MergeBagSources(state.bag_sources, sources);
@@ -2719,8 +2782,10 @@ void BuildSourceSelector(ViewerState & state, float width)
   const float popup_width = std::min(720.f * state.ui_layout.scale, ImGui::GetIO().DisplaySize.x - 32.f);
   ImGui::SetNextWindowSizeConstraints({popup_width, 0}, {popup_width, 600.f * state.ui_layout.scale});
   ImGui::BeginDisabled(state.loading_bag_source.has_value() || state.folder_scan_future.valid() ||
-    state.bag_picker.Active() || state.live.Active() || (!group && state.bag_sources.empty()));
+    state.bag_picker.Active() || state.live.Active() || (!group && state.bag_sources.empty() && state.hidden_sources.empty()));
+  std::optional<fs::path> remove_source;
   if (ImGui::BeginCombo("##Source", preview.c_str(), ImGuiComboFlags_HeightLarge)) {
+    if (ImGui::IsWindowAppearing()) state.check_source_availability=true;
     if (!state.bag_sources.empty()) {
       ImGui::TextUnformatted("Data sources");
       ImGui::TextDisabled("%zu sources  |  Dates from recording names", state.bag_sources.size());
@@ -2744,10 +2809,11 @@ void BuildSourceSelector(ViewerState & state, float width)
       auto lower = [](unsigned char c) { return static_cast<char>(std::tolower(c)); };
       std::transform(needle.begin(), needle.end(), needle.begin(), lower);
       std::size_t shown = 0;
-      if (ImGui::BeginTable("##BagRecordings",3,ImGuiTableFlags_SizingStretchProp)) {
+      if (ImGui::BeginTable("##BagRecordings",4,ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableSetupColumn("Recorded",ImGuiTableColumnFlags_WidthFixed,175.f*state.ui_layout.scale);
         ImGui::TableSetupColumn("Duration",ImGuiTableColumnFlags_WidthFixed,85.f*state.ui_layout.scale);
         ImGui::TableSetupColumn("Recording",ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("##Actions",ImGuiTableColumnFlags_WidthFixed,24.f*state.ui_layout.scale);
         ImGui::TableHeadersRow();
         for (std::size_t i = 0; i < state.bag_sources.size(); ++i) {
           const auto & source = state.bag_sources[i];
@@ -2758,14 +2824,41 @@ void BuildSourceSelector(ViewerState & state, float width)
           if (!needle.empty() && searchable.find(needle) == std::string::npos) continue;
           ++shown;
           const bool selected = state.current_bag_source && *state.current_bag_source == i;
-          ImGui::PushID(static_cast<int>(i));
-          ImGui::TableNextRow();ImGui::TableSetColumnIndex(0);
+          const bool unavailable=state.unavailable_sources.count(source.path)!=0;
+          ImGui::PushID(source.path.u8string().c_str());
+          ImGui::TableNextRow();ImGui::TableSetColumnIndex(3);
+          const float action_x=ImGui::GetCursorScreenPos().x;
+          ImGui::TableSetColumnIndex(0);
+          const float row_width=action_x-ImGui::GetCursorScreenPos().x-ImGui::GetStyle().CellPadding.x;
           const auto recorded=date+(source.recording_time.empty() ? "" : "  "+source.recording_time);
-          if (ImGui::Selectable(recorded.c_str(),selected,ImGuiSelectableFlags_SpanAllColumns)) OpenBagSource(state,i);
+          if (unavailable) ImGui::PushStyleColor(ImGuiCol_Text,ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+          ImGui::BeginDisabled(unavailable);
+          if (ImGui::Selectable(recorded.c_str(),selected,ImGuiSelectableFlags_SpanAllColumns,{row_width,0})) OpenBagSource(state,i);
+          ImGui::EndDisabled();
           Tip(source.path.string().c_str());
           ImGui::TableSetColumnIndex(1);ImGui::TextUnformatted(SourceDuration(state,source).c_str());
           Tip("Whole recording duration from bag metadata. --:--:-- means timing is unavailable.");
-          ImGui::TableSetColumnIndex(2);ImGui::TextUnformatted(source.display_name.c_str());
+          ImGui::TableSetColumnIndex(2);
+          ImGui::TextUnformatted((unavailable ? "[Unavailable] "+source.display_name : source.display_name).c_str());
+          Tip(source.path.string().c_str());
+          if (unavailable) ImGui::PopStyleColor();
+          ImGui::TableSetColumnIndex(3);
+          const float height=ImGui::GetTextLineHeight();const float icon=std::min(height,16.f*state.ui_layout.scale);
+          ImGui::PushStyleColor(ImGuiCol_Button,{0,0,0,0});
+          const bool removed=ImGui::Button("##Remove",{22.f*state.ui_layout.scale,height});
+          ImGui::PopStyleColor();
+          const auto origin=ImGui::GetItemRectMin();
+          const bool hovered=ImGui::IsItemHovered();
+          if (hovered) ImGui::GetWindowDrawList()->AddRectFilled(origin,ImGui::GetItemRectMax(),IM_COL32(100,40,43,180),3);
+          lidar_viewer::DrawUiIcon(ImGui::GetWindowDrawList(),lidar_viewer::UiIcon::Trash,
+            {origin.x+3.f*state.ui_layout.scale,origin.y+(height-icon)*.5f},icon,
+            hovered ? IM_COL32(255,150,140,255) : ImGui::GetColorU32(ImGuiCol_TextDisabled));
+          Tip("Remove from list. Original files are kept. Restore removed to undo.");
+          if (removed) remove_source=source.path;
+          if (std::getenv("LIDAR_VIEWER_CATALOG_TRACE") && ImGui::GetFrameCount()%8==0)
+            std::cout<<"Source row: "<<source.path<<" | select "<<action_x-row_width+8<<' '<<origin.y+height*.5f
+              <<" | remove "<<origin.x+11.f*state.ui_layout.scale<<' '<<origin.y+height*.5f
+              <<" | available "<<!unavailable<<std::endl;
           ImGui::PopID();
         }
         ImGui::EndTable();
@@ -2786,10 +2879,25 @@ void BuildSourceSelector(ViewerState & state, float width)
       }
     }
     ImGui::Separator();
+    if (!state.hidden_sources.empty()) {
+      if (ImGui::SmallButton(("Restore removed ("+std::to_string(state.hidden_sources.size())+")").c_str())) {
+        try {RestoreBagSources(state);state.ui_error.clear();}
+        catch (const std::exception & error) {state.ui_error=error.what();}
+      }
+      if (std::getenv("LIDAR_VIEWER_CATALOG_TRACE") && ImGui::GetFrameCount()%8==0) {
+        const auto a=ImGui::GetItemRectMin(),b=ImGui::GetItemRectMax();
+        std::cout<<"Restore removed UI: "<<(a.x+b.x)*.5f<<' '<<(a.y+b.y)*.5f<<std::endl;
+      }
+      Tip("Restore recordings removed from this list. You can also open a removed recording explicitly with Open file.");
+    }
     ImGui::TextDisabled("Open file: select a recording. Add folder: register a collection.");
     ImGui::EndCombo();
   }
   ImGui::EndDisabled();
+  if (remove_source) {
+    try {RemoveBagSource(state,*remove_source);state.ui_error.clear();}
+    catch (const std::exception & error) {state.ui_error=std::string("Could not remove recording: ")+error.what();}
+  }
   if (group) Tip(group->path.string().c_str());
 }
 
@@ -2814,7 +2922,7 @@ void BuildFolderPicker(ViewerState & state)
       if (found.sources.empty()) throw std::runtime_error("No ROS 2 bags found in this folder or its subfolders");
       auto folders = state.data_folders;
       if (std::find(folders.begin(), folders.end(), found.folder) == folders.end()) folders.push_back(found.folder);
-      auto merged = MergeBagSources(state.bag_sources, found.sources);
+      auto merged = FilterBagSources(MergeBagSources(state.bag_sources, found.sources),state.hidden_sources);
       std::optional<fs::path> current;
       if (state.current_bag_source) current = state.bag_sources[*state.current_bag_source].path;
       fs::create_directories(state.data_folders_config.parent_path());
@@ -4096,9 +4204,11 @@ int RunViewer(int argc, char ** argv)
     state.bag_sensor_height_override = sensor_height;
     try {
       state.data_folders_config = DataFoldersConfigPath();
+      state.hidden_sources_config=lidar_viewer::UserConfigurationDirectory()/"hidden_recordings.cfg";
+      state.hidden_sources=LoadHiddenBagSources(state.hidden_sources_config);
       state.data_folders = LoadBagFolders(state.data_folders_config);
       for (const auto & folder : state.data_folders)
-        state.bag_sources = MergeBagSources(std::move(state.bag_sources), DiscoverBagSources(folder));
+        state.bag_sources = FilterBagSources(MergeBagSources(std::move(state.bag_sources), DiscoverBagSources(folder)),state.hidden_sources);
     } catch (const std::exception & error) {
       state.ui_error = std::string("Saved data folders could not be loaded: ") + error.what();
     }
@@ -4107,6 +4217,7 @@ int RunViewer(int argc, char ** argv)
       const auto supplied = DiscoverBagSources(input_path);
       if (!supplied.empty()) {
         input_path = supplied.front().path;
+        UnhideBagSource(state,input_path);
         state.bag_sources = MergeBagSources(std::move(state.bag_sources), supplied);
       }
     } else if (inspect && !state.bag_sources.empty()) {

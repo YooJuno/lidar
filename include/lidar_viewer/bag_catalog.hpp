@@ -36,3 +36,11 @@ void SaveBagFolders(
 // Whole-recording duration, independent of the selected point-cloud topic.
 // Unknown metadata is displayed distinctly from a valid zero-length recording.
 std::string FormatBagDuration(std::optional<std::uint64_t> nanoseconds);
+
+// Removed recordings are excluded from discovery, never deleted from disk.
+BagSource MakeBagSource(const std::filesystem::path & path);
+std::vector<std::filesystem::path> LoadHiddenBagSources(const std::filesystem::path & config);
+void SaveHiddenBagSources(const std::filesystem::path & config,
+  const std::vector<std::filesystem::path> & paths);
+std::vector<BagSource> FilterBagSources(std::vector<BagSource> sources,
+  const std::vector<std::filesystem::path> & hidden);

@@ -96,6 +96,34 @@ void TestLibrary(const fs::path & root)
       "Failed library save leaked a temporary file");
   }
 }
+void TestHiddenSources(const fs::path & root)
+{
+  const auto config=root/"config"/"hidden_recordings.cfg";
+  const auto folder=Bag(root/"hidden fixtures","sensors_20261102_100000_a");
+  const auto loose=root/"hidden fixtures"/"loose with spaces.mcap";File(loose);
+  const auto absent=root/"gone"/"sensors_20261101_010203_removed";
+  Check(LoadHiddenBagSources(config).empty(),"Missing exclusion config is not empty");
+  SaveHiddenBagSources(config,{folder,loose,absent,folder/"."});
+  const auto hidden=LoadHiddenBagSources(config);
+  Check(hidden.size()==3,"Hidden sources did not deduplicate or lost a missing path");
+  const auto visible=FilterBagSources(DiscoverBagSources(root/"hidden fixtures"),hidden);
+  Check(visible.empty(),"Removed recordings came back during a folder rescan");
+  Check(fs::is_regular_file(folder/"metadata.yaml") && fs::is_regular_file(loose),"Removing from the list modified original files");
+  const auto restored=MakeBagSource(absent);
+  Check(restored.path==fs::weakly_canonical(absent) && restored.recording_date=="2026-11-01" &&
+    restored.recording_time=="01:02:03","Restoring an unavailable source lost its identity/date");
+  const auto previous=Read(config);
+  Throws([&] {SaveHiddenBagSources(config,{fs::path("bad\nrecording")});},"Invalid removed path accepted");
+  Check(Read(config)==previous,"Invalid exclusion save clobbered the previous manifest");
+  for (const auto * invalid : {"hidden unquoted\n","hidden \"relative\"\n","folder \"/tmp/path\"\n"}) {
+    std::ofstream(config)<<invalid;
+    Throws([&] {LoadHiddenBagSources(config);},"Malformed removed-source manifest accepted");
+  }
+  SaveHiddenBagSources(config,{});
+  Check(LoadHiddenBagSources(config).empty() && FilterBagSources(DiscoverBagSources(root/"hidden fixtures"),{}).size()==2,
+    "Restoring removed recordings did not clear the persisted exclusion");
+}
+
 }  // namespace
 
 int main()
@@ -175,6 +203,7 @@ int main()
     Check(merged.size() == all.size() && merged.front().path == fs::canonical(latest) &&
       merged.back().recording_date.empty(), "Merged catalogs were duplicated or sorted incorrectly");
     TestLibrary(root);
+    TestHiddenSources(root);
     fs::remove_all(root);
     std::cout << "Bag catalog smoke test passed\n";
     return 0;
