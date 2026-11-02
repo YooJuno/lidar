@@ -46,6 +46,8 @@ std::string SerializeRoiSettings(const RoiSettings & settings);
 RoiSettings ParseRoiSettings(const std::string & text, const RoiSettings & fallback = {});
 // Ignore names, outlines and include regions when checking analysis invalidation.
 bool SameRoiExclusions(const RoiSettings & a, const RoiSettings & b);
+// Include regions preview immediately; exclusions use the last applied snapshot.
+RoiSettings ComposeRoiFilters(const RoiSettings & preview, const RoiSettings & applied_exclusions);
 
 enum class RoiFilterStage {Display, Preprocessing};
 

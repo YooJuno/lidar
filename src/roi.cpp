@@ -27,9 +27,9 @@ bool ParseBool(const std::string & value)
   if (result != 0 && result != 1) throw std::runtime_error("expected 0 or 1");
   return result != 0;
 }
-void ValidateSettings(const RoiSettings & value)
+void ValidateSettings(const RoiSettings & value, std::size_t limit=kMaxRoiBoxes)
 {
-  if (value.boxes.size() > kMaxRoiBoxes) throw std::runtime_error("Too many ROI boxes (maximum 128)");
+  if (value.boxes.size() > limit) throw std::runtime_error("Too many ROI boxes (maximum "+std::to_string(limit)+")");
   for (const auto & box : value.boxes) ValidateRoiBox(box);
 }
 }  // namespace
@@ -81,7 +81,9 @@ std::array<Vec3, 8> RoiCorners(const RoiBox & box)
 PreparedRoi::PreparedRoi(const RoiSettings & settings, const RoiCoordinateFrame & frame, RoiFilterStage stage)
 : enabled_(settings.enabled)
 {
-  ValidateSettings(settings);
+  // A preview may temporarily combine 128 new keep regions and 128 previously
+  // applied exclusions. Persisted/editor settings still have a 128-box limit.
+  ValidateSettings(settings,2*kMaxRoiBoxes);
   if (!enabled_) return;
   for (const auto & box : settings.boxes) {
     if (box.mode == RoiBoxMode::Include) {
@@ -213,5 +215,17 @@ bool SameRoiExclusions(const RoiSettings & a, const RoiSettings & b)
     x = active(a, std::next(x)); y = active(b, std::next(y));
   }
   return x == a.boxes.end() && y == b.boxes.end();
+}
+
+RoiSettings ComposeRoiFilters(const RoiSettings & preview, const RoiSettings & applied_exclusions)
+{
+  RoiSettings result;
+  result.show_boxes=preview.show_boxes;
+  if (preview.enabled) for (const auto & box:preview.boxes)
+    if (box.mode==RoiBoxMode::Include) result.boxes.push_back(box);
+  if (applied_exclusions.enabled) for (const auto & box:applied_exclusions.boxes)
+    if (box.mode==RoiBoxMode::Exclude && box.enabled) result.boxes.push_back(box);
+  result.enabled=!result.boxes.empty();
+  return result;
 }
 }  // namespace lidar_viewer

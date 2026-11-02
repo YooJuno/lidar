@@ -19,7 +19,7 @@ import subprocess
 import tempfile
 import time
 import traceback
-from ui_gl_smoke import X11, capture, settings_inventory
+from ui_gl_smoke import X11, capture, changed_pixels, settings_inventory
 
 
 def main():
@@ -62,6 +62,8 @@ while True:
     points += [(3+x*.08,2+y*.08,.1+z*.1,.9) for x in range(-3,4) for y in range(-3,4) for z in range(10)]
     fixture=private/'cloud.bin';fixture.write_bytes(b''.join(struct.pack('<4f',*p) for p in points))
     raw_hash=hashlib.sha256(fixture.read_bytes()).hexdigest()
+    frames=private/'frames';frames.mkdir()
+    for i in range(3):shutil.copy2(fixture,frames/f'{i:04d}.bin')
     base=('profile=default\nclustering_enabled=0\ndetection_enabled=1\ndetection_model=tiny\n'
           'calibration_yaw_deg=0\ncalibration_pitch_deg=0\ncalibration_roll_deg=0\ncalibration_z_m=0\n'
           'ground_removal_enabled=1\nground_mode=fast_grid\nground_use_cuda=0\nimu_level_enabled=0\n')
@@ -69,7 +71,7 @@ while True:
     env=dict(os.environ,XDG_CONFIG_HOME=str(out/'settings'),LIDAR_VIEWER_ROI_TRACE='1',
              GSETTINGS_BACKEND='memory',NO_AT_BRIDGE='1')
     before=settings_inventory(repo);result={'status':'started','checks':{},'output':str(out)}
-    process=x11=window=None;log_path=out/'viewer.log';deadline=time.monotonic()+120
+    process=x11=window=None;log_path=out/'viewer.log';deadline=time.monotonic()+150
 
     def check(label,value):
         result['checks'][label]=bool(value)
@@ -104,11 +106,17 @@ while True:
     def save():
         chord('s')
         return (user_profile if user_profile.exists() else profile).read_text()
-    def changed(action,removed):
+    def changed(action,removed=None):
         count=len(rows());request_count=len(requests())
-        action();wait(lambda:len(rows())>count and rows()[-1][0]==removed)
+        action();wait(lambda:len(rows())>count and (removed is None or rows()[-1][0]==removed))
         wait(lambda:len(requests())>request_count)
         return rows()[-1]
+    def apply(removed=None):return changed(lambda:x11.click(window,245,219),removed)
+    def stage(action,label):
+        before_rows=len(rows());old=rows()[-1] if rows() else (0,len(points),1)
+        previous=len(requests());action();wait(lambda:len(rows())>before_rows)
+        time.sleep(.1)
+        check(label,rows()[-1]==old and len(requests())==previous)
     def drag(a,b):
         x11.move(window,*a);x11.xt.XTestFakeButtonEvent(x11.display,1,True,0);x11.x.XSync(x11.display,False)
         x11.move(window,*b);x11.xt.XTestFakeButtonEvent(x11.display,1,False,0);x11.x.XSync(x11.display,False);time.sleep(.3)
@@ -148,41 +156,64 @@ while True:
         write_profile(base+'roi_enabled=0\nroi_count=0\n')
         x11=X11();subprocess.run(['xrdb','-merge'],input='Xft.dpi: 96\n',text=True,check=True)
         with log_path.open('wb') as log:
-            process=subprocess.Popen([str(viewer),str(fixture),'--2d','--detect'],cwd=private,env=env,stdout=log,stderr=subprocess.STDOUT)
+            process=subprocess.Popen([str(viewer),str(frames),'--2d','--detect'],cwd=private,env=env,stdout=log,stderr=subprocess.STDOUT)
             wait(lambda:x11.viewer_window() is not None);window=x11.viewer_window();x11.focus(window);x11.resize(window,1600,960)
             wait(lambda:len(requests())==1)
             x11.key(window,'r');x11.key(window,'Escape')
-            initial=changed(lambda:x11.click(window,270,328),405)
-            check('exclude_button_removes_mount_before_both_analyses',initial[1]==len(points)-405 and initial[2]>=2)
+            saved_before=save()
+            stage(lambda:x11.click(window,270,328),'new_exclusion_previews_without_reanalysis')
+            text=save();check('unapplied_exclusions_cannot_be_saved',text==saved_before)
+            x11.move(window,1400,700);capture(x11,window,out/'00_unapplied_preview.png')
+            stepped=changed(lambda:x11.key(window,'Right'),0)
+            check('frame_advance_preserves_last_applied_exclusions',stepped[1]==len(points))
+            paused=capture(x11,window,out/'paused.png')
+            initial=apply(405)
+            check('apply_removes_mount_before_both_analyses',initial[1]==len(points)-405 and initial[2]>stepped[2])
+            x11.move(window,1400,700)
+            applied=capture(x11,window,out/'01_sensor_exclusion.png')
+            check('apply_keeps_paused_state',changed_pixels(paused,applied,(1235,20,1320,48))==0)
             text=save();check('excluded_box_type_and_sensor_coordinates_saved','roi_exclude_box=1 "Exclude 1" 0 0 0 1 1 1 0' in text)
-            capture(x11,window,out/'01_sensor_exclusion.png')
             passes=initial[2]
-            changed(lambda:x11.click(window,46,219),0)
-            enabled=changed(lambda:x11.click(window,46,219),405)
-            check('master_toggle_rebuilds_ground_and_detector',enabled[2]>passes)
-            keep=changed(lambda:x11.click(window,270,365),0)
-            exclude=changed(lambda:x11.click(window,270,365),405)
-            check('keep_exclude_switch_rebuilds_analysis',exclude[2]>keep[2])
+            stage(lambda:x11.click(window,46,219),'master_toggle_waits_for_apply');apply(0)
+            stage(lambda:x11.click(window,46,219),'master_reenable_waits_for_apply');enabled=apply(405)
+            check('master_apply_rebuilds_ground_and_detector',enabled[2]>passes)
+            stage(lambda:x11.click(window,270,365),'keep_exclude_switch_waits_for_apply');keep=apply(0)
+            stage(lambda:x11.click(window,270,365),'exclude_keep_switch_waits_for_apply');exclude=apply(405)
+            check('type_apply_rebuilds_analysis',exclude[2]>keep[2])
             previous=len(requests());passes=exclude[2]
             x11.click(window,295,219);time.sleep(.25)
             check('outline_toggle_reuses_analysis',len(requests())==previous and rows()[-1][2]==passes)
             x11.click(window,295,219)
-            previous=len(rows());drag((968,431),(1040,431));wait(lambda:len(rows())>previous)
-            moved=rows()[-1];text=save()
-            check('canvas_moves_exclusion_and_resegments',moved[2]>passes and 'roi_exclude_box=1' in text and moved[0]!=405)
-            changed(lambda:chord('z'),405)
-            previous=len(rows());x11.key(window,'r');drag((700,250),(850,350));wait(lambda:len(rows())>previous)
+            stage(lambda:drag((968,431),(1040,431)),'canvas_move_previews_without_reanalysis')
+            moved=apply();text=save()
+            check('apply_canvas_move_resegments',moved[2]>passes and 'roi_exclude_box=1' in text and moved[0]!=405)
+            stage(lambda:chord('z'),'undo_move_waits_for_apply');apply(405)
+            stage(lambda:chord('y'),'redo_move_waits_for_apply');apply(moved[0])
+            stage(lambda:chord('z'),'second_undo_waits_for_apply');apply(405)
+            def draw():x11.key(window,'r');drag((700,250),(850,350))
+            stage(draw,'draw_exclusion_previews_without_reanalysis');apply()
             text=save();check('draw_inherits_exclusion_type',text.count('roi_exclude_box=')==2 and 'roi_count=2' in text)
-            changed(lambda:chord('z'),405)
+            stage(lambda:chord('z'),'undo_draw_waits_for_apply');apply(405)
             previous=len(requests());passes=rows()[-1][2]
             x11.click(window,65,328);time.sleep(.35)
             check('adding_keep_region_reuses_ground_and_model',len(requests())==previous and rows()[-1][2]==passes)
             x11.click(window,201,328);time.sleep(.25)
-            changed(lambda:x11.click(window,201,328),0)
+            stage(lambda:x11.click(window,201,328),'delete_exclusion_waits_for_apply');apply(0)
             text=save();check('deleting_last_exclusion_restores_full_cloud','roi_count=0' in text)
-            changed(lambda:chord('z'),405);save()
+            stage(lambda:chord('z'),'undo_delete_waits_for_apply');apply(405);save()
+            # Applying while playing preserves transport state. New frames
+            # continue using the applied mask while the next edit is pending.
+            x11.key(window,'space');wait(lambda:len(requests())>=previous+4)
+            playing=capture(x11,window,out/'playing.png')
+            x11.click(window,46,219);time.sleep(.4)
+            check('playing_frames_keep_applied_mask_during_edit',all(row[0]==405 for row in rows()[-3:]))
+            apply(0);time.sleep(.3);after_apply=capture(x11,window,out/'playing_applied.png')
+            check('apply_keeps_playing_state',changed_pixels(playing,after_apply,(1235,20,1320,48))==0 and
+                  changed_pixels(paused,after_apply,(1235,20,1320,48))>0)
+            x11.key(window,'space');time.sleep(.3)
+            stage(lambda:x11.click(window,46,219),'paused_reenable_waits_for_apply');apply(405);save()
             check('editing_exclusions_reuses_detector_process',len((private/'python/starts.txt').read_text().splitlines())==1)
-            capture(x11,window,out/'02_restored_exclusion.png')
+            x11.move(window,1400,700);capture(x11,window,out/'02_restored_exclusion.png')
         process.terminate();process.wait(timeout=5);process=None
         _,counts=inspect();check('exclusion_survives_restart',counts==(405,len(points)-405))
         check('raw_file_is_unchanged',hashlib.sha256(fixture.read_bytes()).hexdigest()==raw_hash)

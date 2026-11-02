@@ -50,6 +50,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace
@@ -510,6 +511,8 @@ struct ViewerState
   lidar_viewer::RoiSettings roi;
   lidar_viewer::RoiSettings saved_roi;
   lidar_viewer::RoiSettings analysis_roi;
+  lidar_viewer::RoiSettings applied_exclusions;
+  bool apply_exclusions_requested{false}, applying_exclusions{false};
   std::size_t exclusion_removed_count{0};
   lidar_viewer::RoiHistory roi_history;
   enum class RoiTool {Navigate, Draw, Move};
@@ -568,6 +571,8 @@ struct ViewerState
   std::uint64_t geometry_ground_config{0}, geometry_input_config{0};
   std::uint64_t submitted_ground_config{0}, submitted_input_config{0};
 };
+
+void SetTransientStatus(ViewerState & state, const std::string & message);
 
 struct VisiblePointRange {std::size_t first{0}, count{0};};
 
@@ -803,7 +808,7 @@ void FilterDetections(ViewerState & state)
 {
   state.detections.clear();
   if (state.algorithm_config.detection.enabled && state.detector_completed==state.detector_revision) {
-    const lidar_viewer::PreparedRoi roi(state.roi,state.roi_frame);
+    const lidar_viewer::PreparedRoi roi(lidar_viewer::ComposeRoiFilters(state.roi,state.applied_exclusions),state.roi_frame);
     for (const auto & detection:state.full_detections)
       if (state.algorithm_config.detection.Accepts(detection) &&
           roi.Contains(detection.oriented_bounds.center)) state.detections.push_back(detection);
@@ -1062,7 +1067,7 @@ void ApplyRoiResult(ViewerState & state, const FrameData & processed, std::size_
   const lidar_viewer::RoiCoordinateFrame & coordinates)
 {
   const auto started=std::chrono::steady_clock::now();
-  const lidar_viewer::PreparedRoi roi(state.roi, coordinates);
+  const lidar_viewer::PreparedRoi roi(lidar_viewer::ComposeRoiFilters(state.roi,state.applied_exclusions), coordinates);
   FrameData frame;
   frame.frame_id=processed.frame_id; frame.imu=processed.imu; frame.ground_z=processed.ground_z;
   if (!roi.RejectsAll()) {
@@ -1119,7 +1124,7 @@ void RefreshDetectorInput(ViewerState & state)
   lidar_viewer::RoiCoordinateFrame coordinates;
   coordinates.rotation=transform.rotation;
   coordinates.translation=coordinates.Rotate({0,0,-state.global_ground_offset})+Vec3{0,0,transform.z_offset};
-  const lidar_viewer::PreparedRoi exclusions(state.roi,coordinates,lidar_viewer::RoiFilterStage::Preprocessing);
+  const lidar_viewer::PreparedRoi exclusions(state.applied_exclusions,coordinates,lidar_viewer::RoiFilterStage::Preprocessing);
   PrepareDetectorInput(state,aligned,state.base_frame,resolved.effective.yaw_deg*kPi/180.f,exclusions,state.global_ground_offset);
 }
 
@@ -1139,7 +1144,7 @@ void ApplyCalibration(ViewerState & state, const FrameData * source = nullptr,
   coordinates.rotation=transform.rotation;
   coordinates.translation=coordinates.Rotate({0,0,-source_ground_offset.value_or(state.global_ground_offset)})+
     Vec3{0,0,transform.z_offset};
-  const lidar_viewer::PreparedRoi exclusions(state.roi,coordinates,lidar_viewer::RoiFilterStage::Preprocessing);
+  const lidar_viewer::PreparedRoi exclusions(state.applied_exclusions,coordinates,lidar_viewer::RoiFilterStage::Preprocessing);
   for (auto & point : frame.points) {
     const auto rotated=ApplyCalibrationTransform({point.x,point.y,point.z},transform);
     point.x=rotated.x; point.y=rotated.y; point.z=rotated.z;
@@ -1184,12 +1189,16 @@ void CancelGeometry(ViewerState & state)
 {
   if (state.geometry_worker) state.geometry_worker->CancelPending();
   state.geometry_future={};state.geometry_index.reset();state.geometry_live_sequence.reset();
+  state.applying_exclusions=false;
 }
 
 void QueueGeometry(ViewerState & state, FrameData base, std::optional<std::size_t> index={},
   std::optional<std::uint64_t> sequence={}, bool update_detector=true, bool roi_only=false)
 {
   if (state.loading_bag_source) return;
+  if (roi_only && !lidar_viewer::SameRoiExclusions(state.analysis_roi,state.applied_exclusions)) {
+    roi_only=false;update_detector=true;
+  }
   update_detector=update_detector || (state.algorithm_config.detection.enabled && !state.detector_input);
   // The worker owns a snapshot; it never reads mutable UI state or uses OpenGL.
   auto work=std::make_unique<ViewerState>();
@@ -1198,6 +1207,7 @@ void QueueGeometry(ViewerState & state, FrameData base, std::optional<std::size_
   work->imu_mount=state.imu_mount;work->algorithm_config=state.algorithm_config;
   work->ground_removal_enabled=state.ground_removal_enabled;work->ground_sequence=state.ground_sequence;
   work->roi=state.roi;work->roi_frame=state.roi_frame;
+  work->analysis_roi=state.analysis_roi;work->applied_exclusions=state.analysis_roi;
   if (roi_only) {
     work->processed_frame=state.processed_frame;work->processed_obstacles=state.processed_obstacles;
     work->imu_level_result=state.imu_level_result;work->processing_ms=state.processing_ms;
@@ -1356,6 +1366,7 @@ bool CompleteGeometry(ViewerState & state)
       return false;
     }
     state.base_frame=std::move(work->base_frame);state.frame=std::move(work->frame);
+    state.applied_exclusions=std::move(work->applied_exclusions);
     state.processed_frame=std::move(work->processed_frame);state.processed_obstacles=work->processed_obstacles;
     state.ground_removed_count=work->ground_removed_count;state.clusters=std::move(work->clusters);
     if (!state.geometry_roi_only) state.exclusion_removed_count=work->exclusion_removed_count;
@@ -1366,6 +1377,9 @@ bool CompleteGeometry(ViewerState & state)
       ++state.detector_revision;state.full_detections.clear();state.detector_error.clear();
     }
     RebuildRoiGeometry(state);FilterDetections(state);state.frame_dirty=true;
+    if (state.applying_exclusions) {
+      state.applying_exclusions=false;SetTransientStatus(state,"Exclusions applied to ground and object analysis");
+    }
     if (state.geometry_roi_only)
       std::cout<<"ROI applied: "<<state.roi.boxes.size()<<" boxes | "<<state.frame.points.size()<<" points | "
         <<state.roi_ms<<" ms | ground passes "<<state.ground_passes<<std::endl;
@@ -1386,6 +1400,9 @@ bool CompleteGeometry(ViewerState & state)
     state.geometry_index.reset();state.geometry_live_sequence.reset();
     return true;
   } catch (const std::exception & error) {
+    if (state.applying_exclusions) {
+      state.analysis_roi=state.applied_exclusions;state.applying_exclusions=false;
+    }
     state.ui_error=std::string("Frame processing failed: ")+error.what();state.is_playing=false;
     if (state.live_mode) state.live_paused=true;
     state.geometry_index.reset();state.geometry_live_sequence.reset();return false;
@@ -1565,6 +1582,7 @@ void OpenBagSource(ViewerState & state, std::size_t index)
       staged.imu_level_enabled = state.imu_level_enabled;
       staged.imu_mount = state.imu_mount;
       staged.roi = state.roi;
+      staged.analysis_roi=state.analysis_roi;staged.applied_exclusions=state.analysis_roi;
       staged.selected_roi = state.selected_roi;
       staged.object_method=state.object_method;
     }
@@ -1759,7 +1777,8 @@ void CompleteBagLoad(ViewerState & state)
     state.frame_dirty = true;
     state.imu_level_result = std::move(staged.imu_level_result);
     state.roi = std::move(staged.roi);
-    state.analysis_roi=state.roi;state.exclusion_removed_count=staged.exclusion_removed_count;
+    state.analysis_roi=std::move(staged.analysis_roi);state.applied_exclusions=std::move(staged.applied_exclusions);
+    state.exclusion_removed_count=staged.exclusion_removed_count;
     state.selected_roi = staged.selected_roi;
     state.roi_frame = staged.roi_frame;
     state.roi_renderer.vertices = std::move(staged.roi_renderer.vertices);
@@ -1984,6 +2003,8 @@ fs::path AlgorithmsConfigPath()
 
 void SaveSettings(ViewerState & state)
 {
+  if (state.applying_exclusions || !lidar_viewer::SameRoiExclusions(state.roi,state.applied_exclusions))
+    throw std::runtime_error("Apply exclusion changes before saving the profile");
   for (const float value : {state.camera.point_size, state.camera.distance,
       state.calibration.yaw_deg, state.calibration.pitch_deg, state.calibration.roll_deg,
       state.calibration.z_m, state.grid_settings.spacing, state.grid_settings.thickness,
@@ -2332,6 +2353,7 @@ void LoadSettings(ViewerState & state)
     state.object_method=state.algorithm_config.detection.model=="short_range" ? 3 : 0;
   state.saved_roi=state.roi; state.roi_history.Clear();
   state.analysis_roi=state.roi;
+  state.applied_exclusions=state.roi;
   if (state.app_settings_loaded) state.ui_scale=app_scale;
   if (state.detector_cli_override) state.algorithm_config.detection.enabled=true;
   if (state.ground_view!=ViewerState::GroundView::All) state.ground_removal_enabled=true;
@@ -2783,7 +2805,7 @@ void Metric(const char * label, const std::string & value)
 
 void Tip(const char * value)
 {
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort|ImGuiHoveredFlags_AllowWhenDisabled)) {
     ImGui::BeginTooltip();
     ImGui::PushTextWrapPos(std::min(22*ImGui::GetFontSize(),ImGui::GetIO().DisplaySize.x-32));
     ImGui::TextUnformatted(value);
@@ -3135,10 +3157,20 @@ void BuildRoiEditor(ViewerState & state)
   ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,{8*s,5*s});
   SectionTitle("Regions of interest");
   ImGui::Checkbox("Filter points",&state.roi.enabled);
-  Tip("Keep regions limit the view. Exclusion boxes remove sensor-mounted structures before ground segmentation and object detection.");
+  Tip("Keep regions update the view immediately. Exclusion changes take effect in ground and object analysis when you press Apply.");
+  ImGui::SameLine(ImGui::GetWindowContentRegionMax().x-108*s);
+  const bool pending_exclusions=!lidar_viewer::SameRoiExclusions(state.roi,state.applied_exclusions);
+  ImGui::BeginDisabled(!pending_exclusions || state.roi_gesture.active || state.applying_exclusions || state.loading_bag_source.has_value());
+  ImGui::PushStyleColor(ImGuiCol_Button,{.15f,.37f,.46f,1});
+  if (ImGui::Button("Apply",{70*s,30*s})) state.apply_exclusions_requested=true;
+  ImGui::PopStyleColor();
+  ImGui::EndDisabled();
+  Tip("Apply the edited exclusion boxes to the current frame and following frames. Recomputes ground and object analysis in the background; playback state is preserved. Save profile keeps the applied settings for next time.");
   ImGui::SameLine(ImGui::GetWindowContentRegionMax().x-30*s);
   if (IconButton("##Outlines",UiIcon::Eye,"Show box outlines",s,state.roi.show_boxes)) state.roi.show_boxes=!state.roi.show_boxes;
-  if (std::any_of(state.roi.boxes.begin(),state.roi.boxes.end(),[](const auto & b) {
+  if (state.applying_exclusions) ImGui::TextColored({.48f,.82f,.94f,1},"Applying exclusions...");
+  else if (pending_exclusions) ImGui::TextColored({1,.74f,.4f,1},"Exclusions edited - press Apply");
+  else if (std::any_of(state.roi.boxes.begin(),state.roi.boxes.end(),[](const auto & b) {
       return b.mode==lidar_viewer::RoiBoxMode::Exclude;
     })) {
     ImGui::TextDisabled("%s visible  |  %s excluded",CountText(VisiblePoints(state).count).c_str(),CountText(state.exclusion_removed_count).c_str());
@@ -3187,7 +3219,7 @@ void BuildRoiEditor(ViewerState & state)
   ImGui::SameLine();
   ImGui::BeginDisabled(state.roi_gesture.active || state.roi.boxes.size()>=lidar_viewer::kMaxRoiBoxes || state.loading_bag_source.has_value());
   ImGui::PushStyleColor(ImGuiCol_Text,{1,.64f,.45f,1});
-  if (IconButton("##AddExclusion",UiIcon::Box,"Exclude a sensor-mounted structure before analysis. Starts with a 1 m box at the sensor; Edit its footprint and Bottom/Top to match the mount. Draw inherits this box type.",s,false,"Exclude")) {
+  if (IconButton("##AddExclusion",UiIcon::Box,"Create an exclusion preview at the sensor (1 m box). Edit its footprint and Bottom/Top, then press Apply to exclude those points from ground and object analysis. Draw inherits this box type.",s,false,"Exclude")) {
     lidar_viewer::RoiBox box;box.mode=lidar_viewer::RoiBoxMode::Exclude;
     box.name=lidar_viewer::NextRoiName(state.roi,box.mode);box.size={1,1,1};
     state.roi.boxes.push_back(box);state.selected_roi=state.roi.boxes.size()-1;
@@ -3759,6 +3791,12 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   }
   ImGui::EndChild();
   ImGui::Separator();
+  const bool pending_exclusions=state.applying_exclusions ||
+    !lidar_viewer::SameRoiExclusions(state.roi,state.applied_exclusions);
+  if (state.save_requested && pending_exclusions) {
+    state.save_requested=false;SetTransientStatus(state,"Apply exclusion changes in ROI before saving");
+  }
+  ImGui::BeginDisabled(pending_exclusions);
   if ((ImGui::Button("Save profile", {-1, 0}) || state.save_requested) && !state.roi_gesture.active) {
     state.save_requested=false;
     try {
@@ -3769,9 +3807,11 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       state.ui_error = std::string("Profile was not saved: ") + error.what();
     }
   }
+  ImGui::EndDisabled();
+  Tip(pending_exclusions ? "Apply the exclusion changes in ROI before saving this profile." : "Save the current settings for the next session. Ctrl+S.");
   const bool unsaved=!lidar_viewer::SameRoi(state.roi,state.saved_roi);
   ImGui::TextColored(unsaved ? ImVec4(1,.74f,.4f,1) : ImVec4(.48f,.65f,.65f,1),
-    "%s",unsaved ? "ROI changes not saved  /  Ctrl+S" : "Ctrl+S saves this profile");
+    "%s",pending_exclusions ? "Apply exclusions before saving" : unsaved ? "ROI changes not saved  /  Ctrl+S" : "Ctrl+S saves this profile");
   ImGui::End();
 
   BeginPanel("Transport", layout.transport, false);
@@ -3928,12 +3968,15 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       !ImGui::IsPopupOpen(nullptr,ImGuiPopupFlags_AnyPopup) && view.w>300*s && view.h>180*s) {
     const float width=std::min(440*s,view.w-32*s);
     BeginPanel("Empty region",{view.x+(view.w-width)*.5f,view.y+(view.h-156*s)*.5f,width,156*s},false);
-    const bool roi_empty=state.roi.enabled && state.frame.points.empty();
+    const bool exclusions_empty=state.exclusion_removed_count==state.base_frame.points.size();
+    const bool roi_empty=(state.roi.enabled || exclusions_empty) && state.frame.points.empty();
     ImGui::TextUnformatted(roi_empty ? "No points after region filtering" :
       state.ground_view==ViewerState::GroundView::Ground ? "No ground points to show" : "No obstacle points to show");
-    ImGui::TextWrapped("%s",roi_empty ? "Adjust the boxes or inspect the full cloud." : "Check ground settings or show both classes.");
-    if (ImGui::Button(roi_empty ? "Show full cloud" : "Show all points")) {
-      if (roi_empty) {state.roi_history.Record(state.roi);state.roi.enabled=false;state.roi_pending=true;state.ground_view=ViewerState::GroundView::All;}
+    ImGui::TextWrapped("%s",exclusions_empty ? "Adjust the exclusion boxes and press Apply in ROI." :
+      roi_empty ? "Adjust the boxes or inspect the full cloud." : "Check ground settings or show both classes.");
+    if (ImGui::Button(exclusions_empty ? "Edit exclusions" : roi_empty ? "Show full cloud" : "Show all points")) {
+      if (exclusions_empty) state.roi_tab_requested=true;
+      else if (roi_empty) {state.roi_history.Record(state.roi);state.roi.enabled=false;state.roi_pending=true;state.ground_view=ViewerState::GroundView::All;}
       else state.ground_view=ViewerState::GroundView::All;
     }
     ImGui::End();
@@ -3963,7 +4006,8 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   }
   if (state.roi_gesture.active && !state.roi.boxes.empty()) {
     const auto & box=state.roi.boxes[state.selected_roi];
-    char label[160];std::snprintf(label,sizeof(label),"%.2f x %.2f x %.2f m  |  release to apply",box.size.x,box.size.y,box.size.z);
+    char label[160];std::snprintf(label,sizeof(label),"%.2f x %.2f x %.2f m  |  %s",box.size.x,box.size.y,box.size.z,
+      box.mode==lidar_viewer::RoiBoxMode::Exclude ? "release to finish, then Apply" : "release to apply");
     draw->AddText({view.x+14*s,view.y+view.h-52*s},IM_COL32(255,220,115,255),label);
   }
   {
@@ -3993,10 +4037,10 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     bounded(state.ui_scale, .75f, 1.5f, 1);
   }
   if (state.loading_bag_source) return;
-  const bool exclusions_changed=state.roi_pending && !state.roi_gesture.active &&
-    !lidar_viewer::SameRoiExclusions(state.roi,state.analysis_roi);
+  const bool exclusions_changed=std::exchange(state.apply_exclusions_requested,false);
   if (exclusions_changed) {
-    state.analysis_roi=state.roi;reprocess=true;refresh_detector=true;
+    state.analysis_roi=state.roi;state.applying_exclusions=true;reprocess=true;refresh_detector=true;
+    SetTransientStatus(state,"Applying exclusions...");
   }
   const bool apply_to_next_frame=(state.is_playing && state.frames.size()>1) ||
     (state.live_mode && !state.live_paused && state.live_stats.connected && state.live_stats.cloud_age_ms<200);
@@ -4007,11 +4051,24 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   if (reprocess && (!apply_to_next_frame || exclusions_changed)) {
     try {
       if (state.async_geometry) QueueGeometry(state,state.base_frame,{},{},alignment_changed || refresh_detector);
-      else ApplyCalibration(state,nullptr,std::nullopt,alignment_changed || refresh_detector);
+      else {
+        const auto previous_exclusions=state.applied_exclusions;
+        state.applied_exclusions=state.analysis_roi;
+        try {ApplyCalibration(state,nullptr,std::nullopt,alignment_changed || refresh_detector);}
+        catch (...) {state.applied_exclusions=previous_exclusions;throw;}
+        if (state.applying_exclusions) {
+          state.applying_exclusions=false;SetTransientStatus(state,"Exclusions applied to ground and object analysis");
+        }
+      }
       state.ui_error.clear();
     }
-    catch (const std::exception & error) { state.is_playing = false; state.ui_error = error.what(); }
-  } else if (!reprocess && (state.roi_pending || refresh_objects) && !state.roi_gesture.active) {
+    catch (const std::exception & error) {
+      if (state.applying_exclusions) {
+        state.analysis_roi=state.applied_exclusions;state.applying_exclusions=false;
+      }
+      state.is_playing=false;state.ui_error=error.what();
+    }
+  } else if (!reprocess && !state.applying_exclusions && (state.roi_pending || refresh_objects) && !state.roi_gesture.active) {
     try {
       if (state.async_geometry) QueueGeometry(state,state.base_frame,{},{},false,true);
       else {

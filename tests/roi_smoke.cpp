@@ -141,6 +141,29 @@ int main()
     Check(mask_history.Undo(exclude) && exclude.boxes[0].mode==RoiBoxMode::Exclude && mask_history.Redo(exclude) &&
       exclude.boxes[0].mode==RoiBoxMode::Include,"undo/redo lost Keep/Exclude type");
 
+    const RoiSettings original_mask{true,true,{mount}};
+    auto draft=original_mask;draft.boxes[0].center={5,0,0};
+    const PreparedRoi preview(ComposeRoiFilters(draft,original_mask));
+    Check(!preview.Contains({0,0,0}) && preview.Contains({5,0,0}),"draft exclusion moved the active mask before Apply");
+    const PreparedRoi committed(ComposeRoiFilters(draft,draft));
+    Check(committed.Contains({0,0,0}) && !committed.Contains({5,0,0}),"Apply did not move the exclusion mask");
+    draft.enabled=false;
+    Check(!PreparedRoi(ComposeRoiFilters(draft,original_mask)).Contains({0,0,0}),"master edit bypassed Apply");
+    Check(PreparedRoi(ComposeRoiFilters(draft,draft)).Contains({0,0,0}),"applied master-off retained exclusions");
+    draft={true,true,{{"view",true,{0,0,0},{20,20,10},0}}};
+    Check(!PreparedRoi(ComposeRoiFilters(draft,original_mask)).Contains({50,0,0}) &&
+      !PreparedRoi(ComposeRoiFilters(draft,original_mask)).Contains({0,0,0}),"keep preview lost applied exclusions");
+    draft.boxes[0].enabled=false;
+    Check(PreparedRoi(ComposeRoiFilters(draft,original_mask)).RejectsAll(),"disabled keep preview changed legacy cropping");
+    RoiSettings maximum_keep{true,true,{}}, maximum_masks{true,true,{}};
+    for (std::size_t i=0;i<kMaxRoiBoxes;++i) {
+      maximum_keep.boxes.push_back({"keep",true,{0,0,0},{20,20,20},0});
+      maximum_masks.boxes.push_back(mount);
+    }
+    Check(PreparedRoi(ComposeRoiFilters(maximum_keep,maximum_masks)).Contains({5,0,0}),
+      "maximum-size draft could not preview previously applied masks");
+    Reject([&] {SerializeRoiSettings(ComposeRoiFilters(maximum_keep,maximum_masks));});
+
     const auto serialized = SerializeRoiSettings(settings);
     const auto parsed = ParseRoiSettings("profile=default\n" + serialized);
     Check(SerializeRoiSettings(parsed) == serialized, "ROI serialization roundtrip failed");
