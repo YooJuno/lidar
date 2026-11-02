@@ -29,7 +29,8 @@ def write_fixture(folder):
     for index in range(30):
         cloud=PointCloud2();cloud.header.frame_id='pandar_xt32_forward'
         cloud.header.stamp.sec=50+index//10;cloud.header.stamp.nanosec=index%10*100_000_000
-        points=[(float(index),0.,0.,0.)]
+        # A nonzero Z keeps frame zero's marker from being treated as a missing return.
+        points=[(float(index),0.,.1,0.)]
         for cx in [-3+index*.1,3-index*.1]:
             points.extend((cx+x*.1,2+y*.1,z*.1,1.) for x in range(-3,4) for y in range(-2,3) for z in range(18))
         cloud.height=1;cloud.width=len(points);cloud.point_step=16;cloud.row_step=cloud.width*16

@@ -3944,7 +3944,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     state.status_points=VisiblePoints(state).count;state.status_live_display=state.live_display_sequence;
     state.status_live_received=state.live_stats.clouds;
     state.status_source=group ? group->path.filename().u8string() :
-      has_input ? state.frames[state.current_index].path.filename().u8string() : std::string{};
+      state.current_index<state.frames.size() ? state.frames[state.current_index].path.filename().u8string() : std::string{};
     if (std::getenv("LIDAR_VIEWER_UI_TRACE")) std::cout<<"Status sample "<<state.status_sample_time<<std::endl;
   }
   const bool status_busy=state.requested_frame.has_value() || state.geometry_future.valid();
