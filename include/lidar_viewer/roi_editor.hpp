@@ -14,7 +14,7 @@ inline bool SameRoi(const RoiSettings & a, const RoiSettings & b)
   if (a.enabled != b.enabled || a.show_boxes != b.show_boxes || a.boxes.size() != b.boxes.size()) return false;
   for (std::size_t i=0; i<a.boxes.size(); ++i) {
     const auto & x=a.boxes[i]; const auto & y=b.boxes[i];
-    if (x.name!=y.name || x.enabled!=y.enabled || x.yaw_deg!=y.yaw_deg ||
+    if (x.name!=y.name || x.enabled!=y.enabled || x.mode!=y.mode || x.yaw_deg!=y.yaw_deg ||
         x.center.x!=y.center.x || x.center.y!=y.center.y || x.center.z!=y.center.z ||
         x.size.x!=y.size.x || x.size.y!=y.size.y || x.size.z!=y.size.z) return false;
   }
@@ -45,10 +45,10 @@ private:
   std::deque<RoiSettings> undo_, redo_;
 };
 
-inline std::string NextRoiName(const RoiSettings & settings)
+inline std::string NextRoiName(const RoiSettings & settings, RoiBoxMode mode=RoiBoxMode::Include)
 {
   for (std::size_t i=1; ; ++i) {
-    const auto name="ROI " + std::to_string(i);
+    const auto name=std::string(mode==RoiBoxMode::Exclude ? "Exclude " : "ROI ") + std::to_string(i);
     if (std::none_of(settings.boxes.begin(), settings.boxes.end(),
         [&](const auto & box) {return box.name==name;})) return name;
   }
@@ -56,7 +56,7 @@ inline std::string NextRoiName(const RoiSettings & settings)
 
 inline RoiBox DuplicateRoi(const RoiBox & source, const RoiSettings & settings)
 {
-  auto result=source; result.name=NextRoiName(settings);
+  auto result=source; result.name=NextRoiName(settings,source.mode);
   const float yaw=source.yaw_deg*kPi/180.f;
   result.center=result.center + Vec3{std::cos(yaw), std::sin(yaw), 0}*(source.size.x+.5f);
   ValidateRoiBox(result);
@@ -64,13 +64,13 @@ inline RoiBox DuplicateRoi(const RoiBox & source, const RoiSettings & settings)
 }
 
 inline RoiBox RoiFromDrag(Vec3 a, Vec3 b, float center_z, float height, const std::string & name,
-  float yaw_deg=0)
+  float yaw_deg=0, RoiBoxMode mode=RoiBoxMode::Include)
 {
   const float yaw=yaw_deg*kPi/180.f;
   const auto delta=b-a;
   RoiBox box{name, true, {(a.x+b.x)*.5f, (a.y+b.y)*.5f, center_z},
     {std::max(.05f,std::abs(delta.x*std::cos(yaw)+delta.y*std::sin(yaw))),
-     std::max(.05f,std::abs(-delta.x*std::sin(yaw)+delta.y*std::cos(yaw))),height},yaw_deg};
+     std::max(.05f,std::abs(-delta.x*std::sin(yaw)+delta.y*std::cos(yaw))),height},yaw_deg,mode};
   ValidateRoiBox(box); return box;
 }
 

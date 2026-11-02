@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
+#include <iterator>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
@@ -50,6 +51,8 @@ Vec3 RoiCoordinateFrame::InverseTransform(Vec3 p) const
 
 void ValidateRoiBox(const RoiBox & box)
 {
+  if (box.mode != RoiBoxMode::Include && box.mode != RoiBoxMode::Exclude)
+    throw std::runtime_error("Invalid ROI box mode");
   if (box.name.size() > 127 || box.name.find_first_of("\r\n") != std::string::npos ||
       box.name.find('\0') != std::string::npos)
     throw std::runtime_error("ROI name must be at most 127 bytes without line breaks");
@@ -75,13 +78,16 @@ std::array<Vec3, 8> RoiCorners(const RoiBox & box)
   return result;
 }
 
-PreparedRoi::PreparedRoi(const RoiSettings & settings, const RoiCoordinateFrame & frame)
+PreparedRoi::PreparedRoi(const RoiSettings & settings, const RoiCoordinateFrame & frame, RoiFilterStage stage)
 : enabled_(settings.enabled)
 {
   ValidateSettings(settings);
   if (!enabled_) return;
-  boxes_.reserve(settings.boxes.size());
   for (const auto & box : settings.boxes) {
+    if (box.mode == RoiBoxMode::Include) {
+      if (stage == RoiFilterStage::Preprocessing) continue;
+      includes_required_ = true;
+    }
     if (!box.enabled) continue;
     auto axes = Axes(box.yaw_deg);
     for (auto & axis : axes) axis = frame.Rotate(axis);
@@ -90,28 +96,34 @@ PreparedRoi::PreparedRoi(const RoiSettings & settings, const RoiCoordinateFrame 
       std::abs(axes[0].x)*half.x + std::abs(axes[1].x)*half.y + std::abs(axes[2].x)*half.z,
       std::abs(axes[0].y)*half.x + std::abs(axes[1].y)*half.y + std::abs(axes[2].y)*half.z,
       std::abs(axes[0].z)*half.x + std::abs(axes[1].z)*half.y + std::abs(axes[2].z)*half.z};
-    boxes_.push_back({frame.Transform(box.center), half, extent, axes});
+    auto & target = box.mode == RoiBoxMode::Exclude ? excludes_ : includes_;
+    target.push_back({frame.Transform(box.center), half, extent, axes});
   }
+}
+
+bool PreparedRoi::Inside(Vec3 p, const Box & box)
+{
+  const Vec3 d = p - box.center;
+  // Cheap broad phase before the three oriented-axis projections.
+  if (std::abs(d.x) > box.extent.x + 2e-5f || std::abs(d.y) > box.extent.y + 2e-5f ||
+      std::abs(d.z) > box.extent.z + 2e-5f) return false;
+  return std::abs(Dot(d, box.axes[0])) <= box.half_size.x + 1e-5f &&
+    std::abs(Dot(d, box.axes[1])) <= box.half_size.y + 1e-5f &&
+    std::abs(Dot(d, box.axes[2])) <= box.half_size.z + 1e-5f;
 }
 
 bool PreparedRoi::Contains(Vec3 p) const
 {
   if (!enabled_) return true;
-  for (const auto & box : boxes_) {
-    const Vec3 d = p - box.center;
-    // Cheap broad phase before the three oriented-axis projections.
-    if (std::abs(d.x) > box.extent.x + 2e-5f || std::abs(d.y) > box.extent.y + 2e-5f ||
-        std::abs(d.z) > box.extent.z + 2e-5f) continue;
-    if (std::abs(Dot(d, box.axes[0])) <= box.half_size.x + 1e-5f &&
-        std::abs(Dot(d, box.axes[1])) <= box.half_size.y + 1e-5f &&
-        std::abs(Dot(d, box.axes[2])) <= box.half_size.z + 1e-5f) return true;
-  }
-  return false;
+  if (includes_required_ && std::none_of(includes_.begin(), includes_.end(),
+      [&](const Box & box) {return Inside(p, box);})) return false;
+  return std::none_of(excludes_.begin(), excludes_.end(),
+    [&](const Box & box) {return Inside(p, box);});
 }
 
 void PreparedRoi::Filter(std::vector<KittiPoint> & points) const
 {
-  if (!enabled_) return;
+  if (!enabled_ || (!includes_required_ && excludes_.empty())) return;
   points.erase(std::remove_if(points.begin(), points.end(), [&](const auto & p) {
     return !Contains({p.x, p.y, p.z});
   }), points.end());
@@ -125,7 +137,8 @@ std::string SerializeRoiSettings(const RoiSettings & value)
       << "roi_enabled=" << value.enabled << '\n' << "roi_show_boxes=" << value.show_boxes
       << '\n' << "roi_count=" << value.boxes.size() << '\n';
   for (const auto & b : value.boxes) {
-    out << "roi_box=" << b.enabled << ' ' << std::quoted(b.name) << ' '
+    out << (b.mode == RoiBoxMode::Exclude ? "roi_exclude_box=" : "roi_box=")
+        << b.enabled << ' ' << std::quoted(b.name) << ' '
         << b.center.x << ' ' << b.center.y << ' ' << b.center.z << ' '
         << b.size.x << ' ' << b.size.y << ' ' << b.size.z << ' '
         << std::remainder(b.yaw_deg, 360.f) << '\n';
@@ -147,7 +160,8 @@ RoiSettings ParseRoiSettings(const std::string & text, const RoiSettings & fallb
     const auto eq = line.find('=');
     if (eq == std::string::npos) continue;
     const auto key = line.substr(0, eq), value = line.substr(eq + 1);
-    if (key != "roi_enabled" && key != "roi_show_boxes" && key != "roi_count" && key != "roi_box") continue;
+    if (key != "roi_enabled" && key != "roi_show_boxes" && key != "roi_count" &&
+        key != "roi_box" && key != "roi_exclude_box") continue;
     found = true;
     try {
       if (key == "roi_enabled") result.enabled = ParseBool(value);
@@ -157,6 +171,7 @@ RoiSettings ParseRoiSettings(const std::string & text, const RoiSettings & fallb
         if (count < 0 || count > static_cast<int>(kMaxRoiBoxes)) throw std::runtime_error("invalid box count");
       } else {
         RoiBox box;
+        box.mode = key == "roi_exclude_box" ? RoiBoxMode::Exclude : RoiBoxMode::Include;
         std::istringstream fields(value);
         std::string enabled, token;
         if (!(fields >> enabled >> std::ws) || fields.peek() != '"' || !(fields >> std::quoted(box.name)))
@@ -181,5 +196,22 @@ RoiSettings ParseRoiSettings(const std::string & text, const RoiSettings & fallb
   if (count < 0 || static_cast<std::size_t>(count) != result.boxes.size())
     throw std::runtime_error("ROI count does not match box entries");
   return result;
+}
+
+bool SameRoiExclusions(const RoiSettings & a, const RoiSettings & b)
+{
+  auto active = [](const RoiSettings & settings, auto it) {
+    return std::find_if(it, settings.boxes.end(), [&](const RoiBox & box) {
+      return settings.enabled && box.enabled && box.mode == RoiBoxMode::Exclude;
+    });
+  };
+  auto x = active(a, a.boxes.begin()), y = active(b, b.boxes.begin());
+  while (x != a.boxes.end() && y != b.boxes.end()) {
+    if (x->center.x != y->center.x || x->center.y != y->center.y || x->center.z != y->center.z ||
+        x->size.x != y->size.x || x->size.y != y->size.y || x->size.z != y->size.z || x->yaw_deg != y->yaw_deg)
+      return false;
+    x = active(a, std::next(x)); y = active(b, std::next(y));
+  }
+  return x == a.boxes.end() && y == b.boxes.end();
 }
 }  // namespace lidar_viewer

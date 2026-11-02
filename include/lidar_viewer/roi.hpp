@@ -9,6 +9,7 @@
 namespace lidar_viewer
 {
 constexpr std::size_t kMaxRoiBoxes = 128;
+enum class RoiBoxMode {Include, Exclude};
 
 // Coordinates in the original LiDAR frame; size is the full extent in metres.
 struct RoiBox
@@ -18,6 +19,7 @@ struct RoiBox
   Vec3 center{};
   Vec3 size{20, 20, 6};
   float yaw_deg{0};
+  RoiBoxMode mode{RoiBoxMode::Include};
 };
 
 struct RoiSettings
@@ -42,18 +44,25 @@ std::string SerializeRoiSettings(const RoiSettings & settings);
 // A malformed ROI section throws without changing the caller's settings.
 // Files without an ROI section leave the supplied fallback intact.
 RoiSettings ParseRoiSettings(const std::string & text, const RoiSettings & fallback = {});
+// Ignore names, outlines and include regions when checking analysis invalidation.
+bool SameRoiExclusions(const RoiSettings & a, const RoiSettings & b);
+
+enum class RoiFilterStage {Display, Preprocessing};
 
 class PreparedRoi
 {
 public:
-  explicit PreparedRoi(const RoiSettings & settings, const RoiCoordinateFrame & frame = {});
+  explicit PreparedRoi(const RoiSettings & settings, const RoiCoordinateFrame & frame = {},
+    RoiFilterStage stage = RoiFilterStage::Display);
   bool Contains(Vec3 point) const;
   void Filter(std::vector<KittiPoint> & points) const;
-  bool RejectsAll() const {return enabled_ && boxes_.empty();}
+  bool RejectsAll() const {return enabled_ && includes_required_ && includes_.empty();}
 
 private:
   struct Box {Vec3 center, half_size, extent; std::array<Vec3, 3> axes;};
+  static bool Inside(Vec3 point, const Box & box);
   bool enabled_;
-  std::vector<Box> boxes_;
+  bool includes_required_{false};
+  std::vector<Box> includes_, excludes_;
 };
 }  // namespace lidar_viewer

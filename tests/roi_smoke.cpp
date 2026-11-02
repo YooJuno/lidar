@@ -40,7 +40,7 @@ int main()
     settings.boxes[1].enabled = false;
     Check(!PreparedRoi(settings).Contains(b.center), "disabled box accepted point");
     settings.boxes.clear();
-    Check(PreparedRoi(settings).RejectsAll() && !PreparedRoi(settings).Contains({}), "empty active ROI passed points");
+    Check(!PreparedRoi(settings).RejectsAll() && PreparedRoi(settings).Contains({}), "deleting last box hid the full cloud");
     settings.enabled = false;
     Check(PreparedRoi(settings).Contains({50,50,50}), "master off rejected point");
 
@@ -100,6 +100,47 @@ int main()
     history.Undo(edited);history.Record(edited);edited.boxes.clear();
     Check(!history.CanRedo(),"new ROI edit retained stale redo history");
 
+    RoiBox mount{"mount",true,{0,0,0},{4,2,2},45,RoiBoxMode::Exclude};
+    RoiSettings exclude{true,true,{mount}};
+    Check(!PreparedRoi(exclude).Contains({0,0,0}) && PreparedRoi(exclude).Contains({5,0,0}),
+      "standalone exclusion did not retain the surrounding cloud");
+    for (auto p:RoiCorners(mount)) Check(!PreparedRoi(exclude).Contains(p),"exclusion boundary leaked");
+    const auto exclusion_text=SerializeRoiSettings(exclude);
+    Check(exclusion_text.find("roi_exclude_box=")!=std::string::npos &&
+      SameRoi(ParseRoiSettings(exclusion_text),exclude),"exclusion type did not survive persistence");
+    const auto exclusion_copy=DuplicateRoi(mount,exclude);
+    Check(exclusion_copy.mode==RoiBoxMode::Exclude && exclusion_copy.name=="Exclude 1", "duplicate lost exclusion type");
+    Check(RoiFromDrag({0,0,0},{2,3,0},0,1,"draw",0,RoiBoxMode::Exclude).mode==RoiBoxMode::Exclude,
+      "drawing lost exclusion type");
+    auto renamed=exclude;renamed.boxes[0].name="renamed";renamed.show_boxes=false;
+    Check(SameRoiExclusions(exclude,renamed),"cosmetic edit invalidated analysis");
+    auto moved=exclude;moved.boxes[0].center.x+=.1f;
+    Check(!SameRoiExclusions(exclude,moved),"moving an exclusion reused stale analysis");
+    auto disabled=exclude;disabled.boxes[0].enabled=false;
+    Check(!SameRoiExclusions(exclude,disabled) && PreparedRoi(disabled).Contains({}) &&
+      SameRoiExclusions(disabled,RoiSettings{}),"disabled exclusion still removed points");
+    disabled=exclude;disabled.enabled=false;
+    Check(!SameRoiExclusions(exclude,disabled) && PreparedRoi(disabled).Contains({}),"master toggle ignored exclusion");
+    auto mixed=exclude;mixed.boxes.insert(mixed.boxes.begin(),{"view",true,{0,0,0},{20,20,10},0});
+    mixed.boxes.push_back({"overlap",true,{1,0,0},{3,3,2},0,RoiBoxMode::Exclude});
+    const PreparedRoi visible(mixed), analysis(mixed,{},RoiFilterStage::Preprocessing);
+    Check(!visible.Contains({0,0,0}) && visible.Contains({5,0,0}) && !visible.Contains({50,0,0}),
+      "exclusions did not take precedence over include union");
+    Check(!analysis.Contains({0,0,0}) && analysis.Contains({50,0,0}),"view crop limited the ground/detector input");
+    auto keep_edit=mixed;keep_edit.boxes[0].size.x=1;
+    Check(SameRoiExclusions(mixed,keep_edit),"include edit invalidated analysis");
+    points={{0,0,0,4},{1,0,0,5},{5,0,0,6},{50,0,0,7}};
+    analysis.Filter(points);
+    Check(points.size()==2 && points[0].intensity==6 && points[1].intensity==7,"exclusion filter changed order or attributes");
+    const PreparedRoi transformed_exclusion(mixed,transform);
+    for (int x=-20;x<=20;++x) for (int y=-10;y<=10;++y) for (int z=-8;z<=8;++z) {
+      const Vec3 p{x*.71f,y*.63f,z*.77f};
+      Check(visible.Contains(p)==transformed_exclusion.Contains(transform.Transform(p)),"IMU moved sensor exclusion volume");
+    }
+    RoiHistory mask_history;mask_history.Record(exclude);exclude.boxes[0].mode=RoiBoxMode::Include;
+    Check(mask_history.Undo(exclude) && exclude.boxes[0].mode==RoiBoxMode::Exclude && mask_history.Redo(exclude) &&
+      exclude.boxes[0].mode==RoiBoxMode::Include,"undo/redo lost Keep/Exclude type");
+
     const auto serialized = SerializeRoiSettings(settings);
     const auto parsed = ParseRoiSettings("profile=default\n" + serialized);
     Check(SerializeRoiSettings(parsed) == serialized, "ROI serialization roundtrip failed");
@@ -119,6 +160,7 @@ int main()
     Reject([&] {ValidateRoiBox(invalid);});
     invalid=a; invalid.name="line\nbreak";
     Reject([&] {SerializeRoiSettings({true,true,{invalid}});});
+    Reject([&] {ParseRoiSettings("roi_count=1\nroi_exclude_box=1 \"mount\" 0 0 0 1 -1 1 0\n");});
     std::cout << "ROI geometry, union, rigid transforms and persistence passed\n";
     return 0;
   } catch (const std::exception & error) {
