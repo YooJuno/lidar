@@ -15,6 +15,7 @@ import time
 import traceback
 from ui_gl_smoke import X11,capture,changed_pixels,settings_inventory
 from ui_playback_smoke import write_fixture
+from ui_controls import Controls
 
 
 def main():
@@ -47,7 +48,7 @@ while True:
     bag=out/'fixture';write_fixture(bag)
     config=out/'settings/lidar_viewer';config.mkdir(parents=True)
     (config/'detector.cfg').write_text(f'python={os.sys.executable}\nmodel_dir={private}\nshort_range_model_dir={private}\nprovider=cpu\n')
-    env=dict(os.environ,XDG_CONFIG_HOME=str(out/'settings'),LIDAR_VIEWER_DETECTOR_TRACE='1',GSETTINGS_BACKEND='memory',NO_AT_BRIDGE='1')
+    env=dict(os.environ,XDG_CONFIG_HOME=str(out/'settings'),LIDAR_VIEWER_DETECTOR_TRACE='1',LIDAR_VIEWER_UI_TRACE='1',GSETTINGS_BACKEND='memory',NO_AT_BRIDGE='1')
     before=settings_inventory(repo);result={'status':'started','checks':{},'output':str(out)}
     process=x11=window=None;log_path=out/'viewer.log'
     def rows():return [tuple(map(int,m)) for m in re.findall(r'Detector frame (\d+) revision (\d+) boxes (\d+) full (\d+)',log_path.read_text(errors='replace'))]
@@ -103,7 +104,8 @@ while True:
             check('method_switch_reuses_same_model_process',len((private/'python/starts.txt').read_text().splitlines())==1)
             x11.click(window,48,227);time.sleep(.2);x11.click(window,48,227);time.sleep(.3)
             check('disable_enable_reuses_model_and_current_result',rows()==paused and len((private/'python/starts.txt').read_text().splitlines())==1)
-            time.sleep(.2);settled=len(rows());x11.click(window,205,140);x11.click(window,70,328);time.sleep(.4)
+            time.sleep(.2);settled=len(rows());x11.key(window,'r')
+            controls=Controls(x11,window,log_path);controls.drag((800,300),(1100,570));controls.click('roi_apply');time.sleep(.4)
             check('roi_edit_reuses_full_scene_neural_result',len(rows())==settled)
             x11.click(window,410,837);wait(lambda:len(rows())>settled+3)
             check('resume_continues_current_revision_detection',True)

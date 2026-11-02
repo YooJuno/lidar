@@ -189,12 +189,21 @@ ImuLevelingResult ComputeImuLeveling(const std::optional<FrameImuData> & data, c
     rotation = NormalizeImuRotation(ImuRotationFromRpy(mount.roll_deg*pi/180, mount.pitch_deg*pi/180, mount.yaw_deg*pi/180));
   }
   if (!rotation) { result.status = "IMU to LiDAR mount rotation is missing"; return result; }
-  const auto up = RotateImuVector(*rotation, *data->up);
+  auto up = RotateImuVector(*rotation, *data->up);
   if (!Finite(up) || Norm(up) < 1e-8) { result.status = "Invalid IMU gravity direction"; return result; }
+  const bool known_upright=mount.auto_axes && !data->imu_to_lidar &&
+    data->imu_frame=="vn100_link_ned" &&
+    (data->lidar_frame=="pandar_xt32" || data->lidar_frame=="pandar_xt32_forward");
+  if (known_upright && up.z<-.5*Norm(up)) {
+    const auto converted=RotateImuVector(*rotation,
+      RotateImuVector(ImuRotationFromRpy(pi,0,0),*data->up));
+    if (Finite(converted) && converted.z>.5*Norm(converted)) {up=converted;result.axes_corrected=true;}
+  }
   result.roll_deg = static_cast<float>(std::atan2(up.y, up.z) * 180 / pi);
   result.pitch_deg = static_cast<float>(std::atan2(-up.x, std::hypot(up.y, up.z)) * 180 / pi);
   result.applied = true;
-  result.status = data->status + (data->imu_to_lidar ? " (static TF mount)" : " (profile mount)");
+  result.status = data->status + (data->imu_to_lidar ? " (static TF mount)" :
+    result.axes_corrected ? " (profile mount, automatic NED/FLU axes)" : " (profile mount)");
   return result;
 }
 }  // namespace lidar_viewer

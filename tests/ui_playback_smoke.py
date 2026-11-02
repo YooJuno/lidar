@@ -12,6 +12,7 @@ import tempfile
 import time
 import traceback
 from ui_gl_smoke import X11, capture, changed_pixels, settings_inventory
+from ui_controls import Controls
 
 
 def write_fixture(folder):
@@ -44,7 +45,7 @@ def main():
     (private/'config/profiles/rosbag.cfg').write_text('ground_removal_enabled=0\nclustering_enabled=0\ndetection_enabled=0\nroi_enabled=0\nroi_count=0\nimu_level_enabled=0\ncolor_mode=0\n')
     viewer=private/'build/lidar_viewer';shutil.copy2(args.viewer.resolve(),viewer)
     bag=output/'fixture';write_fixture(bag)
-    env=dict(os.environ,XDG_CONFIG_HOME=str(output/'isolated'),GSETTINGS_BACKEND='memory',NO_AT_BRIDGE='1')
+    env=dict(os.environ,XDG_CONFIG_HOME=str(output/'isolated'),LIDAR_VIEWER_UI_TRACE='1',GSETTINGS_BACKEND='memory',NO_AT_BRIDGE='1')
     before=settings_inventory(repo);result={'status':'started','checks':{},'output':str(output)}
     process=x11=window=None;deadline=time.monotonic()+110;log_path=output/'viewer.log'
     crop=(390,180,1540,750);header=(1235,20,1320,48)
@@ -63,13 +64,13 @@ def main():
             process=subprocess.Popen([str(viewer),str(bag),'--play','--2d','--sensor-height','.57'],cwd=private,env=env,stdout=log,stderr=subprocess.STDOUT)
             wait_for(x11.viewer_window);window=x11.viewer_window();x11.focus(window);x11.resize(window,1600,960)
             wait_for(lambda:'Opened bag:' in log_path.read_text(errors='replace'));time.sleep(.3)
+            c=Controls(x11,window,log_path)
             playing=shot('01_playing');time.sleep(.35);moving=shot('02_motion')
             check('initial_bag_autoplay_moves',changed_pixels(playing,moving,crop)>80)
             # Ordinary controls, including holding a tab button, keep playback active.
             for x in [50,100,155,255]: x11.click(window,x,140)
-            x11.click(window,205,140);x11.click(window,65,290)
-            x11.click(window,65,328);x11.click(window,46,219)  # New box, then crop off.
-            x11.click(window,163,328);x11.click(window,201,328)
+            x11.key(window,'r');c.drag((800,300),(1100,570))
+            c.click('roi_duplicate');c.click('roi_delete')
             x11.click(window,1567,30);x11.key(window,'Escape')
             controls=shot('03_controls');time.sleep(.35);controls_later=shot('04_controls_motion')
             check('controls_and_roi_actions_keep_playing_state',changed_pixels(playing,controls,header)==0)

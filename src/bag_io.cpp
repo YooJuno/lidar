@@ -283,6 +283,8 @@ FrameData DecodePointCloud2(const PointCloud & cloud)
 {
   FrameData frame;
   frame.frame_id = cloud.header.frame_id;
+  if (cloud.header.stamp.sec>=0 && cloud.header.stamp.nanosec<1000000000u)
+    frame.timestamp_ns=static_cast<std::int64_t>(cloud.header.stamp.sec)*1000000000+cloud.header.stamp.nanosec;
   const std::uint64_t count = static_cast<std::uint64_t>(cloud.width) * cloud.height;
   if (count == 0) {
     return frame;
@@ -506,6 +508,7 @@ FrameData LoadBagFrame(const FrameHandle & handle)
     rclcpp::Serialization<PointCloud> serialization;
     serialization.deserialize_message(&serialized, &cloud);
     auto frame = DecodePointCloud2(cloud);
+    frame.timestamp_ns=handle.bag_timestamp_ns;
     if (handle.imu_timeline)
       frame.imu = lidar_viewer::MatchFrameImu(*handle.imu_timeline, handle.bag_timestamp_ns, cloud.header.frame_id);
     return frame;

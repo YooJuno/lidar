@@ -154,17 +154,33 @@ void TestDisplayAlignmentFallback()
   FrameImuData raw_ned;
   raw_ned.imu_frame="vn100_link_ned";raw_ned.lidar_frame="pandar_xt32";raw_ned.up=ImuVector{0,0,-1};
   ImuMountSettings incorrect{true,raw_ned.imu_frame,raw_ned.lidar_frame,.7f,0,0};
-  Check(std::abs(ComputeImuLeveling(raw_ned,incorrect).roll_deg)>170,
-    "Raw NED mounting regression fixture no longer reproduces a flip");
+  const auto automatic=ComputeImuLeveling(raw_ned,incorrect);
+  Check(automatic.applied && automatic.axes_corrected && std::abs(automatic.roll_deg)<2,
+    "Known raw NED sensor was inverted by a small mechanical mount offset");
+  raw_ned.lidar_frame="pandar_xt32_forward";incorrect.lidar_frame=raw_ned.lidar_frame;incorrect.yaw_deg=90;
+  const auto forward=ComputeImuLeveling(raw_ned,incorrect);
+  Check(forward.applied && forward.axes_corrected && std::abs(forward.roll_deg)<2 && std::abs(forward.pitch_deg)<2,
+    "Corrected XT32 forward frame bypassed automatic axis conversion");
+  incorrect.auto_axes=false;
+  Check(std::abs(ComputeImuLeveling(raw_ned,incorrect).roll_deg)>170,"Explicit inverted mounting lost its opt-out");
+  incorrect.auto_axes=true;incorrect.yaw_deg=0;
   incorrect.roll_deg=180;
   const auto converted=ComputeImuLeveling(raw_ned,incorrect);
-  Check(converted.applied && std::abs(converted.roll_deg)<1e-4f && std::abs(converted.pitch_deg)<1e-4f,
+  Check(converted.applied && !converted.axes_corrected && std::abs(converted.roll_deg)<1e-4f && std::abs(converted.pitch_deg)<1e-4f,
     "NED-to-FLU axis conversion left an upright sensor upside down");
   raw_ned.up=ImuVector{0,0,1};  // A prepared FLU vector must not be flipped a second time.
   incorrect.roll_deg=0;
   const auto prepared=ComputeImuLeveling(raw_ned,incorrect);
   Check(prepared.applied && std::abs(prepared.roll_deg)<1e-4f,
     "Prepared FLU vectors did not accept the identity mounting preset");
+  incorrect.roll_deg=180;
+  const auto stale=ComputeImuLeveling(raw_ned,incorrect);
+  Check(stale.applied && stale.axes_corrected && std::abs(stale.roll_deg)<1e-4f,
+    "Prepared FLU vector was inverted by a stale raw-axis mounting preset");
+  raw_ned.imu_to_lidar=ImuRotationFromRpy(pi,0,0);
+  const auto authoritative=ComputeImuLeveling(raw_ned,incorrect);
+  Check(authoritative.applied && !authoritative.axes_corrected && std::abs(authoritative.roll_deg)>170,
+    "Automatic profile conversion overrode an explicit recorded static TF");
 }
 }  // namespace
 

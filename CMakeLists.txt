@@ -169,6 +169,11 @@ target_include_directories(lidar_viewer_detector PUBLIC ${CMAKE_CURRENT_SOURCE_D
 target_link_libraries(lidar_viewer_detector PUBLIC Threads::Threads)
 lidar_warnings(lidar_viewer_detector)
 
+add_library(lidar_viewer_tracking STATIC src/object_tracker.cpp)
+target_include_directories(lidar_viewer_tracking PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(lidar_viewer_tracking PRIVATE Eigen3::Eigen)
+lidar_warnings(lidar_viewer_tracking)
+
 add_executable(lidar_viewer
   src/main.cpp
   src/viewer_app.cpp
@@ -209,6 +214,7 @@ target_link_libraries(lidar_viewer PRIVATE
   lidar_viewer_file_dialog
   lidar_viewer_live
   lidar_viewer_detector
+  lidar_viewer_tracking
 )
 
 # Source builds also need a desktop entry: GNOME docks use the desktop ID
@@ -263,6 +269,10 @@ if(BUILD_TESTING)
   add_executable(roi_smoke_test tests/roi_smoke.cpp)
   target_link_libraries(roi_smoke_test PRIVATE lidar_viewer_roi)
   add_test(NAME roi_smoke_test COMMAND roi_smoke_test)
+  add_executable(object_tracker_smoke_test tests/object_tracker_smoke.cpp)
+  target_link_libraries(object_tracker_smoke_test PRIVATE lidar_viewer_tracking lidar_viewer_detector)
+  add_test(NAME object_tracker_smoke_test COMMAND object_tracker_smoke_test)
+  set_tests_properties(object_tracker_smoke_test PROPERTIES TIMEOUT 30)
   add_executable(imu_alignment_smoke_test tests/imu_alignment_smoke.cpp)
   target_link_libraries(imu_alignment_smoke_test PRIVATE lidar_viewer_bag)
   add_test(NAME imu_alignment_smoke_test COMMAND imu_alignment_smoke_test)

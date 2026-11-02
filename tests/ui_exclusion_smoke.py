@@ -20,6 +20,7 @@ import tempfile
 import time
 import traceback
 from ui_gl_smoke import X11, capture, changed_pixels, settings_inventory
+from ui_controls import Controls
 
 
 def main():
@@ -69,9 +70,9 @@ while True:
           'ground_removal_enabled=1\nground_mode=fast_grid\nground_use_cuda=0\nimu_level_enabled=0\n')
     profile.write_text(base+'roi_enabled=0\nroi_count=0\n')
     env=dict(os.environ,XDG_CONFIG_HOME=str(out/'settings'),LIDAR_VIEWER_ROI_TRACE='1',
-             GSETTINGS_BACKEND='memory',NO_AT_BRIDGE='1')
+             GSETTINGS_BACKEND='memory',NO_AT_BRIDGE='1',LIDAR_VIEWER_UI_TRACE='1')
     before=settings_inventory(repo);result={'status':'started','checks':{},'output':str(out)}
-    process=x11=window=None;log_path=out/'viewer.log';deadline=time.monotonic()+150
+    process=x11=window=controls=None;log_path=out/'viewer.log';deadline=time.monotonic()+150
 
     def check(label,value):
         result['checks'][label]=bool(value)
@@ -112,7 +113,7 @@ while True:
         wait(lambda:len(requests())>request_count)
         return rows()[-1]
     def apply(removed=None,playing=False):
-        count=len(rows());previous=len(requests());x11.click(window,245,219)
+        count=len(rows());previous=len(requests());controls.click('roi_apply')
         wait(lambda:len(rows())>count and (removed is None or rows()[-1][0]==removed))
         time.sleep(.1)
         if not playing:check('roi_apply_reuses_cached_neural_input',len(requests())==previous)
@@ -173,9 +174,15 @@ while True:
             wait(lambda:x11.viewer_window() is not None);window=x11.viewer_window();x11.focus(window);x11.resize(window,1600,960)
             wait(lambda:len(requests())==1)
             x11.key(window,'r');x11.key(window,'Escape')
+            controls=Controls(x11,window,log_path)
             saved_before=save()
-            stage(lambda:x11.click(window,65,328),'new_roi_previews_without_reanalysis')
-            x11.click(window,125,328)  # Focus the small sensor box for direct editing.
+            stage(lambda:(controls.click('roi_add'),controls.drag((880,342),(1058,521))),'new_roi_previews_without_reanalysis')
+            controls.click('roi_details')
+            for axis,value in enumerate([0,0,0]):controls.enter('roi_center',value,axis)
+            for axis,value in enumerate([1,1,1]):controls.enter('roi_size',value,axis)
+            controls.enter('roi_yaw',0)
+            controls.click('roi_done')
+            controls.click('roi_focus')  # Focus the small sensor box for direct editing.
             text=save();check('unapplied_exclusions_cannot_be_saved',text==saved_before)
             x11.move(window,1400,700);capture(x11,window,out/'00_unapplied_preview.png')
             stepped=changed(lambda:x11.key(window,'Right'),0)
@@ -188,13 +195,13 @@ while True:
             check('apply_keeps_paused_state',changed_pixels(paused,applied,(1235,20,1320,48))==0)
             text=save();check('ground_roi_and_sensor_coordinates_saved','roi_exclude_box=1 "ROI 1" 0 0 0 1 1 1 0' in text)
             passes=initial[2]
-            stage(lambda:x11.click(window,52,370),'uncheck_box_waits_for_apply');apply(0)
-            stage(lambda:x11.click(window,52,370),'check_box_waits_for_apply');enabled=apply(405)
+            stage(lambda:controls.click('roi_enabled_0'),'uncheck_box_waits_for_apply');apply(0)
+            stage(lambda:controls.click('roi_enabled_0'),'check_box_waits_for_apply');enabled=apply(405)
             check('box_apply_recomputes_ground_only',enabled[2]>passes)
             previous=len(requests());passes=enabled[2]
-            x11.click(window,295,219);time.sleep(.25)
+            controls.click('roi_outlines');time.sleep(.25)
             check('outline_toggle_reuses_analysis',len(requests())==previous and rows()[-1][2]==passes)
-            x11.click(window,295,219)
+            controls.click('roi_outlines')
             stage(lambda:drag((968,431),(1040,431)),'canvas_move_previews_without_reanalysis')
             moved=apply();text=save()
             check('apply_canvas_move_resegments',moved[2]>passes and 'roi_exclude_box=1' in text and moved[0]!=405)
@@ -206,23 +213,23 @@ while True:
             text=save();check('draw_adds_second_ground_roi',text.count('roi_exclude_box=')==2 and 'roi_count=2' in text)
             stage(lambda:chord('z'),'undo_draw_waits_for_apply');apply(405)
             previous=len(requests());passes=rows()[-1][2]
-            stage(lambda:x11.click(window,65,328),'second_box_waits_for_apply');apply(405)
+            stage(lambda:controls.click('roi_duplicate'),'second_box_waits_for_apply');apply(405)
             check('overlapping_boxes_do_not_duplicate_skipped_points','roi_count=2' in save())
-            stage(lambda:x11.click(window,201,328),'delete_second_box_waits_for_apply');apply(405)
-            stage(lambda:x11.click(window,201,328),'delete_exclusion_waits_for_apply');apply(0)
+            stage(lambda:controls.click('roi_delete'),'delete_second_box_waits_for_apply');apply(405)
+            stage(lambda:controls.click('roi_delete'),'delete_exclusion_waits_for_apply');apply(0)
             text=save();check('deleting_last_roi_restores_full_ground_input','roi_count=0' in text)
             stage(lambda:chord('z'),'undo_delete_waits_for_apply');apply(405);save()
             # Applying while playing preserves transport state. New frames
             # continue using the applied mask while the next edit is pending.
             x11.key(window,'space');wait(lambda:len(requests())>=previous+4)
             playing=capture(x11,window,out/'playing.png')
-            x11.click(window,52,370);time.sleep(.4)
+            controls.click('roi_enabled_0');time.sleep(.4)
             check('playing_frames_keep_applied_mask_during_edit',all(row[0]==405 for row in rows()[-3:]))
             apply(0,playing=True);time.sleep(.3);after_apply=capture(x11,window,out/'playing_applied.png')
             check('apply_keeps_playing_state',changed_pixels(playing,after_apply,(1235,20,1320,48))==0 and
                   changed_pixels(paused,after_apply,(1235,20,1320,48))>0)
             x11.key(window,'space');time.sleep(.3)
-            stage(lambda:x11.click(window,52,370),'paused_reenable_waits_for_apply');apply(405);save()
+            stage(lambda:controls.click('roi_enabled_0'),'paused_reenable_waits_for_apply');apply(405);save()
             check('editing_exclusions_reuses_detector_process',len((private/'python/starts.txt').read_text().splitlines())==1)
             x11.move(window,1400,700);capture(x11,window,out/'02_restored_exclusion.png')
         process.terminate();process.wait(timeout=5);process=None

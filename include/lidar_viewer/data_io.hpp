@@ -73,6 +73,7 @@ struct FrameData
   float max_z{0.0f};
   float ground_z{0.0f};
   std::string frame_id;
+  std::optional<std::int64_t> timestamp_ns;
   std::optional<lidar_viewer::FrameImuData> imu;
 };
 

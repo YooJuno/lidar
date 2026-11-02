@@ -77,6 +77,9 @@ struct ImuMountSettings
   bool confirmed{false};
   std::string imu_frame, lidar_frame;
   float roll_deg{0}, pitch_deg{0}, yaw_deg{0};
+  // Recognize the upright VN100 NED/FRD + XT32 FLU sensor family. Static TF
+  // remains authoritative; disable for an intentionally inverted installation.
+  bool auto_axes{true};
 };
 
 struct ImuLevelingResult
@@ -84,6 +87,7 @@ struct ImuLevelingResult
   bool applied{false};
   float roll_deg{0}, pitch_deg{0};
   std::string status;
+  bool axes_corrected{false};
 };
 
 ImuLevelingResult ComputeImuLeveling(
