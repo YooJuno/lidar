@@ -475,6 +475,7 @@ struct ViewerState
   std::string status_source;
   std::size_t status_points{0};
   std::uint64_t status_live_display{0},status_live_received{0};
+  std::size_t status_ground{0};
   std::optional<double> pending_read_started;
   std::uint64_t ground_passes{0};
   bool alignment_initialized{false};
@@ -490,6 +491,8 @@ struct ViewerState
   bool timeline_dragging{false};
   int seek_draft{0};
   float ui_scale{1.0f};
+  float inspector_width{320.f};
+  bool inspector_resizing{false};
   bool app_settings_loaded{false}, open_app_settings{false};
   bool app_settings_dirty{false};
   std::string app_settings_error;
@@ -563,6 +566,12 @@ struct ViewerState
   std::string tracking_error;
   std::uint64_t detector_revision{1}, detector_submitted{0}, detector_completed{0};
   float detector_yaw{0}, detector_latency_ms{0};
+  double runtime_sample_time{0};
+  float runtime_latency_ms{0};
+  std::size_t runtime_shown{0},runtime_candidates{0};
+  std::uint64_t runtime_session{0};
+  bool runtime_sample_valid{false};
+  std::string runtime_detail;
   double detector_submitted_at{0};
   std::string detector_detail, detector_error, detector_active_model;
   bool detector_model_loaded{false};
@@ -1001,10 +1010,16 @@ void BuildFileGroups(ViewerState & state)
     while ((last_index + 1) < state.frames.size() && state.frames[last_index + 1].path == current_path) {
       ++last_index;
     }
+    if (state.frames[first_index].format==InputFormat::KittiXyzi) {
+      while (last_index+1<state.frames.size() && state.frames[last_index+1].format==InputFormat::KittiXyzi &&
+          state.frames[last_index+1].path.parent_path()==current_path.parent_path()) ++last_index;
+    }
+    const auto display_path=state.frames[first_index].format==InputFormat::KittiXyzi && last_index>first_index ?
+      current_path.parent_path() : current_path;
 
     state.file_groups.push_back({
-      current_path,
-      FileDisplayName(current_path),
+      display_path,
+      FileDisplayName(display_path),
       first_index,
       last_index
     });
@@ -1012,6 +1027,10 @@ void BuildFileGroups(ViewerState & state)
   }
 
   state.current_file_group = 0;
+  if (std::getenv("LIDAR_VIEWER_UI_TRACE")) {
+    for (const auto & group:state.file_groups)
+      std::cout<<"Source frames "<<group.first_index<<' '<<group.last_index<<std::endl;
+  }
 }
 
 void UpdateCurrentFileGroup(ViewerState & state)
@@ -1140,6 +1159,7 @@ void ApplyRoiResult(ViewerState & state, const FrameData & processed, std::size_
   FrameData frame;
   frame.frame_id=processed.frame_id; frame.imu=processed.imu; frame.ground_z=processed.ground_z;
   frame.timestamp_ns=processed.timestamp_ns;
+  frame.points.reserve(processed.points.size());
   frame.points.assign(processed.points.begin(),processed.points.begin()+static_cast<std::ptrdiff_t>(obstacles));
   auto clusters=state.ground_removal_enabled ? lidar_viewer::algorithms::RunClustering(frame.points,state.algorithm_config.clustering) :
     std::vector<lidar_viewer::algorithms::Cluster>{};
@@ -1262,12 +1282,13 @@ void QueueGeometry(ViewerState & state, FrameData base, std::optional<std::size_
   work->base_frame=std::move(base);work->global_ground_offset=state.global_ground_offset;
   work->calibration=state.calibration;work->imu_level_enabled=state.imu_level_enabled;
   work->imu_mount=state.imu_mount;work->algorithm_config=state.algorithm_config;
+  work->imu_level_result=state.imu_level_result;
   work->ground_removal_enabled=state.ground_removal_enabled;work->ground_sequence=state.ground_sequence;
   work->roi=state.roi;work->roi_frame=state.roi_frame;
   work->analysis_roi=state.analysis_roi;work->applied_exclusions=state.analysis_roi;
   if (roi_only) {
     work->processed_frame=state.processed_frame;work->processed_obstacles=state.processed_obstacles;
-    work->imu_level_result=state.imu_level_result;work->processing_ms=state.processing_ms;
+    work->processing_ms=state.processing_ms;
   }
   if (!state.geometry_worker) state.geometry_worker=std::make_unique<lidar_viewer::BackgroundWorker>();
   state.geometry_future=state.geometry_worker->Submit([work=std::move(work),update_detector,roi_only]() mutable {
@@ -2444,8 +2465,12 @@ void LoadAppSettings(ViewerState & state)
   try {
     std::ifstream file(lidar_viewer::UserConfigurationDirectory()/"app_settings.cfg");
     std::string line;
-    while (std::getline(file,line)) if (line.rfind("ui_scale=",0)==0)
-      state.ui_scale=std::clamp(lidar_viewer::settings::ParseFiniteFloat(line.substr(9)),.75f,1.5f);
+    while (std::getline(file,line)) {
+      if (line.rfind("ui_scale=",0)==0)
+        state.ui_scale=std::clamp(lidar_viewer::settings::ParseFiniteFloat(line.substr(9)),.75f,1.5f);
+      else if (line.rfind("inspector_width=",0)==0)
+        state.inspector_width=std::clamp(lidar_viewer::settings::ParseFiniteFloat(line.substr(16)),280.f,520.f);
+    }
   } catch (const std::exception & error) {state.app_settings_error=error.what();}
   state.app_settings_loaded=true;
 }
@@ -2454,7 +2479,8 @@ void SaveAppSettings(ViewerState & state)
 {
   try {
     const auto folder=lidar_viewer::UserConfigurationDirectory();fs::create_directories(folder);
-    lidar_viewer::settings::AtomicWriteText(folder/"app_settings.cfg","ui_scale="+std::to_string(state.ui_scale)+"\n");
+    lidar_viewer::settings::AtomicWriteText(folder/"app_settings.cfg","ui_scale="+std::to_string(state.ui_scale)+
+      "\ninspector_width="+std::to_string(state.inspector_width)+"\n");
     state.app_settings_dirty=false;state.app_settings_error.clear();
   } catch (const std::exception & error) {state.app_settings_error=error.what();}
 }
@@ -3231,7 +3257,7 @@ void BuildInputLoading(ViewerState & state)
 
 void TraceUi(const char * id)
 {
-  if (!std::getenv("LIDAR_VIEWER_UI_TRACE") || ImGui::GetFrameCount()%8 || !ImGui::IsItemVisible()) return;
+  if (!std::getenv("LIDAR_VIEWER_UI_TRACE") || ImGui::GetFrameCount()%2 || !ImGui::IsItemVisible()) return;
   const auto a=ImGui::GetItemRectMin(),b=ImGui::GetItemRectMax();
   std::cout<<"UI "<<id<<' '<<a.x<<' '<<a.y<<' '<<b.x<<' '<<b.y<<std::endl;
 }
@@ -3267,7 +3293,9 @@ void BuildRoiEditor(ViewerState & state)
   TraceUi("roi_redo");ImGui::EndDisabled();ImGui::SameLine(0,4*s);
   if (IconButton("##Outlines",UiIcon::Eye,"Show region outlines",s,state.roi.show_boxes)) state.roi.show_boxes=!state.roi.show_boxes;
   TraceUi("roi_outlines");
-  const float list_height=std::clamp(ImGui::GetContentRegionAvail().y-190*s,170*s,285*s);
+  const float rows=static_cast<float>(std::clamp<std::size_t>(state.roi.boxes.size(),3,8));
+  const float preferred_height=rows*(ImGui::GetTextLineHeight()+18*s)+12*s;
+  const float list_height=std::min(preferred_height,std::clamp(ImGui::GetContentRegionAvail().y-190*s,110*s,285*s));
   if (std::abs(list_height-state.roi_list_height)>1) {state.roi_reveal_selection=true;state.roi_list_height=list_height;}
   if (ImGui::BeginListBox("##RoiList",{-1,list_height})) {
     for (std::size_t i=0;i<state.roi.boxes.size();++i) {
@@ -3368,7 +3396,12 @@ void BuildAppSettings(ViewerState & state)
   if (ImGui::SliderFloat("##AppUiScale",&state.ui_scale,.75f,1.5f,"%.2fx",ImGuiSliderFlags_AlwaysClamp)) state.app_settings_dirty=true;
   const bool editing=ImGui::IsItemActive();
   if (ImGui::Button("Reset to 100%")) {state.ui_scale=1;state.app_settings_dirty=true;}
-  if (state.app_settings_dirty && (!editing || !state.open_app_settings)) SaveAppSettings(state);
+  ImGui::Spacing();ImGui::TextUnformatted("Inspector width");ImGui::SetNextItemWidth(-1);
+  if (ImGui::SliderFloat("##InspectorWidth",&state.inspector_width,280,520,"%.0f px",ImGuiSliderFlags_AlwaysClamp)) state.app_settings_dirty=true;
+  const bool width_editing=ImGui::IsItemActive();
+  Tip("You can also drag the divider beside the inspector. Double-click it to restore the default width.");
+  if (ImGui::Button("Reset panel width")) {state.inspector_width=320;state.app_settings_dirty=true;}
+  if (state.app_settings_dirty && !editing && !width_editing && !state.inspector_resizing) SaveAppSettings(state);
   if (!state.app_settings_error.empty()) ImGui::TextWrapped("Could not save settings: %s",state.app_settings_error.c_str());
   ImGui::End();
 }
@@ -3386,11 +3419,11 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   ImGui::TextUnformatted("Studio");
   ImGui::SameLine(190.f*s);
   ImGui::BeginDisabled(state.live.Active() || state.loading_bag_source.has_value() || state.folder_scan_future.valid() || state.bag_picker.Active());
-  if (ImGui::Button("Open file",{110*s,0})) StartBagPicker(state);
+  if (lidar_viewer::ActionButton("##OpenFile",lidar_viewer::UiIcon::Folder,"Open file",{110*s,0},s)) StartBagPicker(state);
   ImGui::EndDisabled(); Tip("Open BIN or ROS bag. Ctrl+O.");
   ImGui::SameLine();
   ImGui::BeginDisabled(state.loading_bag_source.has_value() || state.folder_scan_future.valid() || state.bag_picker.Active());
-  if (ImGui::Button("Live...",{85*s,0})) state.open_live_dialog=true;
+  if (lidar_viewer::ActionButton("##Live",lidar_viewer::UiIcon::Live,"Live",{85*s,0},s)) state.open_live_dialog=true;
   ImGui::EndDisabled();
   const float header_right = std::max(320.f * s, layout.header.w - 360.f * s);
   ImGui::SameLine(header_right);
@@ -3421,7 +3454,8 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   ImGui::TextDisabled("  %s", state.live_mode ? "LIVE ROS 2" : has_input ?
     (state.frames.front().format == InputFormat::Ros2Bag ? "ROS 2 BAG" : "BIN") : "NO DATA");
   ImGui::Spacing();
-  ImGui::BeginChild("InspectorBody", {0, std::max(1.f, ImGui::GetContentRegionAvail().y - 84.f * s)});
+  ImGui::BeginChild("InspectorBody", {0, std::max(1.f, ImGui::GetContentRegionAvail().y - 84.f * s)},
+    ImGuiChildFlags_None,ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse);
   ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {1.f * s, 6.f * s});
   const bool tabs_open = ImGui::BeginTabBar("InspectorTabs");
   ImGui::PopStyleVar();
@@ -3430,10 +3464,15 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {1.f * s, 6.f * s});
     const bool is_roi=std::string(label)=="ROI";
     const bool open=ImGui::BeginTabItem(label,nullptr,is_roi && state.roi_tab_requested ? ImGuiTabItemFlags_SetSelected : 0);
-    if (is_roi && open) {if (state.roi_tab_requested) ImGui::SetScrollY(0);state.roi_tab_requested=false;state.roi_tab_active=true;}
+    TraceUi((std::string("tab_")+label).c_str());
     ImGui::PopStyleVar();
+    if (open) {
+      ImGui::BeginChild(label,{0,std::max(1.f,ImGui::GetContentRegionAvail().y-(state.ui_error.empty() ? 0 : 90*s))});
+      if (is_roi) {if (state.roi_tab_requested) ImGui::SetScrollY(0);state.roi_tab_requested=false;state.roi_tab_active=true;}
+    }
     return open;
   };
+  const auto end_tab=[] {ImGui::EndChild();ImGui::EndTabItem();};
   ImGui::BeginDisabled(state.loading_bag_source.has_value());
   if (tabs_open) {
     if (begin_tab("View")) {
@@ -3470,7 +3509,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
           StoreCurrentProjectionView(state.camera);
         }
       }
-      ImGui::EndTabItem();
+      end_tab();
     }
     if (begin_tab("Align")) {
       SectionTitle("IMU leveling");
@@ -3575,7 +3614,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         }
       }
       ImGui::TextWrapped("Display coordinates only. Raw input and recorded bags are unchanged.");
-      ImGui::EndTabItem();
+      end_tab();
     }
     alignment_changed=reprocess;
     if (begin_tab("Ground")) {
@@ -3605,8 +3644,14 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         state.ground_removal_enabled=true;
         reprocess = true;
       }
-      ImGui::TextDisabled("%s",ground.mode=="gseg3d" || ground.mode=="patchworkpp" || ground.mode=="fugseg" ? "Original library / CPU" :
-        ground.mode=="fast_grid" ? "Local terrain grid / CPU or CUDA" : ground.mode=="ransac" ? "Global plane + local height check" : "Connected ground grid");
+      ImGui::TextDisabled("%s",ground.mode=="gseg3d" ? "Connected planes / CPU" :
+        ground.mode=="patchworkpp" ? "Adaptive local planes / CPU" : ground.mode=="fugseg" ? "Uncertainty-aware terrain / CPU" :
+        ground.mode=="fast_grid" ? "Local terrain grid" : ground.mode=="ransac" ? "Global plane + local check" : "Connected height cells");
+      Tip(ground.mode=="ransac" ? "Fits one dominant plane. Prefer local-plane methods when the terrain changes slope." :
+        ground.mode=="patchworkpp" ? "Original Patchwork++: adaptive local planes, suitable for slopes and uneven roads. Sensor height follows Align." :
+        ground.mode=="fugseg" ? "Original FugSeg: uncertainty-aware polar terrain extraction, including sparse and occluded areas." :
+        ground.mode=="gseg3d" ? "Original GSeg3D: plane geometry and connected 3D cells. Ground reference controls the region-growing seeds." :
+        "Ground reference and slope limits guide connected local heights. Compare Ground only and Obstacles only when tuning.");
       if (ground.mode == "gseg3d" || ground.mode == "fast_grid") {
         float cell = ground.gseg3d_cell_size_x_m;
         ImGui::SetNextItemWidth(-1);
@@ -3678,12 +3723,13 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
 #else
       if (ground.mode!="gseg3d" && ground.mode!="patchworkpp" && ground.mode!="fugseg") ImGui::TextDisabled("CPU backend");
 #endif
-      Metric("Ground points", std::to_string(state.ground_removed_count));
-      ImGui::EndTabItem();
+      Metric("Ground points", CountText(state.status_ground));
+      ImGui::TextDisabled("Processing: %.1f ms",state.status_processing_ms);
+      end_tab();
     }
     if (begin_tab("ROI")) {
       BuildRoiEditor(state);
-      ImGui::EndTabItem();
+      end_tab();
     }
     if (begin_tab("Objects")) {
       auto & detection=state.algorithm_config.detection;
@@ -3763,11 +3809,20 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
           ImGui::Spacing();SectionTitle("Runtime");
           const auto status=state.detector ? state.detector->Status() : lidar_viewer::DetectorStatus{};
           if (status.ready) {
+            if (state.runtime_session!=state.tracking_session) {
+              state.runtime_session=state.tracking_session;state.runtime_sample_valid=false;
+            }
+            if (state.detector_completed==state.detector_revision &&
+                (!state.runtime_sample_valid || filter_changed || ImGui::GetTime()-state.runtime_sample_time>=1.)) {
+              state.runtime_sample_valid=true;state.runtime_sample_time=ImGui::GetTime();
+              state.runtime_shown=state.detections.size();state.runtime_candidates=state.full_detections.size();
+              state.runtime_latency_ms=state.detector_latency_ms;state.runtime_detail=state.detector_detail;
+            }
             Metric("Backend",status.provider=="CUDAExecutionProvider" ? "CUDA GPU" : "CPU");
-            Metric("Shown / found",std::to_string(state.detections.size())+" / "+std::to_string(state.full_detections.size()));
-            if (state.detector_completed==state.detector_revision) {
-              ImGui::TextDisabled("Pipeline: %.1f ms",state.detector_latency_ms);Tip(state.detector_detail.c_str());
-            } else ImGui::TextDisabled("Processing current frame...");
+            Metric("Last shown / found",state.runtime_sample_valid ?
+              std::to_string(state.runtime_shown)+" / "+std::to_string(state.runtime_candidates) : "-- / --");
+            if (state.runtime_sample_valid) {ImGui::TextDisabled("Pipeline: %.1f ms",state.runtime_latency_ms);Tip(state.runtime_detail.c_str());}
+            else ImGui::TextDisabled("Pipeline: waiting for first result");
           } else ImGui::TextWrapped("%s",status.message.empty() ? "Waiting for LiDAR data..." : status.message.c_str());
           if (!state.detector_error.empty()) ImGui::TextWrapped("%s",state.detector_error.c_str());
           if (!status.configured || status.failed) {
@@ -3820,7 +3875,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         refresh_objects|=ImGui::SliderFloat("##ClusterVerticalGap",&clustering.max_vertical_gap_m,.1f,2.5f,"Vertical gap: %.2f m",ImGuiSliderFlags_AlwaysClamp);
         ImGui::EndDisabled();
       }
-      ImGui::EndTabItem();
+      end_tab();
     }
     ImGui::EndTabBar();
   }
@@ -3857,6 +3912,27 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     "%s",pending_exclusions ? "Apply ROI before saving" : unsaved ? "ROI changes not saved  /  Ctrl+S" : "Ctrl+S saves this profile");
   ImGui::End();
 
+  // An unobtrusive divider belongs to application layout, not a data profile.
+  const auto & side=layout.sidebar;
+  ImGui::SetNextWindowPos({side.x+side.w+2*s,side.y});ImGui::SetNextWindowSize({12*s,side.h});
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,{0,0});
+  ImGui::Begin("##InspectorDivider",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoBackground|
+    ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoNav|ImGuiWindowFlags_NoBringToFrontOnFocus);
+  ImGui::InvisibleButton("##Resize",{12*s,std::max(1.f,side.h)});TraceUi("inspector_resize");
+  const bool resizing=ImGui::IsItemActive();
+  if (ImGui::IsItemHovered() || resizing) {
+    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    const auto a=ImGui::GetItemRectMin(),b=ImGui::GetItemRectMax();
+    ImGui::GetWindowDrawList()->AddLine({(a.x+b.x)*.5f,a.y+12*s},{(a.x+b.x)*.5f,b.y-12*s},ImGui::GetColorU32(ImGuiCol_SliderGrab),2*s);
+    Tip("Drag to resize the inspector. Double-click to reset.");
+  }
+  if (resizing && ImGui::GetIO().MouseDelta.x!=0) {
+    state.inspector_width=std::clamp(state.inspector_width+ImGui::GetIO().MouseDelta.x/s,280.f,520.f);state.app_settings_dirty=true;
+  }
+  if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {state.inspector_width=320;state.app_settings_dirty=true;}
+  if (!resizing && state.inspector_resizing && state.app_settings_dirty) SaveAppSettings(state);
+  state.inspector_resizing=resizing;ImGui::End();ImGui::PopStyleVar();
+
   BeginPanel("Transport", layout.transport, false);
   const auto * group = !state.live_mode && has_input ? &state.file_groups[state.current_file_group] : nullptr;
   const std::size_t first_index = group ? group->first_index : 0;
@@ -3865,16 +3941,17 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   ImGui::BeginDisabled(!has_input || state.loading_bag_source.has_value() || (state.live_mode && !state.live_stats.connected));
   ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(.15f, .37f, .46f, 1));
   const bool showing_motion = state.live_mode ? !state.live_paused : state.is_playing;
-  if (ImGui::Button(showing_motion ? "Pause" : "Play", {88.f * s, 0})) {
+  if (lidar_viewer::ActionButton("##PlayPause",showing_motion ? lidar_viewer::UiIcon::Pause : lidar_viewer::UiIcon::Play,
+      showing_motion ? "Pause" : "Play",{88*s,0},s)) {
     TogglePlayback(state);
   }
   ImGui::PopStyleColor();
   ImGui::SameLine();
   ImGui::BeginDisabled(!multiple);
-  if (ImGui::Button("<")) AdvanceFrame(state, -1);
+  if (lidar_viewer::ActionButton("##Previous",lidar_viewer::UiIcon::Previous,nullptr,{32*s,0},s)) AdvanceFrame(state, -1);
   Tip("Previous frame  [P]");
   ImGui::SameLine();
-  if (ImGui::Button(">")) AdvanceFrame(state, 1);
+  if (lidar_viewer::ActionButton("##Next",lidar_viewer::UiIcon::Next,nullptr,{32*s,0},s)) AdvanceFrame(state, 1);
   Tip("Next frame  [N]");
   ImGui::EndDisabled();
   ImGui::SameLine();
@@ -3887,7 +3964,21 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   if (layout.transport.w > 800.f * s) {
     ImGui::SameLine();
     if (state.live_mode) ImGui::TextDisabled("Live frame %llu", static_cast<unsigned long long>(state.live_display_sequence));
-    else ImGui::TextDisabled("Frame %zu / %zu", has_input ? state.current_index - first_index + 1 : 0, frame_count);
+    else if (group) {
+      const auto & first=state.frames[first_index];
+      const bool recorded=first.format==InputFormat::Ros2Bag;
+      const auto seconds=[&](std::size_t i) {
+        return recorded ? static_cast<double>((static_cast<long double>(state.frames[i].bag_timestamp_ns)-first.bag_timestamp_ns)*1e-9L) :
+          static_cast<double>(i-first_index)/state.input_fps_estimate.value_or(10.);
+      };
+      const auto clock=[](double value) {
+        value=std::max(0.,value);char label[48];std::snprintf(label,sizeof(label),"%02lld:%04.1f",
+          static_cast<long long>(value/60),std::fmod(value,60.));return std::string(label);
+      };
+      ImGui::TextDisabled("%s / %s",clock(seconds(state.current_index)).c_str(),clock(seconds(group->last_index)).c_str());
+      Tip(recorded ? "Position in recorded time. Frame numbers are on the timeline below." :
+        "Estimated time at the input scan rate. Frame numbers are on the timeline below.");
+    }
   }
   ImGui::EndDisabled();
   ImGui::EndDisabled();
@@ -3919,6 +4010,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     std::to_string(frame_count);
   ImGui::SliderInt("##Timeline", &state.seek_draft, 0, frame_count ? static_cast<int>(frame_count - 1) : 0,
     timeline_label.c_str(), ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_NoInput);
+  TraceUi("timeline");
   if (ImGui::IsItemActivated()) {
     state.timeline_dragging = true;
     state.requested_frame.reset();
@@ -3942,6 +4034,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     state.status_sample_time=status_now;state.status_processing_ms=state.processing_ms;
     state.status_roi_ms=state.roi_ms;state.status_fps=state.current_view_fps;
     state.status_points=VisiblePoints(state).count;state.status_live_display=state.live_display_sequence;
+    state.status_ground=state.ground_removed_count;
     state.status_live_received=state.live_stats.clouds;
     state.status_source=group ? group->path.filename().u8string() :
       state.current_index<state.frames.size() ? state.frames[state.current_index].path.filename().u8string() : std::string{};
@@ -3976,10 +4069,10 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     if (ImGui::BeginTable("##StatusMetrics",3,ImGuiTableFlags_SizingFixedFit)) {
       ImGui::TableSetupColumn("Process",ImGuiTableColumnFlags_WidthFixed,138*s);
       ImGui::TableSetupColumn("ROI",ImGuiTableColumnFlags_WidthFixed,108*s);
-      ImGui::TableSetupColumn("FPS",ImGuiTableColumnFlags_WidthFixed,80*s);
+      ImGui::TableSetupColumn("FPS",ImGuiTableColumnFlags_WidthFixed,90*s);
       ImGui::TableNextRow();ImGui::TableSetColumnIndex(0);ImGui::TextDisabled("Process %.1f ms",state.status_processing_ms);
       ImGui::TableSetColumnIndex(1);ImGui::TextDisabled("ROI %.1f ms",state.status_roi_ms);
-      ImGui::TableSetColumnIndex(2);ImGui::TextDisabled("%.0f fps",state.status_fps);ImGui::EndTable();
+      ImGui::TableSetColumnIndex(2);ImGui::TextDisabled("UI %.0f fps",state.status_fps);ImGui::EndTable();
     }
     ImGui::PopStyleVar();
   }
@@ -4668,7 +4761,7 @@ int RunViewer(int argc, char ** argv)
       state.ui_layout = lidar_viewer::ComputeUiLayout(
         static_cast<float>(window_width), static_cast<float>(window_height),
         state.ui_scale * state.font_raster_scale / std::max(
-          static_cast<float>(fb_width) / window_width, static_cast<float>(fb_height) / window_height));
+          static_cast<float>(fb_width) / window_width, static_cast<float>(fb_height) / window_height),state.inspector_width);
       ImGui::GetStyle() = base_ui_style;
       ImGui::GetStyle().ScaleAllSizes(state.ui_layout.scale);
       ImGui::GetIO().FontGlobalScale = state.ui_layout.scale / state.font_raster_scale;
@@ -4787,6 +4880,15 @@ int RunViewer(int argc, char ** argv)
         state.playback_measurement_started_at = frame_begin_time;
         state.playback_measurement_advances = 0;
       }
+      // VSync is not enforced by every driver/headless display. Sleep between
+      // frames instead of continuously repainting an unchanged cloud. Input
+      // events wake GLFW immediately; ROS reception/recording stays independent.
+      const bool active=(state.live_mode && !state.live_paused) || state.is_playing ||
+        state.geometry_future.valid() || state.requested_frame.has_value() || state.loading_bag_source.has_value() ||
+        ImGui::IsAnyItemActive();
+      const double active_hz=state.is_playing && !state.live_mode ? std::max(60.,state.playback_fps) : 60.;
+      const double remaining=1./(active ? active_hz : 20.)-(glfwGetTime()-frame_begin_time);
+      if (remaining>0) glfwWaitEventsTimeout(remaining);
     }
 
     if (state.input_load) state.input_load->Cancel();

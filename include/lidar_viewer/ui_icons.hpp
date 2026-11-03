@@ -1,10 +1,11 @@
 #pragma once
 #include <imgui.h>
+#include <algorithm>
 #include <cmath>
 
 namespace lidar_viewer
 {
-enum class UiIcon {Select, Box, Fit, Copy, Trash, Undo, Redo, Eye, Focus, Plus, Settings};
+enum class UiIcon {Select, Box, Fit, Copy, Trash, Undo, Redo, Eye, Focus, Plus, Settings, Play, Pause, Previous, Next, Folder, Live};
 
 inline void DrawUiIcon(ImDrawList * draw, UiIcon icon, ImVec2 origin, float size, ImU32 color)
 {
@@ -40,6 +41,20 @@ inline void DrawUiIcon(ImDrawList * draw, UiIcon icon, ImVec2 origin, float size
       draw->AddBezierCubic(p(.08f,.5f),p(.3f,.92f),p(.7f,.92f),p(.92f,.5f),color,stroke);
       draw->AddCircle(p(.5f,.5f),size*.14f,color,16,stroke);break;
     case UiIcon::Plus:line(.5f,.15f,.5f,.85f);line(.15f,.5f,.85f,.5f);break;
+    case UiIcon::Play:draw->AddTriangleFilled(p(.25f,.13f),p(.84f,.5f),p(.25f,.87f),color);break;
+    case UiIcon::Pause:
+      draw->AddRectFilled(p(.2f,.16f),p(.4f,.84f),color,1);draw->AddRectFilled(p(.6f,.16f),p(.8f,.84f),color,1);break;
+    case UiIcon::Previous:line(.68f,.18f,.32f,.5f);line(.32f,.5f,.68f,.82f);break;
+    case UiIcon::Next:line(.32f,.18f,.68f,.5f);line(.68f,.5f,.32f,.82f);break;
+    case UiIcon::Folder:
+      line(.1f,.28f,.1f,.82f);line(.1f,.82f,.9f,.82f);line(.9f,.82f,.9f,.34f);
+      line(.9f,.34f,.48f,.34f);line(.48f,.34f,.38f,.19f);line(.38f,.19f,.1f,.19f);line(.1f,.19f,.1f,.28f);break;
+    case UiIcon::Live:
+      draw->AddCircleFilled(p(.5f,.5f),size*.12f,color,12);
+      for (const float r:{.28f,.43f}) {
+        draw->PathArcTo(p(.5f,.5f),size*r,-1.1f,1.1f,10);draw->PathStroke(color,0,stroke);
+        draw->PathArcTo(p(.5f,.5f),size*r,2.04f,4.24f,10);draw->PathStroke(color,0,stroke);
+      }break;
     case UiIcon::Settings:
       draw->AddCircle(p(.5f,.5f),size*.28f,color,16,stroke);
       draw->AddCircle(p(.5f,.5f),size*.10f,color,12,stroke);
@@ -48,6 +63,18 @@ inline void DrawUiIcon(ImDrawList * draw, UiIcon icon, ImVec2 origin, float size
         line(.5f+x*.28f,.5f+y*.28f,.5f+x*.42f,.5f+y*.42f);
       }break;
   }
+}
+
+inline bool ActionButton(const char * id,UiIcon icon,const char * label,ImVec2 size,float scale)
+{
+  if (size.y==0) size.y=ImGui::GetFrameHeight();
+  const bool clicked=ImGui::Button(id,size);const auto a=ImGui::GetItemRectMin(),b=ImGui::GetItemRectMax();
+  const float text_width=label ? ImGui::CalcTextSize(label).x : 0,icon_size=16*scale,gap=label ? 6*scale : 0;
+  const float x=a.x+std::max(0.f,(b.x-a.x-icon_size-gap-text_width)*.5f);
+  auto * draw=ImGui::GetWindowDrawList();const auto color=ImGui::GetColorU32(ImGuiCol_Text);
+  DrawUiIcon(draw,icon,{x,a.y+(size.y-icon_size)*.5f},icon_size,color);
+  if (label) draw->AddText({x+icon_size+gap,a.y+(size.y-ImGui::GetTextLineHeight())*.5f},color,label);
+  return clicked;
 }
 
 inline bool IconButton(const char * id, UiIcon icon, const char * tip, float scale, bool selected=false,

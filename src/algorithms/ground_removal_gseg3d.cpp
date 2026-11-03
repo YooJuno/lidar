@@ -1,4 +1,5 @@
 #include "lidar_viewer/algorithms/ground_removal.hpp"
+#include "lidar_viewer/algorithms/ground_partition.hpp"
 
 #include <ground_detection.hpp>
 
@@ -129,9 +130,15 @@ GroundRemovalResult RunGroundRemovalGSeg3D(
   using PointType = pcl::PointXYZI;
   auto cloud = std::make_shared<pcl::PointCloud<PointType>>();
   cloud->points.reserve(input.size());
-  for (const auto & point : input) {
+  // The pinned GSeg3D core reads XYZ only and copies every output point.
+  // Use its unused intensity channel as an exact source index, then restore
+  // all attributes from input. Avoid one hash node + small vector per point.
+  // Float32 integers remain exact through 2^24; larger scans keep the join.
+  const bool indexed=input.size()<=16777216u;
+  for (std::size_t i=0;i<input.size();++i) {
+    const auto & point=input[i];
     if (std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z)) {
-      cloud->points.push_back({point.x, point.y, point.z, point.intensity});
+      cloud->points.push_back({point.x, point.y, point.z,indexed ? static_cast<float>(i) : point.intensity});
     }
   }
   cloud->width = static_cast<std::uint32_t>(cloud->points.size());
@@ -153,36 +160,24 @@ GroundRemovalResult RunGroundRemovalGSeg3D(
   // GSeg3D may omit cells with fewer than three points.  Reattach any such
   // original points as obstacles so this viewer's pipeline never drops data.
   std::unordered_map<PointKey, std::vector<std::size_t>, PointKeyHash> input_indices;
-  input_indices.reserve(input.size());
-  for (std::size_t index = 0; index < input.size(); ++index) {
-    input_indices[MakeKey(input[index])].push_back(index);
+  if (!indexed) {
+    input_indices.reserve(input.size());
+    for (std::size_t index=0;index<input.size();++index) input_indices[MakeKey(input[index])].push_back(index);
   }
-  std::vector<unsigned char> classified(input.size(), 0);
-
-  auto append_classified = [&input, &input_indices, &classified](
-      const pcl::PointCloud<PointType>::Ptr & points,
-      std::vector<KittiPoint> & destination) {
-      destination.reserve(destination.size() + points->size());
-      for (const auto & point : points->points) {
-        auto found = input_indices.find(MakeKey(point));
-        if (found == input_indices.end() || found->second.empty()) {
-          continue;
-        }
-        const std::size_t index = found->second.back();
-        found->second.pop_back();
-        classified[index] = 1;
-        destination.push_back(input[index]);
+  std::vector<unsigned char> ground(input.size(),0);
+  for (const auto & point:phase_two_result.first->points) {
+    if (indexed) {
+      if (!std::isfinite(point.intensity) || point.intensity<0 ||
+          point.intensity>=static_cast<float>(input.size()) || std::floor(point.intensity)!=point.intensity)
+        throw std::runtime_error("GSeg3D changed a source point index");
+      ground[static_cast<std::size_t>(point.intensity)]=1;
+    } else {
+      auto found=input_indices.find(MakeKey(point));
+      if (found!=input_indices.end() && !found->second.empty()) {
+        ground[found->second.back()]=1;found->second.pop_back();
       }
-    };
-
-  append_classified(phase_two_result.first, result.ground_points);
-  append_classified(phase_one_result.second, result.non_ground_points);
-  append_classified(phase_two_result.second, result.non_ground_points);
-  for (std::size_t index = 0; index < input.size(); ++index) {
-    if (classified[index] == 0) {
-      result.non_ground_points.push_back(input[index]);
     }
   }
-  return result;
+  return PartitionGround(input,ground);
 }
 }  // namespace lidar_viewer::algorithms

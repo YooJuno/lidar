@@ -110,12 +110,7 @@ endif()
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ground_segmentation/include/ground_detection.hpp")
   message(FATAL_ERROR "Missing GSeg3D submodule. Run: git submodule update --init --recursive")
 endif()
-add_library(lidar_viewer_gseg3d INTERFACE)
-target_include_directories(lidar_viewer_gseg3d INTERFACE
-  "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ground_segmentation/include"
-  ${PCL_INCLUDE_DIRS}
-)
-target_link_libraries(lidar_viewer_gseg3d INTERFACE ${PCL_LIBRARIES} nanoflann::nanoflann)
+include(cmake/GSeg3D.cmake)
 
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/patchwork_plusplus/cpp/patchworkpp/src/patchworkpp.cpp")
   message(FATAL_ERROR "Missing Patchwork++ submodule. Run: git submodule update --init --recursive")

@@ -1,4 +1,5 @@
 #include "lidar_viewer/algorithms/ground_removal.hpp"
+#include "lidar_viewer/algorithms/ground_partition.hpp"
 #include <patchwork/patchworkpp.h>
 
 #include <algorithm>
@@ -68,9 +69,6 @@ GroundRemovalResult RunGroundRemovalPatchworkPP(const std::vector<KittiPoint> & 
       if (index>=0 && static_cast<std::size_t>(index)<original.size()) ground[original[index]]=1;
     }
   }
-  result.ground_points.reserve(input.size());result.non_ground_points.reserve(input.size());
-  for (std::size_t i=0;i<input.size();++i)
-    (ground[i] ? result.ground_points : result.non_ground_points).push_back(input[i]);
-  return result;
+  return PartitionGround(input,ground);
 }
 }  // namespace lidar_viewer::algorithms

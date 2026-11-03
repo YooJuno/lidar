@@ -5,10 +5,10 @@ import time
 
 class Controls:
     def __init__(self,x11,window,log):self.x11=x11;self.window=window;self.log=log
-    def rect(self,name,timeout=8):
+    def rect(self,name,timeout=8,after=0):
         deadline=time.monotonic()+timeout
         while time.monotonic()<deadline:
-            rows=re.findall(r'^UI '+re.escape(name)+r' ([-.\d]+) ([-.\d]+) ([-.\d]+) ([-.\d]+)$',self.log.read_text(errors='replace'),re.M)
+            rows=re.findall(r'^UI '+re.escape(name)+r' ([-.\d]+) ([-.\d]+) ([-.\d]+) ([-.\d]+)$',self.log.read_text(errors='replace')[after:],re.M)
             if rows:return tuple(map(float,rows[-1]))
             time.sleep(.05)
         raise AssertionError('Control not rendered: '+name)

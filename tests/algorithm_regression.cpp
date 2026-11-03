@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <random>
 #include <iostream>
@@ -256,6 +257,55 @@ void TestGroundQuality()
     }
   }
 }
+
+void TestLongRampAndSourceAttributes()
+{
+  std::vector<KittiPoint> ramp;
+  for (int x=-140;x<=140;++x) for (int y=-20;y<=20;++y)
+    ramp.push_back({x*.25f,y*.25f,.12f*x*.25f,0});
+  const auto truth=ramp.size();
+  for (int x=0;x<12;++x) for (int z=0;z<8;++z)
+    ramp.push_back({20+x*.08f,1,2.4f+.6f+z*.2f,1});
+  ramp.push_back({0,0,-1e10f,1});ramp.push_back({0,0,1e10f,1});
+  GroundRemovalParams p;p.enabled=true;p.mode="fast_grid";p.max_candidate_radius_m=40;
+  const auto cpu=RunGroundSegmentation(ramp,p);p.use_cuda=true;
+  const auto gpu=RunGroundSegmentation(ramp,p);
+  Check(cpu.ground_points.size()>truth*.98,"Fast grid clipped a valid long ramp at the global candidate height limits");
+  for (const auto & point:cpu.ground_points) Check(point.intensity==0,"Long-ramp filter accepted a raised obstacle or extreme-height return");
+  Check(SamePoints(cpu.ground_points,gpu.ground_points) && SamePoints(cpu.non_ground_points,gpu.non_ground_points),
+    "Long-ramp CPU/CUDA height envelopes differ");
+  // Distinct reflectivities at exactly duplicated XYZ must survive the
+  // GSeg3D source-index join, including NaN intensity payloads.
+  std::vector<KittiPoint> cloud;
+  for (int x=-20;x<=20;++x) for (int y=-20;y<=20;++y)
+    cloud.push_back({x*.25f,y*.25f,0,static_cast<float>(cloud.size())});
+  cloud.push_back({1,1,0,-0.f});cloud.push_back({1,1,0,std::numeric_limits<float>::quiet_NaN()});
+  p={};p.enabled=true;p.mode="gseg3d";
+  const auto result=RunGroundSegmentation(cloud,p);std::vector<unsigned char> found(cloud.size());
+  for (const auto * partition:{&result.ground_points,&result.non_ground_points}) for (const auto & point:*partition) {
+    bool matched=false;
+    for (std::size_t i=0;i<cloud.size();++i) if (!found[i] && std::memcmp(&point,&cloud[i],sizeof(KittiPoint))==0) {
+      found[i]=1;matched=true;break;
+    }
+    Check(matched,"GSeg3D changed or duplicated an original point attribute");
+  }
+  Check(std::all_of(found.begin(),found.end(),[](auto v){return v!=0;}),"GSeg3D lost a duplicate source point");
+  // A 4-point flat cell has no fitted normal. It must not invent plane
+  // evidence to reclassify a neighboring vertical structure in phase one.
+  const std::vector<KittiPoint> sparse{{2.91f,2.1f,0,0},{2.99f,2.1f,0,0},
+    {2.91f,2.3f,0,0},{2.99f,2.3f,0,0}};
+  for (const bool line:{false,true}) for (const float intensity:{1.f,1e30f,-1e30f}) {
+    auto scene=sparse;
+    if (line) {
+      scene.clear();for (int i=0;i<10;++i) scene.push_back({2.9f+i*.01f,2.2f,0,0});
+    }
+    for (int i=0;i<10;++i) scene.push_back({3.02f,2.2f,.35f+i*.15f,intensity});
+    const auto classified=RunGroundSegmentation(scene,p);
+    for (const auto & point:classified.ground_points)
+      Check(point.z==0,"A sparse/linear GSeg3D cell invented a plane and absorbed the vertical obstacle");
+    Check(classified.ground_points.size()+classified.non_ground_points.size()==scene.size(),"Sparse GSeg3D scan lost source points");
+  }
+}
 }  // namespace
 
 void RunAlgorithmRegressionTests()
@@ -265,6 +315,7 @@ void RunAlgorithmRegressionTests()
   TestThreeDimensionalClusters();
   TestFastGroundBackends();
   TestGroundQuality();
+  TestLongRampAndSourceAttributes();
   TestFugSegSensorContract();
   bool rejected=false;
   try {GroundRemovalParams invalid;invalid.mode="unknown";RunGroundSegmentation({},invalid);}

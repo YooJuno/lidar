@@ -84,3 +84,26 @@ def rotated_iou(a,b,corners_a=None,corners_b=None):
             previous,previous_side=current,current_side
     intersection=polygon_area(polygon)
     return intersection/max(float(a[3]*a[4]+b[3]*b[4])-intersection,1e-8)
+
+
+def autoware_nms(boxes):
+    """Independent exhaustive two-stage policy from pinned Autoware kernels.
+
+    IoU compares every prior circle survivor, not only retained objects.
+    Different semantic classes never reject a pedestrian at the IoU stage.
+    """
+    ordered=boxes[np.argsort(-boxes[:,7],kind='stable')];circles=[]
+    for box in ordered:
+        if not any(float(np.square(box[:2]-p[:2]).sum())<.25 for p in circles):circles.append(box)
+    kept=[]
+    for i,box in enumerate(circles):
+        reject=False
+        for previous in circles[:i]:
+            if box[8]!=previous[8] and (box[8]==4 or previous[8]==4):continue
+            if sum((float(a)-float(b))**2 for a,b in zip(box[:2],previous[:2]))>100:continue
+            # Float64 rectangles, matching ROS object geometry in Autoware.
+            a=box.astype(np.float64);b=previous.astype(np.float64)
+            if min(a[3]*a[4],b[3]*b[4])<1e-6:continue
+            if rotated_iou(a,b)>.1:reject=True;break
+        if not reject:kept.append(box)
+    return np.asarray(kept,dtype=np.float32).reshape(-1,9)

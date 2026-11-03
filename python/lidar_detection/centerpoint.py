@@ -12,7 +12,7 @@ import hashlib
 import math
 import time
 import numpy as np
-from .native import stable_order,fill_features,backend_name
+from .native import stable_order,fill_features,backend_name,nms_indices,nms_backend_name
 from .models import get_model,AWML_REVISION
 
 MODEL_REVISION='494c8171def40bd36cc2feb323e0a5acbfab132b'
@@ -132,7 +132,7 @@ def polygon_area(polygon):
     return abs(float(np.dot(p[:,0],np.roll(p[:,1],1))-np.dot(p[:,1],np.roll(p[:,0],1))))*.5
 
 
-def rotated_iou(a,b,corners_a=None,corners_b=None):
+def intersection_area(a,b,corners_a=None,corners_b=None):
     # Four/eight vertices: scalar double arithmetic avoids allocating tiny
     # NumPy arrays for every edge intersection. Keep the same area reduction.
     polygon=[(float(p[0]),float(p[1])) for p in (box_corners(a) if corners_a is None else corners_a)]
@@ -148,30 +148,51 @@ def rotated_iou(a,b,corners_a=None,corners_b=None):
                 polygon.append((px+(cx-px)*t,py+(cy-py)*t))
             if side>=0:polygon.append((cx,cy))
             px,py,previous_side=cx,cy,side
-    intersection=polygon_area(polygon)
+    return polygon_area(polygon)
+
+
+def rotated_iou(a,b,corners_a=None,corners_b=None):
+    intersection=intersection_area(a,b,corners_a,corners_b)
     return intersection/max(float(a[3]*a[4]+b[3]*b[4])-intersection,1e-8)
+
+
+def _nms_iou(a,b,corners_a,corners_b):
+    area_a=float(a[3])*float(a[4]);area_b=float(b[3])*float(b[4])
+    if min(area_a,area_b)<1e-6:return 0.
+    intersection=intersection_area(a,b,corners_a,corners_b);united=area_a+area_b-intersection
+    return 0. if intersection<1e-6 or united<.01 else min(1.,intersection/united)
 
 def suppress(boxes):
     if not len(boxes):return boxes
-    boxes=boxes[np.argsort(-boxes[:,7],kind='stable')]
-    kept=[];corners=[];aabbs=[];cells={}
-    for box in boxes:
-        corner=box_corners(box);lo=corner.min(axis=0);hi=corner.max(axis=0)
-        aabb=(float(lo[0]),float(lo[1]),float(hi[0]),float(hi[1]))
-        rejected=False
-        # Original 0.5 m circle and 0.1 IoU suppression, within 10 m only.
-        cell=(math.floor(float(box[0])/10),math.floor(float(box[1])/10))
-        neighbors=(index for y in range(cell[1]-1,cell[1]+2) for x in range(cell[0]-1,cell[0]+2) for index in cells.get((x,y),()))
-        for index in neighbors:
-            previous,previous_corners,p=kept[index],corners[index],aabbs[index]
-            dx=box[0]-previous[0];dy=box[1]-previous[1];distance=float(dx*dx+dy*dy)
-            if distance<.25:rejected=True;break
-            if distance>=100:continue
-            if min(aabb[2],p[2])<=max(aabb[0],p[0]) or min(aabb[3],p[3])<=max(aabb[1],p[1]):continue
-            if rotated_iou(box,previous,corner,previous_corners)>.1:rejected=True;break
-        if not rejected:
-            cells.setdefault(cell,[]).append(len(kept));kept.append(box);corners.append(corner);aabbs.append(aabb)
-    return np.asarray(kept,dtype=np.float32).reshape(-1,9)
+    boxes=np.ascontiguousarray(boxes[np.argsort(-boxes[:,7],kind='stable')],dtype=np.float32)
+    indices=nms_indices(boxes)
+    if indices is not None:return boxes[indices]
+    # Match the pinned Autoware stages, including IoU's comparison against
+    # ALL prior circle survivors and its pedestrian/other-class exception.
+    circles=[];cells={}
+    for i,box in enumerate(boxes):
+        cell=(math.floor(float(box[0])*2),math.floor(float(box[1])*2))
+        neighbors=(j for y in range(cell[1]-1,cell[1]+2) for x in range(cell[0]-1,cell[0]+2) for j in cells.get((x,y),()))
+        if any(float(np.square(box[:2]-boxes[j,:2]).sum())<.25 for j in neighbors):continue
+        cells.setdefault(cell,[]).append(i);circles.append(i)
+    kept=[];cells={};corners={};aabbs={}
+    for i in circles:
+        box=boxes[i];corner=box_corners(box);lo=corner.min(axis=0);hi=corner.max(axis=0)
+        cell=(math.floor(float(box[0])/10),math.floor(float(box[1])/10));rejected=False
+        for y in range(cell[1]-1,cell[1]+2):
+            for x in range(cell[0]-1,cell[0]+2):
+                for j in cells.get((x,y),()):
+                    previous=boxes[j]
+                    if box[8]!=previous[8] and (box[8]==4 or previous[8]==4):continue
+                    if sum((float(a)-float(b))**2 for a,b in zip(box[:2],previous[:2]))>100:continue
+                    p=aabbs[j]
+                    if min(hi[0],p[2])<=max(lo[0],p[0]) or min(hi[1],p[3])<=max(lo[1],p[1]):continue
+                    if _nms_iou(box,previous,corner,corners[j])>.1:rejected=True;break
+                if rejected:break
+            if rejected:break
+        if not rejected:kept.append(i)
+        cells.setdefault(cell,[]).append(i);corners[i]=corner;aabbs[i]=(lo[0],lo[1],hi[0],hi[1])
+    return boxes[kept]
 
 
 def decode(outputs,score_threshold=.35,model='tiny'):
@@ -195,7 +216,8 @@ def decode(outputs,score_threshold=.35,model='tiny'):
     boxes=np.column_stack([(xs+reg[:,0])*step+minimum[0],(ys+reg[:,1])*step+minimum[1],height,
         np.exp(np.clip(dimensions[:,1],-6,6)),np.exp(np.clip(dimensions[:,0],-6,6)),np.exp(np.clip(dimensions[:,2],-6,6)),
         -np.arctan2(rotation[:,0],rotation[:,1])-np.pi/2,scores,labels]).astype(np.float32)
-    boxes=boxes[np.isfinite(boxes).all(axis=1)]
+    boxes=boxes[np.isfinite(boxes).all(axis=1)&(boxes[:,3:6]>0).all(axis=1)&
+        (boxes[:,3:5]<=100).all(axis=1)&(boxes[:,5]<=30)]
     return suppress(boxes)
 
 
@@ -248,5 +270,6 @@ class CenterPoint:
         values=self.session.run(None,{'vfe/input_features':features,'voxel_indices':indices})
         inferred=time.perf_counter();boxes=decode(dict(zip(self.output_names,values)),score_threshold,self.model)
         stats.update(preprocess_ms=(prepared-started)*1000,inference_ms=(inferred-prepared)*1000,
-            postprocess_ms=(time.perf_counter()-inferred)*1000,latency_ms=(time.perf_counter()-started)*1000,provider=self.provider)
+            postprocess_ms=(time.perf_counter()-inferred)*1000,latency_ms=(time.perf_counter()-started)*1000,provider=self.provider,
+            postprocess_backend=nms_backend_name())
         return boxes,stats

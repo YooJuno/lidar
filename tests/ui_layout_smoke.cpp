@@ -29,11 +29,11 @@ bool Overlaps(const UiRect & a, const UiRect & b)
     a.y < b.y + b.h - epsilon && b.y < a.y + a.h - epsilon;
 }
 
-void CheckGeometry(float requested_width, float requested_height, float scale)
+void CheckGeometry(float requested_width, float requested_height, float scale,float sidebar=320)
 {
   const float width = std::isfinite(requested_width) ? std::max(0.0f, requested_width) : 0.0f;
   const float height = std::isfinite(requested_height) ? std::max(0.0f, requested_height) : 0.0f;
-  const UiLayout layout = ComputeUiLayout(requested_width, requested_height, scale);
+  const UiLayout layout = ComputeUiLayout(requested_width, requested_height, scale,sidebar);
   const std::array<UiRect, 5> regions{
     layout.header, layout.sidebar, layout.viewport, layout.transport, layout.status};
   Check(std::isfinite(layout.scale) && layout.scale >= 0.75f && layout.scale <= 2.0f,
@@ -82,6 +82,10 @@ int main()
     CheckGeometry(1600, 960, nan);
     CheckGeometry(1600, 960, inf);
     CheckGeometry(1600, 960, -1);
+    for (const float sidebar:{280.f,440.f,520.f,nan,inf,-1.f}) {
+      CheckGeometry(800,600,1,sidebar);CheckGeometry(1600,960,1,sidebar);CheckGeometry(1600,960,1.5f,sidebar);
+    }
+    Check(ComputeUiLayout(1600,960,1,440).sidebar.w==440,"Requested inspector width was not applied");
     const auto normal = ComputeUiLayout(1600, 960);
     Check(normal.header.h == 56 && normal.sidebar.w == 320 &&
       normal.transport.h == 110 && normal.status.h == 28,

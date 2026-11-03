@@ -33,12 +33,29 @@ def library():
                 ctypes.c_void_p,ctypes.c_void_p,ctypes.c_void_p,ctypes.c_size_t,ctypes.c_void_p,
                 ctypes.c_uint32,*([ctypes.c_float]*5),ctypes.c_uint32]
             loaded.lidar_pillar_features_v2.restype=ctypes.c_int
+            if hasattr(loaded,'lidar_centerpoint_nms_v1'):
+                loaded.lidar_centerpoint_nms_v1.argtypes=[ctypes.c_void_p,ctypes.c_size_t,ctypes.c_void_p,ctypes.POINTER(ctypes.c_size_t)]
+                loaded.lidar_centerpoint_nms_v1.restype=ctypes.c_int
             return loaded
         except (OSError,AttributeError):continue
     return None
 
 
 def backend_name(point_count=0):return 'native' if point_count<=4_000_000 and library() else 'numpy'
+
+
+def nms_backend_name():return 'native' if library() and hasattr(library(),'lidar_centerpoint_nms_v1') else 'numpy'
+
+
+def nms_indices(boxes):
+    native=library()
+    if native is None or not hasattr(native,'lidar_centerpoint_nms_v1'):return None
+    if boxes.dtype!=np.float32 or boxes.ndim!=2 or boxes.shape[1]!=9 or not boxes.flags.c_contiguous:
+        raise ValueError('Expected contiguous float32 Nx9 boxes')
+    indices=np.empty(len(boxes),np.int64);count=ctypes.c_size_t()
+    if native.lidar_centerpoint_nms_v1(boxes.ctypes.data,len(boxes),indices.ctypes.data,ctypes.byref(count)):
+        raise ValueError('Invalid native NMS input')
+    return indices[:count.value]
 
 
 def stable_order(keys,permutation,grid=480):

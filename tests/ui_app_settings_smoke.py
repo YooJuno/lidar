@@ -62,7 +62,8 @@ def main():
                 profile=user if user.is_file() else private/f'config/profiles/{name}.cfg'
                 check(f'profile_{index}_does_not_store_app_scale','ui_scale=' not in profile.read_text())
                 app=Path(env['XDG_CONFIG_HOME'])/'lidar_viewer/app_settings.cfg'
-                check(f'profile_{index}_keeps_global_scale',abs(float(app.read_text().split('=')[1])-1.1)<.001)
+                prefs=dict(line.split('=',1) for line in app.read_text().splitlines() if '=' in line)
+                check(f'profile_{index}_keeps_global_scale',abs(float(prefs['ui_scale'])-1.1)<.001)
                 process.terminate();process.wait(timeout=5);process=None
         check('original_profiles_unchanged',before==settings_inventory(repo));result['status']='passed'
     except Exception as error:

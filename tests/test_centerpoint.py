@@ -14,8 +14,8 @@ import numpy as np
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'python'))
 from lidar_detection.centerpoint import pillarize,decode,rotated_iou,suppress,CenterPoint
 from lidar_detection.worker import read_into,reply,RESPONSE
-from lidar_detection.native import backend_name
-from reference_centerpoint import pillarize as reference_pillarize,rotated_iou as reference_iou
+from lidar_detection.native import backend_name,nms_backend_name
+from reference_centerpoint import pillarize as reference_pillarize,rotated_iou as reference_iou,autoware_nms
 
 class PrePostTests(unittest.TestCase):
     def test_native_and_numpy_match_frozen_features_bit_for_bit(self):
@@ -108,15 +108,24 @@ class PrePostTests(unittest.TestCase):
         boxes[:,7]=rng.uniform(.1,1,350);boxes[:,8]=rng.integers(0,5,350)
         # Include neighbors straddling negative and positive bucket boundaries.
         boxes[:6,:2]=[[-10.01,-.01],[-9.99,.01],[-.01,9.99],[.01,10.01],[9.99,-10.01],[10.01,-9.99]]
-        kept=[]
-        for box in boxes[np.argsort(-boxes[:,7],kind='stable')]:
-            rejected=False
-            for previous in kept:
-                distance=float(np.square(box[:2]-previous[:2]).sum())
-                if distance<.25 or (distance<100 and reference_iou(box,previous)>.1):
-                    rejected=True;break
-            if not rejected:kept.append(box)
-        np.testing.assert_array_equal(suppress(boxes),np.asarray(kept))
+        expected=autoware_nms(boxes)
+        np.testing.assert_array_equal(suppress(boxes),expected)
+        with patch('lidar_detection.native.library',return_value=None):
+            np.testing.assert_array_equal(suppress(boxes),expected)
+    def test_nms_preserves_person_near_different_class(self):
+        car=np.array([0,0,1,2,2,2,0,.9,0],np.float32)
+        person=np.array([.75,0,1,1.2,1.2,1.8,0,.8,4],np.float32)
+        self.assertEqual(len(suppress(np.stack([car,person]))),2)
+        person[8]=0
+        self.assertEqual(len(suppress(np.stack([car,person]))),1)
+    def test_circle_and_iou_are_distinct_stages(self):
+        boxes=np.array([[0,0,1,4,2,2,0,.9,0],[3.1,0,1,4,2,2,0,.8,0],[3.4,0,1,4,2,2,0,.7,0]],np.float32)
+        np.testing.assert_array_equal(suppress(boxes),boxes[:1])
+        boxes[1,0]=2.5;boxes[2,0]=5
+        # The middle box is IoU-rejected but still suppresses the third one.
+        np.testing.assert_array_equal(suppress(boxes),boxes[:1])
+        with patch('lidar_detection.native.library',return_value=None):
+            np.testing.assert_array_equal(suppress(boxes),boxes[:1])
     def test_worker_reuses_receive_storage_and_handles_short_io(self):
         class ShortReader(io.BytesIO):
             def readinto(self,target):return super().readinto(target[:3])
@@ -157,6 +166,7 @@ if __name__=='__main__':
     parser.add_argument('--provider',choices=['auto','cpu'],default='auto')
     parser.add_argument('--require-native',action='store_true');args=parser.parse_args()
     if args.require_native and backend_name()!='native':raise SystemExit('Native preprocessing library was not found')
+    if args.require_native and nms_backend_name()!='native':raise SystemExit('Native postprocessing library was not found')
     result=unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(PrePostTests))
     if not result.wasSuccessful():raise SystemExit(1)
     if args.model_dir:model_check(args.model_dir,args.cloud,args.model,args.provider)

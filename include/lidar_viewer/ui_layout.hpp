@@ -28,7 +28,7 @@ struct UiLayout
 };
 
 inline UiLayout ComputeUiLayout(
-  float window_width, float window_height, float requested_scale = 1.0f)
+  float window_width, float window_height, float requested_scale = 1.0f,float requested_sidebar=320.f)
 {
   const float width = std::isfinite(window_width) ? std::max(0.0f, window_width) : 0.0f;
   const float height = std::isfinite(window_height) ? std::max(0.0f, window_height) : 0.0f;
@@ -56,7 +56,8 @@ inline UiLayout ComputeUiLayout(
   const float body_bottom = std::max(body_y, layout.status.y - gap);
   const float body_height = body_bottom - body_y;
   const float content_width = std::max(0.0f, width - 3.0f * gap);
-  const float sidebar_width = std::min(320.0f * scale, content_width * 0.40f);
+  const float sidebar=std::isfinite(requested_sidebar) ? std::clamp(requested_sidebar,280.f,520.f) : 320.f;
+  const float sidebar_width = std::min(sidebar * scale, content_width * 0.40f);
   layout.sidebar = {gap, body_y, sidebar_width, body_height};
 
   const float main_x = std::min(width, layout.sidebar.x + sidebar_width + gap);

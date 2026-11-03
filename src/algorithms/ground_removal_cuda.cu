@@ -72,6 +72,7 @@ __global__ void BuildMinZGridKernel(
   float min_candidate_z,
   float max_candidate_z,
   float max_radius_sq,
+  float height_slope,
   float grid_min_x,
   float grid_min_y,
   int grid_width,
@@ -86,8 +87,7 @@ __global__ void BuildMinZGridKernel(
   }
 
   const KittiPoint point = points[index];
-  if (!isfinite(point.x) || !isfinite(point.y) || !isfinite(point.z) ||
-      point.z < min_candidate_z || point.z > max_candidate_z) {
+  if (!isfinite(point.x) || !isfinite(point.y) || !isfinite(point.z)) {
     return;
   }
 
@@ -95,6 +95,8 @@ __global__ void BuildMinZGridKernel(
   if (radius_sq > max_radius_sq) {
     return;
   }
+  const float allowance=height_slope*sqrtf(radius_sq);
+  if (point.z<min_candidate_z-allowance || point.z>max_candidate_z+allowance) return;
 
   const int cx = static_cast<int>(floorf((point.x - grid_min_x) / cell_size));
   const int cy = static_cast<int>(floorf((point.y - grid_min_y) / cell_size));
@@ -341,6 +343,7 @@ __global__ void ClassifyGSeg3DPointsKernel(
   float max_radius_sq,
   float min_candidate_z,
   float max_candidate_z,
+  float height_slope,
   float grid_min_x,
   float grid_min_y,
   int grid_width,
@@ -356,8 +359,9 @@ __global__ void ClassifyGSeg3DPointsKernel(
     return;
   }
   const KittiPoint point = points[index];
+  const float allowance=height_slope*sqrtf(point.x*point.x+point.y*point.y);
   if (!isfinite(point.x) || !isfinite(point.y) || !isfinite(point.z) ||
-      point.z < min_candidate_z || point.z > max_candidate_z ||
+      point.z < min_candidate_z-allowance || point.z > max_candidate_z+allowance ||
       point.x * point.x + point.y * point.y > max_radius_sq) {
     is_ground_mask[index] = 0;
     return;
@@ -559,6 +563,7 @@ bool BuildMinZGridCuda(
     params.min_candidate_z,
     params.max_candidate_z,
     max_radius * max_radius,
+    0.f,
     grid_min_x,
     grid_min_y,
     grid_width,
@@ -791,13 +796,14 @@ bool ClassifyGroundPointsGSeg3DCuda(
     phase_one_min_z, phase_one_valid, phase_one_cells);
   InitializeGroundGridKernel<<<phase_two_blocks, kThreadsPerBlock>>>(
     phase_two_min_z, phase_two_valid, phase_two_cells);
+  const float height_slope=std::tan(std::clamp(params.gseg3d_slope_threshold_deg,0.f,45.f)*kPi/180.f);
   BuildMinZGridKernel<<<point_blocks, kThreadsPerBlock>>>(
     device_points, input.size(), params.min_candidate_z, params.max_candidate_z,
-    max_radius * max_radius, grid_min_x, grid_min_y, phase_one_width, phase_one_height,
+    max_radius * max_radius,height_slope, grid_min_x, grid_min_y, phase_one_width, phase_one_height,
     phase_one_cell_size, phase_one_min_z, phase_one_valid);
   BuildMinZGridKernel<<<point_blocks, kThreadsPerBlock>>>(
     device_points, input.size(), params.min_candidate_z, params.max_candidate_z,
-    max_radius * max_radius, grid_min_x, grid_min_y, phase_two_width, phase_two_height,
+    max_radius * max_radius,height_slope, grid_min_x, grid_min_y, phase_two_width, phase_two_height,
     phase_two_cell_size, phase_two_min_z, phase_two_valid);
 
   const float seed_tolerance = fmaxf(params.gseg3d_ground_inlier_threshold_m * 2.0f, 0.25f);
@@ -834,7 +840,7 @@ bool ClassifyGroundPointsGSeg3DCuda(
     refinement_deviation, phase_two_state);
   ClassifyGSeg3DPointsKernel<<<point_blocks, kThreadsPerBlock>>>(
     device_points, input.size(), max_radius * max_radius,
-    params.min_candidate_z, params.max_candidate_z,
+    params.min_candidate_z, params.max_candidate_z,height_slope,
     grid_min_x, grid_min_y, phase_two_width, phase_two_height, phase_two_cell_size,
     phase_two_min_z, phase_two_state,
     fmaxf(params.gseg3d_ground_inlier_threshold_m, 0.05f), device_mask);

@@ -70,9 +70,9 @@ def main():
                 read_into(source,memoryview(receive)[:needed])
                 points=np.frombuffer(receive,dtype='<f4',count=count*3).reshape(-1,3)
                 boxes,stats=detector.infer(points,threshold)
-                message='pre %.1f / net %.1f / post %.1f ms; %s; %d pillars; %d truncated'%(
+                message='pre %.1f / net %.1f / post %.1f ms; %s; NMS %s; %d pillars; %d truncated'%(
                     stats.get('preprocess_ms',0),stats.get('inference_ms',0),stats.get('postprocess_ms',0),
-                    stats['preprocess_backend'],stats['pillars'],stats['truncated_pillars'])
+                    stats['preprocess_backend'],stats.get('postprocess_backend','numpy'),stats['pillars'],stats['truncated_pillars'])
                 reply(sink,b'LDR1',revision,boxes,stats['latency_ms'],message)
             except Exception as error:
                 reply(sink,b'LDE1',revision,[],0,str(error))

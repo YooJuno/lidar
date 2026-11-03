@@ -1,4 +1,5 @@
 #include "lidar_viewer/algorithms/ground_removal.hpp"
+#include "lidar_viewer/algorithms/ground_partition.hpp"
 #include "lidar_viewer/algorithms/ground_removal_cuda.hpp"
 
 #include <algorithm>
@@ -54,11 +55,13 @@ struct GroundGrid
   }
 };
 
-bool Candidate(const KittiPoint & point, const GroundRemovalParams & params, float radius_squared)
+bool Candidate(const KittiPoint & point, const GroundRemovalParams & params, float radius_squared,float height_slope)
 {
+  const float range_squared=point.x*point.x+point.y*point.y;
+  const float allowance=height_slope*std::sqrt(range_squared);
   return std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z) &&
-    point.z >= params.min_candidate_z && point.z <= params.max_candidate_z &&
-    point.x * point.x + point.y * point.y <= radius_squared;
+    point.z >= params.min_candidate_z-allowance && point.z <= params.max_candidate_z+allowance &&
+    range_squared <= radius_squared;
 }
 
 std::vector<unsigned char> ClassifyFastGroundCpu(
@@ -66,10 +69,11 @@ std::vector<unsigned char> ClassifyFastGroundCpu(
 {
   const float radius = std::max(params.max_candidate_radius_m, 1.0f);
   const float radius_squared = radius * radius;
+  const float height_slope=std::tan(std::clamp(params.gseg3d_slope_threshold_deg,0.f,45.f)*kPi/180.f);
   GroundGrid coarse(radius, std::max(params.gseg3d_cell_size_x_m, .25f));
   GroundGrid fine(radius, std::max(params.gseg3d_cuda_cell_size_m, .25f));
   for (const auto & point : input) {
-    if (!Candidate(point, params, radius_squared)) continue;
+    if (!Candidate(point, params, radius_squared,height_slope)) continue;
     for (GroundGrid * grid : {&coarse, &fine}) {
       const int x = grid->Coord(point.x), y = grid->Coord(point.y);
       if (grid->Contains(x, y)) {
@@ -135,7 +139,7 @@ std::vector<unsigned char> ClassifyFastGroundCpu(
   std::vector<unsigned char> mask(input.size(), 0);
   for (std::size_t index = 0; index < input.size(); ++index) {
     const auto & point = input[index];
-    if (!Candidate(point, params, radius_squared)) continue;
+    if (!Candidate(point, params, radius_squared,height_slope)) continue;
     int support;
     const float ground_z = fine.NearbyGround(fine.Coord(point.x), fine.Coord(point.y), support);
     const int required = std::sqrt(point.x * point.x + point.y * point.y) > 25 ? 1 : 2;
@@ -157,11 +161,7 @@ GroundRemovalResult RunGroundRemovalFastGrid(
   std::vector<unsigned char> mask;
   const bool used_cuda = params.use_cuda && ClassifyGroundPointsGSeg3DCuda(input, params, mask);
   if (!used_cuda) mask = ClassifyFastGroundCpu(input, params);
-  result.ground_points.reserve(input.size());
-  result.non_ground_points.reserve(input.size());
-  for (std::size_t index = 0; index < input.size(); ++index) {
-    (mask[index] ? result.ground_points : result.non_ground_points).push_back(input[index]);
-  }
+  result=PartitionGround(input,mask);
   static std::atomic<bool> logged{false};
   if (params.use_cuda && !logged.exchange(true)) {
     std::cout << "Fast grid ground backend: " << (used_cuda ? "CUDA" : "CPU fallback") << '\n';
