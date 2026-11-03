@@ -183,6 +183,17 @@ int main()
     Check(SerializeRoiSettings(parsed) == serialized, "ROI serialization roundtrip failed");
     Check(SerializeRoiSettings(ParseRoiSettings("grid_enabled=1\n", settings)) == serialized, "absent ROI replaced fallback");
     Check(ParseRoiSettings("roi_enabled=1\nroi_count=0\n", settings).boxes.empty(), "empty section did not clear fallback");
+    const RoiSettings display_settings{true,false,{a}};
+    const auto display_text=SerializeRoiSettings(display_settings,"display_roi_");
+    const auto combined=serialized+display_text;
+    Check(SameRoi(ParseRoiSettings(combined),settings),"display section changed ground boxes");
+    Check(SameRoi(ParseRoiSettings(combined,{},"display_roi_"),display_settings),
+      "ground section changed display boxes");
+    Check(ParseRoiSettings(serialized,{},"display_roi_").boxes.empty(),
+      "old ground-only profile created display boxes");
+    Check(SameRoi(ParseRoiSettings("display_roi_count=1\ndisplay_roi_box=bad\n"+serialized),settings),
+      "bad display section corrupted ground settings");
+    Reject([&] {ParseRoiSettings("display_roi_count=1\ndisplay_roi_box=bad\n"+serialized,{},"display_roi_");});
     for (const auto & invalid : {
         "roi_count=1\n", "roi_count=-1\n", "roi_count=129\n", "roi_enabled=2\nroi_count=0\n",
         "roi_count=1\nroi_box=1 unquoted 0 0 0 1 1 1 0\n",

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Private Xvfb: ground-only ROI, visible skipped points and cached detection.
+"""Private Xvfb: independent display/ground ROIs and cached detection.
 
 The protocol recorder checks the bytes sent to inference, without substituting
 any production model. Ground comparisons run each original algorithm against
@@ -72,7 +72,7 @@ while True:
     env=dict(os.environ,XDG_CONFIG_HOME=str(out/'settings'),LIDAR_VIEWER_ROI_TRACE='1',
              GSETTINGS_BACKEND='memory',NO_AT_BRIDGE='1',LIDAR_VIEWER_UI_TRACE='1')
     before=settings_inventory(repo);result={'status':'started','checks':{},'output':str(out)}
-    process=x11=window=controls=None;log_path=out/'viewer.log';deadline=time.monotonic()+150
+    process=x11=window=controls=None;log_path=out/'viewer.log';deadline=time.monotonic()+240
 
     def check(label,value):
         result['checks'][label]=bool(value)
@@ -232,8 +232,64 @@ while True:
             stage(lambda:controls.click('roi_enabled_0'),'paused_reenable_waits_for_apply');apply(405);save()
             check('editing_exclusions_reuses_detector_process',len((private/'python/starts.txt').read_text().splitlines())==1)
             x11.move(window,1400,700);capture(x11,window,out/'02_restored_exclusion.png')
+            # Display cropping is a separate collection, history and render
+            # operation; it must not age tracks or request another inference.
+            ground_settings='\n'.join(line for line in save().splitlines() if line.startswith('roi_'))
+            controls.click('roi_purpose_display')
+            check('display_collection_starts_empty','display_roi_count=0' in save())
+            previous=len(requests());passes=rows()[-1][2]
+            def edit_display(center,size):
+                controls.click('roi_details')
+                for axis,value in enumerate(center):controls.enter('roi_center',value,axis)
+                for axis,value in enumerate(size):controls.enter('roi_size',value,axis)
+                controls.enter('roi_yaw',0);controls.click('roi_done');time.sleep(.25)
+            controls.click('roi_add');drag((700,250),(850,350))
+            edit_display([0,0,0],[2,2,4]);text=save()
+            check('display_drawing_enables_crop_and_persists',
+                  'display_roi_enabled=1' in text and 'display_roi_box=1 "ROI 1" 0 0 0 2 2 4 0' in text)
+            check('crop_keeps_ground_boxes_unchanged',ground_settings=='\n'.join(line for line in text.splitlines() if line.startswith('roi_')))
+            display,counts=inspect()
+            check('crop_retains_only_box_points',display[:3]==(430,25,405))
+            check('crop_keeps_full_segmentation_and_neural_inputs',counts==(405,len(points)-405,len(points)))
+            check('paused_crop_does_not_resegment_or_infer',len(requests())==previous and rows()[-1][2]==passes)
+            check('display_updates_current_frame',bool(re.search(r'ROI applied: \d+ boxes \| 430 points',log_path.read_text())))
+            x11.move(window,1400,700);capture(x11,window,out/'03_display_roi.png')
+            controls.click('roi_duplicate');edit_display([3,2,.6],[2,2,3]);text=save()
+            display,counts=inspect();check('display_boxes_are_a_union',display[0]==945)
+            controls.click('roi_enabled_1');save();display,_=inspect()
+            check('unchecking_display_box_only_changes_view',display[0]==430 and rows()[-1][0]==405)
+            controls.click('roi_enabled_1');controls.click('roi_purpose_ground')
+            controls.click('roi_enabled_0');apply(0);text=save();display,counts=inspect()
+            check('ground_apply_does_not_change_display_boxes',display[0]==945 and counts==(0,len(points),len(points)) and 'display_roi_count=2' in text)
+            controls.click('roi_enabled_0');apply(405);save()
+            controls.click('roi_purpose_display');controls.click('roi_undo');save();display,_=inspect()
+            check('display_history_is_independent',display[0]==430 and rows()[-1][0]==405)
+            controls.click('roi_redo');save();display,_=inspect();check('display_redo_restores_union',display[0]==945)
+            controls.click('roi_delete');save();display,_=inspect();check('delete_display_box_preserves_ground_box',display[0]==430 and rows()[-1][0]==405)
+            controls.click('roi_undo');save()
+            controls.click('display_roi_enabled');save();display,counts=inspect()
+            check('disable_crop_restores_cloud_with_exclusions_active',display[0]==len(points) and counts[0]==405)
+            controls.click('display_roi_enabled')
+            previous=len(requests());x11.key(window,'space');wait(lambda:len(requests())>previous+2)
+            controls.click('display_roi_enabled');previous=len(requests());wait(lambda:len(requests())>previous+2)
+            check('display_toggle_preserves_playing_state',len(requests())>previous+2)
+            x11.key(window,'space');time.sleep(.3);controls.click('display_roi_enabled');save()
+            controls.click('roi_enabled_0');controls.click('roi_enabled_1');x11.key(window,'Escape');time.sleep(.3)
+            controls.click('display_roi_show_full');save();display,counts=inspect()
+            check('empty_crop_recovery_preserves_ground_exclusions',display[0]==len(points) and counts[0]==405)
+            controls.click('roi_enabled_0');controls.click('roi_enabled_1');controls.click('display_roi_enabled');save()
+            check('both_roi_types_reuse_one_detector_process',len((private/'python/starts.txt').read_text().splitlines())==1)
         process.terminate();process.wait(timeout=5);process=None
-        display,counts=inspect();check('ground_roi_survives_restart',display[0]==len(points) and counts==(405,len(points)-405,len(points)))
+        display,counts=inspect();check('both_roi_collections_survive_restart',display[0]==945 and counts==(405,len(points)-405,len(points)))
+        dual_profile=(user_profile if user_profile.exists() else profile).read_text()
+        partitions=[]
+        for mode in ['all','ground','obstacles']:
+            write_profile(dual_profile+f'ground_view={mode}\n'+rotations);partition,counts=inspect();partitions.append(partition)
+            check('crop_after_alignment_'+mode,counts==(405,len(points)-405,len(points)))
+        check('crop_preserves_class_partition_after_alignment',partitions[0][0]==945 and partitions[0][0]==partitions[1][0]+partitions[2][0] and partitions[0][1:3]==partitions[1][1:3]==partitions[2][1:3])
+        inspect(detect=True)
+        captured=list(struct.iter_unpack('<3f',(private/'python/last-input.bin').read_bytes()))
+        check('neural_input_still_full_with_both_roi_types',len(captured)==len(points))
         check('raw_file_is_unchanged',hashlib.sha256(fixture.read_bytes()).hexdigest()==raw_hash)
         check('original_profiles_unchanged',before==settings_inventory(repo))
         result['status']='passed'

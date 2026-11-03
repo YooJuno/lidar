@@ -519,6 +519,14 @@ struct ViewerState
   GridRenderer grid;
   ClusterBoxRenderer cluster_boxes;
   lidar_viewer::RoiSettings roi;
+  // Persist existing roi_* boxes as ground exclusions. Display cropping owns
+  // an independent collection and never changes an algorithm's input.
+  lidar_viewer::RoiSettings display_roi, saved_display_roi;
+  enum class RoiPurpose {Display, Ground};
+  RoiPurpose roi_purpose{RoiPurpose::Ground};
+  std::size_t selected_display_roi{0};
+  lidar_viewer::RoiHistory display_roi_history;
+  bool display_roi_pending{false};
   lidar_viewer::RoiSettings saved_roi;
   lidar_viewer::RoiSettings analysis_roi;
   lidar_viewer::RoiSettings applied_exclusions;
@@ -593,6 +601,32 @@ struct ViewerState
   std::uint64_t geometry_ground_config{0}, geometry_input_config{0};
   std::uint64_t submitted_ground_config{0}, submitted_input_config{0};
 };
+
+const lidar_viewer::RoiSettings & EditedRoi(const ViewerState & state)
+{
+  return state.roi_purpose==ViewerState::RoiPurpose::Display ? state.display_roi : state.roi;
+}
+lidar_viewer::RoiSettings & EditedRoi(ViewerState & state)
+{
+  return state.roi_purpose==ViewerState::RoiPurpose::Display ? state.display_roi : state.roi;
+}
+std::size_t SelectedRoi(const ViewerState & state)
+{
+  return state.roi_purpose==ViewerState::RoiPurpose::Display ? state.selected_display_roi : state.selected_roi;
+}
+std::size_t & SelectedRoi(ViewerState & state)
+{
+  return state.roi_purpose==ViewerState::RoiPurpose::Display ? state.selected_display_roi : state.selected_roi;
+}
+lidar_viewer::RoiHistory & EditedRoiHistory(ViewerState & state)
+{
+  return state.roi_purpose==ViewerState::RoiPurpose::Display ? state.display_roi_history : state.roi_history;
+}
+void MarkRoiPending(ViewerState & state)
+{
+  state.roi_pending=true;
+  if (state.roi_purpose==ViewerState::RoiPurpose::Display) state.display_roi_pending=true;
+}
 
 void SetTransientStatus(ViewerState & state, const std::string & message);
 
@@ -1141,8 +1175,8 @@ void ApplyGlobalAlignment(FrameData & frame, float ground_offset)
 void RebuildRoiGeometry(ViewerState & state)
 {
   auto & vertices=state.roi_renderer.vertices;
-  vertices.clear(); vertices.reserve(state.roi.boxes.size()*24);
-  for (const auto & box : state.roi.boxes) {
+  vertices.clear(); vertices.reserve(EditedRoi(state).boxes.size()*24);
+  for (const auto & box : EditedRoi(state).boxes) {
     auto corners=lidar_viewer::RoiCorners(box);
     for (auto & corner : corners) corner=state.roi_frame.Transform(corner);
     for (unsigned i=0;i<8;++i) for (unsigned bit : {1u,2u,4u}) if (!(i&bit)) {
@@ -1165,8 +1199,22 @@ void ApplyRoiResult(ViewerState & state, const FrameData & processed, std::size_
     std::vector<lidar_viewer::algorithms::Cluster>{};
   const auto retained_obstacles=frame.points.size();
   frame.points.insert(frame.points.end(),processed.points.begin()+static_cast<std::ptrdiff_t>(obstacles),processed.points.end());
+  // Classify/cluster the full scan first. Stable compaction preserves the two
+  // ground display ranges, including points skipped by the exclusion boxes.
+  auto visible_obstacles=retained_obstacles;
+  if (state.display_roi.enabled) {
+    const lidar_viewer::PreparedRoi display(state.display_roi,coordinates);
+    std::size_t retained=0;visible_obstacles=0;
+    for (std::size_t i=0;i<frame.points.size();++i) {
+      const auto & p=frame.points[i];
+      if (!display.Contains({p.x,p.y,p.z})) continue;
+      if (i<retained_obstacles) ++visible_obstacles;
+      frame.points[retained++]=p;
+    }
+    frame.points.resize(retained);
+  }
   RecomputeFrameBounds(frame);
-  state.ground_removed_count=frame.points.size()-retained_obstacles;
+  state.ground_removed_count=frame.points.size()-visible_obstacles;
   state.frame=std::move(frame); state.clusters=std::move(clusters);
   state.roi_frame=coordinates;
   RebuildRoiGeometry(state); FilterDetections(state);
@@ -1284,7 +1332,7 @@ void QueueGeometry(ViewerState & state, FrameData base, std::optional<std::size_
   work->imu_mount=state.imu_mount;work->algorithm_config=state.algorithm_config;
   work->imu_level_result=state.imu_level_result;
   work->ground_removal_enabled=state.ground_removal_enabled;work->ground_sequence=state.ground_sequence;
-  work->roi=state.roi;work->roi_frame=state.roi_frame;
+  work->roi=state.roi;work->display_roi=state.display_roi;work->roi_frame=state.roi_frame;
   work->analysis_roi=state.analysis_roi;work->applied_exclusions=state.analysis_roi;
   if (roi_only) {
     work->processed_frame=state.processed_frame;work->processed_obstacles=state.processed_obstacles;
@@ -1429,7 +1477,7 @@ bool CompleteGeometry(ViewerState & state)
       } else {
         // ROI/cluster edits reuse the in-flight segmentation too. Preserve the
         // fresh scan's aligned detector snapshot instead of computing it twice.
-        work->roi=state.roi;work->algorithm_config.clustering=state.algorithm_config.clustering;
+        work->roi=state.roi;work->display_roi=state.display_roi;work->algorithm_config.clustering=state.algorithm_config.clustering;
         work->algorithm_config.detection=state.algorithm_config.detection;
         const bool prepare_detector=work->algorithm_config.detection.enabled &&
           (state.geometry_updates_detector || !state.detector_input);
@@ -1660,6 +1708,8 @@ void OpenBagSource(ViewerState & state, std::size_t index)
       staged.imu_level_enabled = state.imu_level_enabled;
       staged.imu_mount = state.imu_mount;
       staged.roi = state.roi;
+      staged.display_roi=state.display_roi;
+      staged.selected_display_roi=state.selected_display_roi;
       staged.analysis_roi=state.analysis_roi;staged.applied_exclusions=state.analysis_roi;
       staged.selected_roi = state.selected_roi;
       staged.object_method=state.object_method;
@@ -1847,7 +1897,11 @@ void CompleteBagLoad(ViewerState & state)
     state.processing_ms=staged.processing_ms; state.roi_ms=staged.roi_ms;
     state.ground_passes+=staged.ground_passes;state.ground_sequence=staged.ground_sequence;
     state.roi_pending=false; state.roi_gesture.active=false; state.roi_tool=ViewerState::RoiTool::Navigate;
-    if (change_profile) {state.saved_roi=staged.saved_roi; state.roi_history.Clear();}
+    if (change_profile) {
+      state.saved_roi=staged.saved_roi;state.saved_display_roi=staged.saved_display_roi;
+      state.roi_history.Clear();state.display_roi_history.Clear();
+      state.roi_purpose=staged.roi_purpose;
+    }
     state.ground_removed_count = staged.ground_removed_count;
     state.clusters = std::move(staged.clusters);
     state.detections = std::move(staged.detections);
@@ -1856,12 +1910,13 @@ void CompleteBagLoad(ViewerState & state)
     state.frame_dirty = true;
     state.imu_level_result = std::move(staged.imu_level_result);
     state.roi = std::move(staged.roi);
+    state.display_roi=std::move(staged.display_roi);state.display_roi_pending=false;
+    state.selected_display_roi=staged.selected_display_roi;
     state.analysis_roi=std::move(staged.analysis_roi);state.applied_exclusions=std::move(staged.applied_exclusions);
     state.exclusion_removed_count=staged.exclusion_removed_count;
     state.selected_roi = staged.selected_roi;
     state.roi_frame = staged.roi_frame;
-    state.roi_renderer.vertices = std::move(staged.roi_renderer.vertices);
-    state.roi_renderer.dirty = true;
+    RebuildRoiGeometry(state);
     if (change_profile) {
       state.calibration = staged.calibration;
       state.imu_level_enabled = staged.imu_level_enabled;
@@ -1952,7 +2007,8 @@ void ConnectLive(ViewerState & state)
   state.frames.clear(); state.file_groups.clear(); state.current_bag_source.reset();
   ResetTracking(state);
   state.base_frame = {}; state.frame = {}; state.processed_frame={}; state.processed_obstacles=0;
-  state.roi_gesture.active=false; state.roi_pending=false; state.roi_tool=ViewerState::RoiTool::Navigate;
+  state.roi_gesture.active=false;state.roi_pending=false;state.display_roi_pending=false;
+  state.roi_tool=ViewerState::RoiTool::Navigate;
   state.exclusion_removed_count=0;
   state.clusters.clear(); state.detections.clear();state.full_detections.clear();state.detector_input.reset();++state.detector_revision;
   RebuildClusterBoxes(state);
@@ -2192,11 +2248,13 @@ void SaveSettings(ViewerState & state)
   out << "tracking_show_trails=" << state.tracking_params.show_trails << '\n';
   out << "tracking_show_speed=" << state.tracking_params.show_speed << '\n';
   out << lidar_viewer::SerializeRoiSettings(state.roi);
+  out << lidar_viewer::SerializeRoiSettings(state.display_roi,"display_roi_");
   if (!out) {
     throw std::runtime_error("Failed to serialize settings");
   }
   lidar_viewer::settings::AtomicWriteText(destination, out.str());
   state.saved_roi=state.roi;
+  state.saved_display_roi=state.display_roi;
 }
 
 void LoadSettingsFile(ViewerState & state, const fs::path & path)
@@ -2428,6 +2486,10 @@ void LoadSettingsFile(ViewerState & state, const fs::path & path)
     catch (const std::exception & error) {
       std::cerr << "Ignoring invalid ROI settings in " << path << ": " << error.what() << '\n';
     }
+    try {state.display_roi=lidar_viewer::ParseRoiSettings(settings_text,state.display_roi,"display_roi_");}
+    catch (const std::exception & error) {
+      std::cerr << "Ignoring invalid display ROI settings in " << path << ": " << error.what() << '\n';
+    }
   }
   MarkGridDirty(state);
 }
@@ -2435,6 +2497,7 @@ void LoadSettingsFile(ViewerState & state, const fs::path & path)
 void LoadSettings(ViewerState & state)
 {
   const auto app_scale=state.ui_scale;
+  state.display_roi={};state.selected_display_roi=0;state.display_roi_pending=false;
   state.detector_model_loaded=false;
   state.ground_view=ViewerState::GroundView::All;
 #ifdef LIDAR_VIEWER_USER_SETTINGS
@@ -2451,6 +2514,9 @@ void LoadSettings(ViewerState & state)
   if (state.object_method==0 || state.object_method==3)
     state.object_method=state.algorithm_config.detection.model=="short_range" ? 3 : 0;
   state.roi=lidar_viewer::GroundExclusionRoi(std::move(state.roi));
+  for (auto & box:state.display_roi.boxes) box.mode=lidar_viewer::RoiBoxMode::Include;
+  state.saved_display_roi=state.display_roi;state.display_roi_history.Clear();
+  state.roi_purpose=state.display_roi.enabled ? ViewerState::RoiPurpose::Display : ViewerState::RoiPurpose::Ground;
   state.saved_roi=state.roi; state.roi_history.Clear();
   state.analysis_roi=state.roi;
   state.applied_exclusions=state.roi;
@@ -2555,8 +2621,8 @@ void SelectRoiTool(ViewerState & state, ViewerState::RoiTool tool)
   if (tool!=ViewerState::RoiTool::Navigate) {
     SetProjectionMode(state,CameraState::ProjectionMode::View2D);
     state.roi_tab_requested=true;
-    if (tool==ViewerState::RoiTool::Draw && !state.roi.boxes.empty()) {
-      const auto & selected=state.roi.boxes[state.selected_roi];
+    if (tool==ViewerState::RoiTool::Draw && !EditedRoi(state).boxes.empty()) {
+      const auto & selected=EditedRoi(state).boxes[SelectedRoi(state)];
       state.roi_new_z=selected.center.z;state.roi_new_height=selected.size.z;
     }
   }
@@ -2565,16 +2631,16 @@ void SelectRoiTool(ViewerState & state, ViewerState::RoiTool tool)
 void FinishRoiGesture(ViewerState & state, bool cancel)
 {
   if (!state.roi_gesture.active) return;
-  if (state.roi_tool==ViewerState::RoiTool::Draw && !state.roi.boxes.empty()) {
-    const auto & box=state.roi.boxes[state.selected_roi];
+  if (state.roi_tool==ViewerState::RoiTool::Draw && !EditedRoi(state).boxes.empty()) {
+    const auto & box=EditedRoi(state).boxes[SelectedRoi(state)];
     if (box.size.x<.1f || box.size.y<.1f) cancel=true;
   }
-  if (cancel) state.roi=state.roi_gesture.before;
-  else if (!lidar_viewer::SameRoi(state.roi_gesture.before,state.roi)) state.roi_history.Record(state.roi_gesture.before);
-  state.roi_gesture.active=false; state.roi_pending=true; state.roi_reveal_selection=true;
+  if (cancel) EditedRoi(state)=state.roi_gesture.before;
+  else if (!lidar_viewer::SameRoi(state.roi_gesture.before,EditedRoi(state))) EditedRoiHistory(state).Record(state.roi_gesture.before);
+  state.roi_gesture.active=false; MarkRoiPending(state); state.roi_reveal_selection=true;
   state.is_playing=state.roi_gesture.resume_playback;
   if (state.roi_gesture.resume_live) SetLivePaused(state,false);
-  if (state.selected_roi>=state.roi.boxes.size()) state.selected_roi=state.roi.boxes.empty() ? 0 : state.roi.boxes.size()-1;
+  if (SelectedRoi(state)>=EditedRoi(state).boxes.size()) SelectedRoi(state)=EditedRoi(state).boxes.empty() ? 0 : EditedRoi(state).boxes.size()-1;
   RebuildRoiGeometry(state);
   if (state.roi_tool==ViewerState::RoiTool::Draw) state.roi_tool=ViewerState::RoiTool::Move;
 }
@@ -2590,27 +2656,27 @@ std::optional<Vec3> RoiPointerPoint(const ViewerState & state, double x, double 
 
 void DuplicateSelectedRoi(ViewerState & state)
 {
-  if (state.roi.boxes.empty() || state.roi.boxes.size()>=lidar_viewer::kMaxRoiBoxes) return;
-  auto copy=lidar_viewer::DuplicateRoi(state.roi.boxes[state.selected_roi],state.roi);
-  state.roi_history.Record(state.roi); state.roi.boxes.push_back(std::move(copy));
-  state.selected_roi=state.roi.boxes.size()-1; state.roi_pending=true; state.roi_reveal_selection=true;
+  if (EditedRoi(state).boxes.empty() || EditedRoi(state).boxes.size()>=lidar_viewer::kMaxRoiBoxes) return;
+  auto copy=lidar_viewer::DuplicateRoi(EditedRoi(state).boxes[SelectedRoi(state)],EditedRoi(state));
+  EditedRoiHistory(state).Record(EditedRoi(state)); EditedRoi(state).boxes.push_back(std::move(copy));
+  SelectedRoi(state)=EditedRoi(state).boxes.size()-1; MarkRoiPending(state); state.roi_reveal_selection=true;
 }
 
 void DeleteSelectedRoi(ViewerState & state)
 {
-  if (state.roi.boxes.empty()) return;
-  state.roi_history.Record(state.roi);
-  state.roi.boxes.erase(state.roi.boxes.begin()+static_cast<std::ptrdiff_t>(state.selected_roi));
-  if (state.selected_roi) --state.selected_roi;
-  state.roi_pending=true;
+  if (EditedRoi(state).boxes.empty()) return;
+  EditedRoiHistory(state).Record(EditedRoi(state));
+  EditedRoi(state).boxes.erase(EditedRoi(state).boxes.begin()+static_cast<std::ptrdiff_t>(SelectedRoi(state)));
+  if (SelectedRoi(state)) --SelectedRoi(state);
+  MarkRoiPending(state);
 }
 
 void RestoreRoiHistory(ViewerState & state, bool redo)
 {
   if (state.roi_gesture.active) {FinishRoiGesture(state,true); return;}
-  if (redo ? state.roi_history.Redo(state.roi) : state.roi_history.Undo(state.roi)) {
-    state.selected_roi=state.roi.boxes.empty() ? 0 : std::min(state.selected_roi,state.roi.boxes.size()-1);
-    state.roi_pending=true; state.roi_numeric_edit=false; state.roi_reveal_selection=true;
+  if (redo ? EditedRoiHistory(state).Redo(EditedRoi(state)) : EditedRoiHistory(state).Undo(EditedRoi(state))) {
+    SelectedRoi(state)=EditedRoi(state).boxes.empty() ? 0 : std::min(SelectedRoi(state),EditedRoi(state).boxes.size()-1);
+    MarkRoiPending(state); state.roi_numeric_edit=false; state.roi_reveal_selection=true;
     RebuildRoiGeometry(state);
   }
 }
@@ -2628,9 +2694,9 @@ ImVec2 RoiScreenPoint(const ViewerState & state, Vec3 raw)
 
 std::vector<RoiHandlePoint> RoiHandlePoints(const ViewerState & state)
 {
-  if (state.roi_tool!=ViewerState::RoiTool::Move || state.roi.boxes.empty() ||
+  if (state.roi_tool!=ViewerState::RoiTool::Move || EditedRoi(state).boxes.empty() ||
       state.camera.projection_mode!=CameraState::ProjectionMode::View2D) return {};
-  const auto & box=state.roi.boxes[state.selected_roi];
+  const auto & box=EditedRoi(state).boxes[SelectedRoi(state)];
   const float a=box.yaw_deg*kPi/180.f,c=std::cos(a),s=std::sin(a);
   std::vector<RoiHandlePoint> result;
   for (const auto axes : {std::array<int,2>{-1,-1},{0,-1},{1,-1},{1,0},{1,1},{0,1},{-1,1},{-1,0}}) {
@@ -2661,10 +2727,10 @@ void MouseButtonCallback(GLFWwindow * window, int button, int action, int)
     if (state->camera.projection_mode!=CameraState::ProjectionMode::View2D) return;
     const double x=state->camera.last_x,y=state->camera.last_y;
     auto & gesture=state->roi_gesture;
-    gesture.before=state->roi;
+    gesture.before=EditedRoi(*state);
     gesture.kind=ViewerState::RoiGesture::Kind::Move;
     if (state->roi_tool==ViewerState::RoiTool::Draw) {
-      if (state->roi.boxes.size()>=lidar_viewer::kMaxRoiBoxes) return;
+      if (EditedRoi(*state).boxes.size()>=lidar_viewer::kMaxRoiBoxes) return;
       const auto point=RoiPointerPoint(*state,x,y,state->roi_new_z);
       if (!point) {state->ui_error="Cannot draw on the LiDAR XY plane at this tilt."; return;}
       gesture.start=*point;
@@ -2672,30 +2738,31 @@ void MouseButtonCallback(GLFWwindow * window, int button, int action, int)
       if (!right_point) return;
       const auto right=*right_point-*point;
       const float yaw=std::atan2(right.y,right.x)*180.f/kPi;
-      const auto mode=lidar_viewer::RoiBoxMode::Exclude;
+      const auto mode=state->roi_purpose==ViewerState::RoiPurpose::Display ?
+        lidar_viewer::RoiBoxMode::Include : lidar_viewer::RoiBoxMode::Exclude;
       auto box=lidar_viewer::RoiFromDrag(*point,*point,state->roi_new_z,state->roi_new_height,
-        lidar_viewer::NextRoiName(state->roi,mode),yaw,mode);
-      state->roi.boxes.push_back(box); state->selected_roi=state->roi.boxes.size()-1;
-      state->roi.enabled=true; state->roi.show_boxes=true; gesture.original=box;
+        lidar_viewer::NextRoiName(EditedRoi(*state),mode),yaw,mode);
+      EditedRoi(*state).boxes.push_back(box); SelectedRoi(*state)=EditedRoi(*state).boxes.size()-1;
+      EditedRoi(*state).enabled=true; EditedRoi(*state).show_boxes=true; gesture.original=box;
     } else {
       bool found=false;
       for (const auto & handle : RoiHandlePoints(*state)) {
         if (std::hypot(handle.screen.x-x,handle.screen.y-y)>11*state->ui_layout.scale) continue;
-        const auto & box=state->roi.boxes[state->selected_roi];
+        const auto & box=EditedRoi(*state).boxes[SelectedRoi(*state)];
         const auto point=RoiPointerPoint(*state,x,y,box.center.z);
         if (!point) return;
         gesture.original=box;gesture.start=*point;
         gesture.kind=handle.rotate ? ViewerState::RoiGesture::Kind::Rotate : ViewerState::RoiGesture::Kind::Resize;
         gesture.handle_x=handle.x;gesture.handle_y=handle.y;found=true;break;
       }
-      for (std::size_t n=0;n<state->roi.boxes.size();++n) {
+      for (std::size_t n=0;n<EditedRoi(*state).boxes.size();++n) {
         if (found) break;
-        const auto i=n==0 ? state->selected_roi : (n<=state->selected_roi ? n-1 : n);
-        const auto & box=state->roi.boxes[i];
+        const auto i=n==0 ? SelectedRoi(*state) : (n<=SelectedRoi(*state) ? n-1 : n);
+        const auto & box=EditedRoi(*state).boxes[i];
         const auto point=RoiPointerPoint(*state,x,y,box.center.z);
         auto hit_box=box; hit_box.enabled=true;hit_box.mode=lidar_viewer::RoiBoxMode::Include;
         if (point && lidar_viewer::PreparedRoi({true,true,{hit_box}}).Contains(*point)) {
-          state->selected_roi=i; gesture.start=*point; gesture.original=box; found=true; break;
+          SelectedRoi(*state)=i; gesture.start=*point; gesture.original=box; found=true; break;
         }
       }
       if (!found) {state->camera.dragging_left=true;return;}
@@ -2719,7 +2786,7 @@ void CursorCallback(GLFWwindow * window, double x, double y)
   if (state->roi_gesture.active) {
     const auto point=RoiPointerPoint(*state,x,y,state->roi_gesture.original.center.z);
     if (point) {
-      auto box=state->roi.boxes[state->selected_roi];
+      auto box=EditedRoi(*state).boxes[SelectedRoi(*state)];
       try {
         if (state->roi_tool==ViewerState::RoiTool::Draw)
           box=lidar_viewer::RoiFromDrag(state->roi_gesture.start,*point,box.center.z,box.size.z,box.name,
@@ -2736,7 +2803,7 @@ void CursorCallback(GLFWwindow * window, double x, double y)
             glfwGetKey(window,GLFW_KEY_LEFT_SHIFT)==GLFW_PRESS || glfwGetKey(window,GLFW_KEY_RIGHT_SHIFT)==GLFW_PRESS);
         else box.center=state->roi_gesture.original.center+(*point-state->roi_gesture.start);
         lidar_viewer::ValidateRoiBox(box);
-        state->roi.boxes[state->selected_roi]=box; RebuildRoiGeometry(*state);
+        EditedRoi(*state).boxes[SelectedRoi(*state)]=box; RebuildRoiGeometry(*state);
       } catch (const std::exception & error) {state->ui_error=error.what();}
     }
     return;
@@ -3195,8 +3262,8 @@ void BuildLiveDialog(ViewerState & state)
 
 void FocusSelectedRoi(ViewerState & state)
 {
-  if (state.roi.boxes.empty()) return;
-  const auto & box=state.roi.boxes[state.selected_roi];
+  if (EditedRoi(state).boxes.empty()) return;
+  const auto & box=EditedRoi(state).boxes[SelectedRoi(state)];
   state.camera.target=state.roi_frame.Transform(box.center);
   state.camera.distance=std::clamp(1.25f*std::max({box.size.x,box.size.y,box.size.z}),2.f,5000.f);
 }
@@ -3265,71 +3332,97 @@ void TraceUi(const char * id)
 void BuildRoiEditor(ViewerState & state)
 {
   if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsKeyPressed(ImGuiKey_Tab)) state.roi_numeric_edit=false;
-  const auto before=state.roi;bool history_restored=false;const float s=state.ui_layout.scale;
+  const float s=state.ui_layout.scale;
   using lidar_viewer::IconButton;using lidar_viewer::UiIcon;
-  const bool pending=!lidar_viewer::SameRoiExclusions(state.roi,state.applied_exclusions);
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,{8*s,8*s});
   ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,{8*s,5*s});
-  SectionTitle("Ignore areas for ground");
   const float width=ImGui::GetContentRegionAvail().x;
-  ImGui::BeginDisabled(state.roi_gesture.active || state.roi.boxes.size()>=lidar_viewer::kMaxRoiBoxes);
-  if (ImGui::Button("+ Add region",{width-86*s,32*s})) SelectRoiTool(state,ViewerState::RoiTool::Draw);
-  TraceUi("roi_add");Tip("Draw a rectangle around points that should skip ground detection. R also starts drawing.");
-  ImGui::EndDisabled();ImGui::SameLine();
-  ImGui::BeginDisabled(!pending || state.roi_gesture.active || state.applying_exclusions);
-  ImGui::PushStyleColor(ImGuiCol_Button,{.15f,.37f,.46f,1});
-  if (ImGui::Button("Apply",{78*s,32*s})) state.apply_exclusions_requested=true;
-  TraceUi("roi_apply");ImGui::PopStyleColor();ImGui::EndDisabled();
-  if (state.applying_exclusions) ImGui::TextColored({.48f,.82f,.94f,1},"Applying regions...");
-  else if (pending) ImGui::TextColored({1,.74f,.4f,1},"Changes ready to apply");
-  else ImGui::TextDisabled("%s points skip ground detection",CountText(state.exclusion_removed_count).c_str());
-  ImGui::Spacing();ImGui::AlignTextToFramePadding();ImGui::Text("Regions (%zu)",state.roi.boxes.size());
+  ImGui::BeginDisabled(state.roi_gesture.active);
+  for (const auto purpose:{ViewerState::RoiPurpose::Display,ViewerState::RoiPurpose::Ground}) {
+    const bool display=purpose==ViewerState::RoiPurpose::Display,active=purpose==state.roi_purpose;
+    if (!display) ImGui::SameLine();
+    if (active) ImGui::PushStyleColor(ImGuiCol_Button,{.15f,.37f,.46f,1});
+    if (ImGui::Button(display ? "Display ROI" : "Ground exclusion",{(width-8*s)*.5f,32*s}) && !active) {
+      state.roi_purpose=purpose;state.roi_tool=ViewerState::RoiTool::Navigate;
+      state.roi_numeric_edit=false;state.roi_reveal_selection=true;state.roi_details_requested=false;
+      RebuildRoiGeometry(state);
+    }
+    TraceUi(display ? "roi_purpose_display" : "roi_purpose_ground");
+    if (active) ImGui::PopStyleColor();
+  }
+  ImGui::EndDisabled();
+  const bool display=state.roi_purpose==ViewerState::RoiPurpose::Display;
+  ImGui::PushID(display ? "DisplayRegions" : "GroundRegions");
+  const auto before=EditedRoi(state);bool history_restored=false;
+  const bool pending=!lidar_viewer::SameRoiExclusions(state.roi,state.applied_exclusions);
+  SectionTitle(display ? "Points to show" : "Ignore areas for ground");
+  if (display) {
+    ImGui::Checkbox("Show only points inside",&state.display_roi.enabled);TraceUi("display_roi_enabled");
+    Tip("Only changes the view. Ground detection and object detection still receive the full scan. Multiple checked regions are combined.");
+  }
+  ImGui::BeginDisabled(state.roi_gesture.active || EditedRoi(state).boxes.size()>=lidar_viewer::kMaxRoiBoxes);
+  if (ImGui::Button("+ Add region",{display ? width : width-86*s,32*s})) SelectRoiTool(state,ViewerState::RoiTool::Draw);
+  TraceUi("roi_add");Tip(display ? "Draw a box to view the points inside. Changes appear immediately." :
+    "Draw a box around points that should skip ground detection, then Apply. Points remain visible.");
+  ImGui::EndDisabled();
+  if (display) {
+    ImGui::TextDisabled("%s / %s points shown",CountText(state.frame.points.size()).c_str(),CountText(state.processed_frame.points.size()).c_str());
+  } else {
+    ImGui::SameLine();ImGui::BeginDisabled(!pending || state.roi_gesture.active || state.applying_exclusions);
+    ImGui::PushStyleColor(ImGuiCol_Button,{.15f,.37f,.46f,1});
+    if (ImGui::Button("Apply",{78*s,32*s})) state.apply_exclusions_requested=true;
+    TraceUi("roi_apply");ImGui::PopStyleColor();ImGui::EndDisabled();
+    if (state.applying_exclusions) ImGui::TextColored({.48f,.82f,.94f,1},"Applying regions...");
+    else if (pending) ImGui::TextColored({1,.74f,.4f,1},"Changes ready to apply");
+    else ImGui::TextDisabled("%s points skip ground detection",CountText(state.exclusion_removed_count).c_str());
+  }
+  ImGui::Spacing();ImGui::AlignTextToFramePadding();ImGui::Text("Regions (%zu)",EditedRoi(state).boxes.size());
   ImGui::SameLine(ImGui::GetWindowContentRegionMax().x-106*s);
-  ImGui::BeginDisabled(!state.roi_history.CanUndo() || state.roi_gesture.active);
+  ImGui::BeginDisabled(!EditedRoiHistory(state).CanUndo() || state.roi_gesture.active);
   if (IconButton("##UndoRoi",UiIcon::Undo,"Undo region edit. Ctrl+Z",s)) {RestoreRoiHistory(state,false);history_restored=true;}
   TraceUi("roi_undo");ImGui::EndDisabled();ImGui::SameLine(0,4*s);
-  ImGui::BeginDisabled(!state.roi_history.CanRedo() || state.roi_gesture.active);
+  ImGui::BeginDisabled(!EditedRoiHistory(state).CanRedo() || state.roi_gesture.active);
   if (IconButton("##RedoRoi",UiIcon::Redo,"Redo region edit. Ctrl+Y",s)) {RestoreRoiHistory(state,true);history_restored=true;}
   TraceUi("roi_redo");ImGui::EndDisabled();ImGui::SameLine(0,4*s);
-  if (IconButton("##Outlines",UiIcon::Eye,"Show region outlines",s,state.roi.show_boxes)) state.roi.show_boxes=!state.roi.show_boxes;
+  if (IconButton("##Outlines",UiIcon::Eye,"Show region outlines",s,EditedRoi(state).show_boxes)) EditedRoi(state).show_boxes=!EditedRoi(state).show_boxes;
   TraceUi("roi_outlines");
-  const float rows=static_cast<float>(std::clamp<std::size_t>(state.roi.boxes.size(),3,8));
+  const float rows=static_cast<float>(std::clamp<std::size_t>(EditedRoi(state).boxes.size(),3,8));
   const float preferred_height=rows*(ImGui::GetTextLineHeight()+18*s)+12*s;
   const float list_height=std::min(preferred_height,std::clamp(ImGui::GetContentRegionAvail().y-190*s,110*s,285*s));
   if (std::abs(list_height-state.roi_list_height)>1) {state.roi_reveal_selection=true;state.roi_list_height=list_height;}
   if (ImGui::BeginListBox("##RoiList",{-1,list_height})) {
-    for (std::size_t i=0;i<state.roi.boxes.size();++i) {
-      ImGui::PushID(static_cast<int>(i));auto & box=state.roi.boxes[i];
+    for (std::size_t i=0;i<EditedRoi(state).boxes.size();++i) {
+      ImGui::PushID(static_cast<int>(i));auto & box=EditedRoi(state).boxes[i];
       ImGui::BeginDisabled(state.roi_gesture.active);
       ImGui::Checkbox("##Enabled",&box.enabled);TraceUi(("roi_enabled_"+std::to_string(i)).c_str());
       ImGui::SameLine();
-      if (ImGui::Selectable(box.name.empty() ? "Unnamed region" : box.name.c_str(),i==state.selected_roi)) {
-        state.selected_roi=i;state.roi_numeric_edit=false;SelectRoiTool(state,ViewerState::RoiTool::Move);
+      if (ImGui::Selectable(box.name.empty() ? "Unnamed region" : box.name.c_str(),i==SelectedRoi(state))) {
+        SelectedRoi(state)=i;state.roi_numeric_edit=false;SelectRoiTool(state,ViewerState::RoiTool::Move);
       }
       TraceUi(("roi_row_"+std::to_string(i)).c_str());
       if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) FocusSelectedRoi(state);
-      if (i==state.selected_roi && state.roi_reveal_selection) ImGui::SetScrollHereY(.5f);
+      if (i==SelectedRoi(state) && state.roi_reveal_selection) ImGui::SetScrollHereY(.5f);
       ImGui::EndDisabled();ImGui::PopID();
     }
     state.roi_reveal_selection=false;ImGui::EndListBox();TraceUi("roi_list");
   }
-  if (state.roi.boxes.empty()) ImGui::TextWrapped("Add a region, then drag a rectangle in the 2D view.");
+  if (EditedRoi(state).boxes.empty()) ImGui::TextWrapped("Add a region, then drag a rectangle in the 2D view.");
   else {
-    state.selected_roi=std::min(state.selected_roi,state.roi.boxes.size()-1);
-    auto & selected=state.roi.boxes[state.selected_roi];
+    SelectedRoi(state)=std::min(SelectedRoi(state),EditedRoi(state).boxes.size()-1);
+    auto & selected=EditedRoi(state).boxes[SelectedRoi(state)];
     ImGui::Text("Selected: %s",selected.name.c_str());
     ImGui::BeginDisabled(state.roi_gesture.active);
     if (IconButton("##FocusRoi",UiIcon::Focus,"Find this region in the view",s)) {FocusSelectedRoi(state);SelectRoiTool(state,ViewerState::RoiTool::Move);}
     TraceUi("roi_focus");ImGui::SameLine(0,4*s);
-    ImGui::BeginDisabled(state.roi.boxes.size()>=lidar_viewer::kMaxRoiBoxes);
+    ImGui::BeginDisabled(EditedRoi(state).boxes.size()>=lidar_viewer::kMaxRoiBoxes);
     if (IconButton("##CopyRoi",UiIcon::Copy,"Duplicate this region. Ctrl+D",s)) DuplicateSelectedRoi(state);
     TraceUi("roi_duplicate");ImGui::EndDisabled();ImGui::SameLine(0,4*s);
     if (IconButton("##DeleteRoi",UiIcon::Trash,"Delete this region. Delete / Ctrl+Z to undo",s)) DeleteSelectedRoi(state);
     TraceUi("roi_delete");ImGui::SameLine(0,12*s);
     if (ImGui::Button("Details...",{-1,30*s})) state.roi_details_requested=true;
     TraceUi("roi_details");ImGui::EndDisabled();
-    if (!state.roi.boxes.empty()) {
-      auto box=state.roi.boxes[state.selected_roi];
+    if (!EditedRoi(state).boxes.empty()) {
+      auto box=EditedRoi(state).boxes[SelectedRoi(state)];
       ImGui::TextDisabled("Height range (sensor Z, m)");
       const float half=(ImGui::GetContentRegionAvail().x-8*s)*.5f;
       float bottom=box.center.z-box.size.z*.5f,top=box.center.z+box.size.z*.5f;bool changed=false;
@@ -3338,15 +3431,15 @@ void BuildRoiEditor(ViewerState & state)
       TraceUi("roi_bottom");ImGui::SameLine();ImGui::SetNextItemWidth(half);
       changed|=ImGui::DragFloat("##RoiTop",&top,.02f,bottom+.05f,1e6f,"Top %.2f",ImGuiSliderFlags_AlwaysClamp);
       TraceUi("roi_top");
-      if (changed) {box.center.z=(bottom+top)*.5f;box.size.z=std::max(.05f,top-bottom);state.roi.boxes[state.selected_roi]=box;}
+      if (changed) {box.center.z=(bottom+top)*.5f;box.size.z=std::max(.05f,top-bottom);EditedRoi(state).boxes[SelectedRoi(state)]=box;}
     }
   }
-  if (state.roi_details_requested && !state.roi.boxes.empty()) {ImGui::OpenPopup("Region details");state.roi_details_requested=false;}
+  if (state.roi_details_requested && !EditedRoi(state).boxes.empty()) {ImGui::OpenPopup("Region details");state.roi_details_requested=false;}
   ImGui::SetNextWindowSize({440*s,0},ImGuiCond_Appearing);
   if (ImGui::BeginPopupModal("Region details",nullptr,ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoSavedSettings)) {
-    if (state.roi.boxes.empty()) ImGui::CloseCurrentPopup();
+    if (EditedRoi(state).boxes.empty()) ImGui::CloseCurrentPopup();
     else {
-      auto box=state.roi.boxes[state.selected_roi];bool edited=false;
+      auto box=EditedRoi(state).boxes[SelectedRoi(state)];bool edited=false;
       std::array<char,128> name{};std::copy(box.name.begin(),box.name.end(),name.begin());
       ImGui::TextUnformatted("Name");ImGui::SetNextItemWidth(-1);
       if (ImGui::InputText("##RoiName",name.data(),name.size())) {box.name=name.data();edited=true;}
@@ -3360,13 +3453,13 @@ void BuildRoiEditor(ViewerState & state)
       edited|=ImGui::InputFloat("##RoiYaw",&box.yaw_deg,0,0,"%.2f");TraceUi("roi_yaw");
       box.center={center[0],center[1],center[2]};box.size={size[0],size[1],size[2]};
       if (edited) {
-        try {lidar_viewer::ValidateRoiBox(box);box.yaw_deg=std::remainder(box.yaw_deg,360.f);state.roi.boxes[state.selected_roi]=box;state.ui_error.clear();}
+        try {lidar_viewer::ValidateRoiBox(box);box.yaw_deg=std::remainder(box.yaw_deg,360.f);EditedRoi(state).boxes[SelectedRoi(state)]=box;state.ui_error.clear();}
         catch (const std::exception & error) {state.ui_error=error.what();}
       }
       if (ImGui::CollapsingHeader("Coordinates for export")) {
         if (ImGui::Button("Copy 8 corners")) {
           std::ostringstream out;out<<std::setprecision(std::numeric_limits<float>::max_digits10);
-          for (const auto & point:lidar_viewer::RoiCorners(state.roi.boxes[state.selected_roi])) out<<point.x<<", "<<point.y<<", "<<point.z<<'\n';
+          for (const auto & point:lidar_viewer::RoiCorners(EditedRoi(state).boxes[SelectedRoi(state)])) out<<point.x<<", "<<point.y<<", "<<point.z<<'\n';
           ImGui::SetClipboardText(out.str().c_str());
         }
       }
@@ -3375,11 +3468,12 @@ void BuildRoiEditor(ViewerState & state)
     }
     ImGui::EndPopup();
   }
-  if (!lidar_viewer::SameRoi(before,state.roi)) {
-    if (!history_restored && !state.roi_numeric_edit) state.roi_history.Record(before);
-    state.roi_numeric_edit=ImGui::IsAnyItemActive();state.roi_pending=true;RebuildRoiGeometry(state);
+  if (!lidar_viewer::SameRoi(before,EditedRoi(state))) {
+    if (!history_restored && !state.roi_numeric_edit) EditedRoiHistory(state).Record(before);
+    state.roi_numeric_edit=ImGui::IsAnyItemActive();MarkRoiPending(state);RebuildRoiGeometry(state);
   }
   if (!ImGui::IsAnyItemActive()) state.roi_numeric_edit=false;
+  ImGui::PopID();
   ImGui::PopStyleVar(2);
 }
 
@@ -3907,7 +4001,8 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   }
   ImGui::EndDisabled();
   Tip(pending_exclusions ? "Apply the edited ROI before saving this profile." : "Save the current settings for the next session. Ctrl+S.");
-  const bool unsaved=!lidar_viewer::SameRoi(state.roi,state.saved_roi);
+  const bool unsaved=!lidar_viewer::SameRoi(state.roi,state.saved_roi) ||
+    !lidar_viewer::SameRoi(state.display_roi,state.saved_display_roi);
   ImGui::TextColored(unsaved ? ImVec4(1,.74f,.4f,1) : ImVec4(.48f,.65f,.65f,1),
     "%s",pending_exclusions ? "Apply ROI before saving" : unsaved ? "ROI changes not saved  /  Ctrl+S" : "Ctrl+S saves this profile");
   ImGui::End();
@@ -4102,7 +4197,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   const auto handles=RoiHandlePoints(state);
   if (!handles.empty() && !state.loading_bag_source) {
     draw->PushClipRect({view.x,view.y},{view.x+view.w,view.y+view.h},true);
-    const ImU32 accent=state.roi.boxes[state.selected_roi].mode==lidar_viewer::RoiBoxMode::Exclude ?
+    const ImU32 accent=EditedRoi(state).boxes[SelectedRoi(state)].mode==lidar_viewer::RoiBoxMode::Exclude ?
       IM_COL32(255,163,115,255) : IM_COL32(110,211,224,255);
     for (int i=0;i<4;++i) draw->AddLine(handles[i*2].screen,handles[(i*2+2)%8].screen,accent,1.5f*s);
     draw->AddLine(handles[5].screen,handles.back().screen,accent,1.5f*s);
@@ -4113,7 +4208,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       else {draw->AddRectFilled({p.x-4*s,p.y-4*s},{p.x+4*s,p.y+4*s},hover ? IM_COL32(255,255,255,255) : accent,1*s);}
       if (hover && !ImGui::GetIO().WantCaptureMouse) ImGui::SetMouseCursor(h.rotate ? ImGuiMouseCursor_Hand : ImGuiMouseCursor_ResizeAll);
     }
-    const auto & box=state.roi.boxes[state.selected_roi];
+    const auto & box=EditedRoi(state).boxes[SelectedRoi(state)];
     const auto center=RoiScreenPoint(state,box.center);
     const auto size=ImGui::CalcTextSize(box.name.c_str());
     const ImVec2 label{center.x-size.x*.5f,center.y-10*s};
@@ -4126,12 +4221,20 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       !ImGui::IsPopupOpen(nullptr,ImGuiPopupFlags_AnyPopup) && view.w>300*s && view.h>180*s) {
     const float width=std::min(440*s,view.w-32*s);
     BeginPanel("Empty region",{view.x+(view.w-width)*.5f,view.y+(view.h-156*s)*.5f,width,156*s},false);
-    const bool all_skipped=state.exclusion_removed_count==state.base_frame.points.size();
-    ImGui::TextUnformatted(state.ground_view==ViewerState::GroundView::Ground ?
-      "No ground points to show" : "No obstacle points to show");
-    ImGui::TextWrapped("%s",all_skipped ? "The applied ROI skips all points during ground detection." :
-      "Check ground settings or show both classes.");
-    if (ImGui::Button("Show all points")) state.ground_view=ViewerState::GroundView::All;
+    const bool cropped=state.display_roi.enabled && state.frame.points.empty();
+    if (cropped) {
+      ImGui::TextUnformatted("No points inside the display regions");
+      ImGui::TextWrapped("Adjust the display boxes or show the full cloud.");
+      if (ImGui::Button("Show full cloud")) {state.display_roi.enabled=false;state.display_roi_pending=true;}
+      TraceUi("display_roi_show_full");
+    } else {
+      const bool all_skipped=state.exclusion_removed_count==state.base_frame.points.size();
+      ImGui::TextUnformatted(state.ground_view==ViewerState::GroundView::Ground ?
+        "No ground points to show" : "No obstacle points to show");
+      ImGui::TextWrapped("%s",all_skipped ? "The applied ROI skips all points during ground detection." :
+        "Check ground settings or show both classes.");
+      if (ImGui::Button("Show all points")) state.ground_view=ViewerState::GroundView::All;
+    }
     ImGui::End();
   }
   BuildInputLoading(state);
@@ -4157,8 +4260,8 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   if (state.roi_tool==ViewerState::RoiTool::Draw) {
     draw->AddText({view.x+14*s,view.y+view.h-28*s},IM_COL32(125,225,230,255),"Drag a new box  |  Esc cancels");
   }
-  if (state.roi_gesture.active && !state.roi.boxes.empty()) {
-    const auto & box=state.roi.boxes[state.selected_roi];
+  if (state.roi_gesture.active && !EditedRoi(state).boxes.empty()) {
+    const auto & box=EditedRoi(state).boxes[SelectedRoi(state)];
     char label[160];std::snprintf(label,sizeof(label),"%.2f x %.2f x %.2f m  |  %s",box.size.x,box.size.y,box.size.z,
       box.mode==lidar_viewer::RoiBoxMode::Exclude ? "release to finish, then Apply" : "release to apply");
     draw->AddText({view.x+14*s,view.y+view.h-52*s},IM_COL32(255,220,115,255),label);
@@ -4193,6 +4296,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   }
   if (state.loading_bag_source) return;
   if (state.roi_pending) {RebuildRoiGeometry(state);state.roi_pending=false;}
+  refresh_objects|=std::exchange(state.display_roi_pending,false);
   const bool exclusions_changed=std::exchange(state.apply_exclusions_requested,false);
   if (exclusions_changed) {
     state.analysis_roi=state.roi;state.applying_exclusions=true;reprocess=true;
@@ -4246,7 +4350,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
 void RenderRoiBoxes(ViewerState & state, const Mat4 & mvp)
 {
   auto & renderer = state.roi_renderer;
-  if (!state.roi.show_boxes || renderer.vertices.empty()) return;
+  if (!EditedRoi(state).show_boxes || renderer.vertices.empty()) return;
   glUseProgram(state.grid.program);
   glUniformMatrix4fv(state.grid.mvp_loc, 1, GL_FALSE, mvp.m.data());
   glBindVertexArray(renderer.vao);
@@ -4260,9 +4364,10 @@ void RenderRoiBoxes(ViewerState & state, const Mat4 & mvp)
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
   glLineWidth(2.f);
-  for (std::size_t i = 0; i < std::min(state.roi.boxes.size(), renderer.vertices.size() / 24); ++i) {
-    if (i == state.selected_roi) glUniform4f(state.grid.color_loc, 1.f, .52f, .28f, 1.f);
-    else if (state.roi.boxes[i].enabled) glUniform4f(state.grid.color_loc, 1.f, .48f, .3f, .9f);
+  for (std::size_t i = 0; i < std::min(EditedRoi(state).boxes.size(), renderer.vertices.size() / 24); ++i) {
+    const bool display=state.roi_purpose==ViewerState::RoiPurpose::Display;
+    if (i == SelectedRoi(state)) glUniform4f(state.grid.color_loc, display ? .43f : 1.f, display ? .83f : .52f, display ? .88f : .28f, 1.f);
+    else if (EditedRoi(state).boxes[i].enabled) glUniform4f(state.grid.color_loc, display ? .35f : 1.f, display ? .75f : .48f, display ? .85f : .3f, .9f);
     else glUniform4f(state.grid.color_loc, .55f, .6f, .65f, .5f);
     glDrawArrays(GL_LINES, static_cast<GLint>(i * 24), 24);
   }
@@ -4587,6 +4692,9 @@ int RunViewer(int argc, char ** argv)
     if (inspect) {
       std::cout << "ROI: " << (state.roi.enabled ? "on" : "off") << " | " << state.roi.boxes.size()
                 << " boxes | retained " << state.frame.points.size() << " / " << state.base_frame.points.size() << " points\n";
+      std::cout << "Display ROI: " << (state.display_roi.enabled ? "on" : "off") << " | "
+                << state.display_roi.boxes.size() << " boxes | retained " << state.frame.points.size()
+                << " / " << state.processed_frame.points.size() << " points\n";
       std::cout << "Display: " << GroundViewKey(state.ground_view) << " | visible " << VisiblePoints(state).count
                 << " | ground " << state.ground_removed_count << " | obstacles "
                 << state.frame.points.size()-std::min(state.frame.points.size(),state.ground_removed_count)

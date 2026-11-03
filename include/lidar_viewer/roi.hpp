@@ -40,13 +40,14 @@ struct RoiCoordinateFrame
 
 void ValidateRoiBox(const RoiBox & box);
 std::array<Vec3, 8> RoiCorners(const RoiBox & box);
-std::string SerializeRoiSettings(const RoiSettings & settings);
+std::string SerializeRoiSettings(const RoiSettings & settings, const std::string & prefix = "roi_");
 // A malformed ROI section throws without changing the caller's settings.
 // Files without an ROI section leave the supplied fallback intact.
-RoiSettings ParseRoiSettings(const std::string & text, const RoiSettings & fallback = {});
+RoiSettings ParseRoiSettings(const std::string & text, const RoiSettings & fallback = {},
+  const std::string & prefix = "roi_");
 // Ignore names, outlines and include regions when checking analysis invalidation.
 bool SameRoiExclusions(const RoiSettings & a, const RoiSettings & b);
-// The viewer uses every enabled box solely to bypass ground classification.
+// Normalize only the ground-exclusion collection; display ROIs are separate.
 // Older display/filter flags and box types do not gate ground exclusion.
 RoiSettings GroundExclusionRoi(RoiSettings settings);
 // Include regions preview immediately; exclusions use the last applied snapshot.

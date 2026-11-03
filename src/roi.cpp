@@ -150,15 +150,15 @@ std::vector<KittiPoint> PreparedRoi::ExtractRejected(std::vector<KittiPoint> & p
   return skipped;
 }
 
-std::string SerializeRoiSettings(const RoiSettings & value)
+std::string SerializeRoiSettings(const RoiSettings & value, const std::string & prefix)
 {
   ValidateSettings(value);
   std::ostringstream out;
   out << std::setprecision(std::numeric_limits<float>::max_digits10)
-      << "roi_enabled=" << value.enabled << '\n' << "roi_show_boxes=" << value.show_boxes
-      << '\n' << "roi_count=" << value.boxes.size() << '\n';
+      << prefix << "enabled=" << value.enabled << '\n' << prefix << "show_boxes=" << value.show_boxes
+      << '\n' << prefix << "count=" << value.boxes.size() << '\n';
   for (const auto & b : value.boxes) {
-    out << (b.mode == RoiBoxMode::Exclude ? "roi_exclude_box=" : "roi_box=")
+    out << prefix << (b.mode == RoiBoxMode::Exclude ? "exclude_box=" : "box=")
         << b.enabled << ' ' << std::quoted(b.name) << ' '
         << b.center.x << ' ' << b.center.y << ' ' << b.center.z << ' '
         << b.size.x << ' ' << b.size.y << ' ' << b.size.z << ' '
@@ -167,7 +167,7 @@ std::string SerializeRoiSettings(const RoiSettings & value)
   return out.str();
 }
 
-RoiSettings ParseRoiSettings(const std::string & text, const RoiSettings & fallback)
+RoiSettings ParseRoiSettings(const std::string & text, const RoiSettings & fallback, const std::string & prefix)
 {
   RoiSettings result;
   bool found = false;
@@ -180,19 +180,20 @@ RoiSettings ParseRoiSettings(const std::string & text, const RoiSettings & fallb
     if (!line.empty() && line.back() == '\r') line.pop_back();
     const auto eq = line.find('=');
     if (eq == std::string::npos) continue;
-    const auto key = line.substr(0, eq), value = line.substr(eq + 1);
-    if (key != "roi_enabled" && key != "roi_show_boxes" && key != "roi_count" &&
-        key != "roi_box" && key != "roi_exclude_box") continue;
+    if (line.compare(0, prefix.size(), prefix) != 0) continue;
+    const auto key = line.substr(prefix.size(), eq-prefix.size()), value = line.substr(eq + 1);
+    if (key != "enabled" && key != "show_boxes" && key != "count" &&
+        key != "box" && key != "exclude_box") continue;
     found = true;
     try {
-      if (key == "roi_enabled") result.enabled = ParseBool(value);
-      else if (key == "roi_show_boxes") result.show_boxes = ParseBool(value);
-      else if (key == "roi_count") {
+      if (key == "enabled") result.enabled = ParseBool(value);
+      else if (key == "show_boxes") result.show_boxes = ParseBool(value);
+      else if (key == "count") {
         count = settings::ParseStrictInt(value);
         if (count < 0 || count > static_cast<int>(kMaxRoiBoxes)) throw std::runtime_error("invalid box count");
       } else {
         RoiBox box;
-        box.mode = key == "roi_exclude_box" ? RoiBoxMode::Exclude : RoiBoxMode::Include;
+        box.mode = key == "exclude_box" ? RoiBoxMode::Exclude : RoiBoxMode::Include;
         std::istringstream fields(value);
         std::string enabled, token;
         if (!(fields >> enabled >> std::ws) || fields.peek() != '"' || !(fields >> std::quoted(box.name)))

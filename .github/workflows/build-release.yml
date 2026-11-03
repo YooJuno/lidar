@@ -113,7 +113,7 @@ jobs:
           source /opt/ros/jazzy/setup.bash
           xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_ground_view_smoke.py \
             --viewer build/lidar_viewer --output build/test_artifacts/ground-view
-      - name: Ground ROI input filtering and full cloud preservation GUI test
+      - name: Independent display ROI and ground exclusion GUI test
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
           PYTHONDONTWRITEBYTECODE: '1'
