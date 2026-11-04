@@ -2005,6 +2005,10 @@ void SetLivePaused(ViewerState & state, bool paused)
   if (!state.live.Active() || state.live_paused == paused) return;
   if (paused && !state.live_has_frame) return;
   state.live_paused = paused;
+  // A newer live frame may already be on the geometry worker. Dropping its
+  // future keeps the exact displayed scan frozen; the receiver still retains
+  // the latest scan for resume. Same-frame settings jobs have no live sequence.
+  if (paused && state.geometry_live_sequence) CancelGeometry(state);
   std::cout << "Live display " << (paused ? "paused" : "resumed") << " at frame "
             << state.live_display_sequence << " | receiver remains active" << std::endl;
 }
@@ -4733,7 +4737,7 @@ int RunViewer(int argc, char ** argv)
     for (int i = 1; i < argc; ++i) {
       const std::string arg = argv[i];
       if (arg == "--help" || arg == "-h") {
-        std::cout << "Usage: lidar_viewer [INPUT] [--live] [--topic /b2/points] [--sensor-height METRES] [--imu-level] [--imu-topic TOPIC] [--2d] [--play] [--detect] [--inspect] [--record-folder DIR]\n"
+        std::cout << "Usage: lidar_studio [INPUT] [--live] [--topic /b2/points] [--sensor-height METRES] [--imu-level] [--imu-topic TOPIC] [--2d] [--play] [--detect] [--inspect] [--record-folder DIR]\n"
                   << "INPUT: .bin file/directory, bag collection folder, ROS 2 bag, .mcap, .db3 or metadata.yaml.\n"
                   << "Without INPUT, show an empty viewer. Click Open file to select a recording.\n"
                   << "Open file (Ctrl+O) selects another recording; Add folder remembers bag collections.\n"

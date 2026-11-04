@@ -30,12 +30,14 @@ with tempfile.TemporaryDirectory(prefix='lidar-desktop-') as temporary:
     settings.read(entry)
     assert settings['Desktop Entry']['StartupWMClass'] == 'lidar-viewer'
     assert settings['Desktop Entry']['Name'] == 'LiDAR Studio'
+    assert 'lidar_studio' in settings['Desktop Entry']['Exec']
     icon = data / 'icons/hicolor/scalable/apps/lidar-viewer.svg'
     assert icon.read_bytes() == (root / 'resources/icons/lidar-studio.svg').read_bytes()
     arguments = ['--detect', 'bag file $literal.mcap', 'quotes " \' % 字']
-    result = subprocess.run([str(bins / 'lidar-viewer'), *arguments], cwd=folder,
-                            check=True, text=True, capture_output=True)
-    assert json.loads(result.stdout) == arguments
+    for command_name in ['lidar_studio','lidar-viewer']:
+        result = subprocess.run([str(bins / command_name), *arguments], cwd=folder,
+                                check=True, text=True, capture_output=True)
+        assert json.loads(result.stdout) == arguments
     assert not (folder / 'UNEXPECTED').exists()
     subprocess.run(command, check=True, capture_output=True)  # Safe to update after rebuilding.
     # Actual GLib Desktop Entry parser/launcher when PyGObject is available.

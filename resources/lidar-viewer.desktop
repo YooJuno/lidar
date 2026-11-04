@@ -2,7 +2,7 @@
 Type=Application
 Name=LiDAR Studio
 Comment=Point cloud viewer, ground segmentation and live ROS 2 sensors
-Exec=lidar-viewer
+Exec=lidar_studio
 Icon=lidar-viewer
 StartupWMClass=lidar-viewer
 Terminal=false

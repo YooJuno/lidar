@@ -72,7 +72,7 @@ jobs:
         run: |
           source /opt/ros/jazzy/setup.bash
           xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_detector_smoke.py \
-            --viewer build/lidar_viewer --output build/test_artifacts/detector
+            --viewer build/lidar_studio --output build/test_artifacts/detector
       - name: Kalman tracking, stable IDs and readable status GUI test
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
@@ -80,7 +80,7 @@ jobs:
         run: |
           source /opt/ros/jazzy/setup.bash
           xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_tracking_smoke.py \
-            --viewer build/lidar_viewer --output build/test_artifacts/tracking
+            --viewer build/lidar_studio --output build/test_artifacts/tracking
       - name: Recording list removal and restoration GUI test
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
@@ -88,7 +88,7 @@ jobs:
         run: |
           source /opt/ros/jazzy/setup.bash
           xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_source_removal_smoke.py \
-            --viewer build/lidar_viewer --output build/test_artifacts/source-removal
+            --viewer build/lidar_studio --output build/test_artifacts/source-removal
       - name: Live pause, resume and recording GUI test
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
@@ -96,7 +96,7 @@ jobs:
         run: |
           source /opt/ros/jazzy/setup.bash
           xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_live_smoke.py \
-            --viewer build/lidar_viewer --output build/test_artifacts/live
+            --viewer build/lidar_studio --output build/test_artifacts/live
       - name: Ground ROI drawing, editing, undo and Apply GUI test
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
@@ -104,7 +104,7 @@ jobs:
         run: |
           source /opt/ros/jazzy/setup.bash
           xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_roi_smoke.py \
-            --viewer build/lidar_viewer --output build/test_artifacts/roi
+            --viewer build/lidar_studio --output build/test_artifacts/roi
       - name: ROI dataset export, original intensity and IMU metadata GUI test
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
@@ -112,7 +112,7 @@ jobs:
         run: |
           source /opt/ros/jazzy/setup.bash
           xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_export_smoke.py \
-            --viewer build/lidar_viewer --output build/test_artifacts/export
+            --viewer build/lidar_studio --output build/test_artifacts/export
       - name: Ground-only and obstacles-only display GUI test
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
@@ -120,7 +120,7 @@ jobs:
         run: |
           source /opt/ros/jazzy/setup.bash
           xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_ground_view_smoke.py \
-            --viewer build/lidar_viewer --output build/test_artifacts/ground-view
+            --viewer build/lidar_studio --output build/test_artifacts/ground-view
       - name: Independent display ROI and ground exclusion GUI test
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
@@ -128,7 +128,7 @@ jobs:
         run: |
           source /opt/ros/jazzy/setup.bash
           xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_exclusion_smoke.py \
-            --viewer build/lidar_viewer --output build/test_artifacts/exclusions
+            --viewer build/lidar_studio --output build/test_artifacts/exclusions
       - name: Alignment manual fallback and reset GUI test
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
@@ -136,7 +136,7 @@ jobs:
         run: |
           source /opt/ros/jazzy/setup.bash
           xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_alignment_smoke.py \
-            --viewer build/lidar_viewer --output build/test_artifacts/alignment
+            --viewer build/lidar_studio --output build/test_artifacts/alignment
       - name: Playback continuity and direct ROI manipulation GUI test
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
@@ -144,7 +144,7 @@ jobs:
         run: |
           source /opt/ros/jazzy/setup.bash
           xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_playback_smoke.py \
-            --viewer build/lidar_viewer --output build/test_artifacts/playback
+            --viewer build/lidar_studio --output build/test_artifacts/playback
       - name: Fixed navigation, inspector resize and BIN sequence GUI test
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
@@ -152,7 +152,7 @@ jobs:
         run: |
           source /opt/ros/jazzy/setup.bash
           xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_ux_smoke.py \
-            --viewer build/lidar_viewer --output build/test_artifacts/ux
+            --viewer build/lidar_studio --output build/test_artifacts/ux
       - name: Application settings persistence GUI test
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
@@ -160,7 +160,7 @@ jobs:
         run: |
           source /opt/ros/jazzy/setup.bash
           xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_app_settings_smoke.py \
-            --viewer build/lidar_viewer --output build/test_artifacts/app-settings
+            --viewer build/lidar_studio --output build/test_artifacts/app-settings
       - name: Package Ubuntu
         run: |
           source /opt/ros/jazzy/setup.bash
@@ -266,7 +266,7 @@ jobs:
         run: |
           $package = Get-ChildItem build/packages/*.zip | Select-Object -First 1
           Expand-Archive -Path $package.FullName -DestinationPath build/package-smoke
-          $viewer = Get-ChildItem build/package-smoke -Filter lidar_viewer.exe -Recurse -File | Select-Object -First 1
+          $viewer = Get-ChildItem build/package-smoke -Filter lidar_studio.exe -Recurse -File | Select-Object -First 1
           if (!$viewer) { throw 'Packaged viewer executable is missing' }
           foreach ($library in @('vcomp140.dll', 'vcruntime140.dll', 'msvcp140.dll')) {
             if (!(Test-Path (Join-Path $viewer.DirectoryName $library))) { throw "Missing runtime: $library" }

@@ -41,7 +41,7 @@ def write_managed(path, content, mode):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--binary', type=Path, default=ROOT / 'build/lidar_viewer')
+    parser.add_argument('--binary', type=Path, default=ROOT / 'build/lidar_studio')
     parser.add_argument('--data-home', type=Path, help='Override XDG_DATA_HOME')
     parser.add_argument('--bin-dir', type=Path, help='Override ~/.local/bin')
     args = parser.parse_args()
@@ -49,7 +49,7 @@ def main():
         parser.error('This launcher is for Linux; Windows and macOS use native package icons.')
     binary = args.binary.expanduser().resolve()
     if not binary.is_file() or not os.access(binary, os.X_OK):
-        parser.error('Build the viewer first, or pass --binary /absolute/path/to/lidar_viewer')
+        parser.error('Build the viewer first, or pass --binary /absolute/path/to/lidar_studio')
     if args.data_home is not None:
         data_home = args.data_home.expanduser().absolute()
     else:
@@ -57,11 +57,12 @@ def main():
         if not data_home.is_absolute():
             data_home = Path.home() / '.local/share'
     bin_dir = (args.bin_dir or Path.home() / '.local/bin').expanduser().absolute()
-    launcher = bin_dir / 'lidar-viewer'
+    launcher = bin_dir / 'lidar_studio'
+    legacy_launcher = bin_dir / 'lidar-viewer'
     entry = data_home / 'applications/lidar-viewer.desktop'
     icon = data_home / 'icons/hicolor/scalable/apps/lidar-viewer.svg'
     # Check ownership of both text files before making any changes.
-    for path in (launcher, entry):
+    for path in (launcher, legacy_launcher, entry):
         if path.exists() and MARKER not in path.read_text(encoding='utf-8'):
             raise RuntimeError(f'Refusing to overwrite an unrelated file: {path}')
     template = (ROOT / 'resources/lidar-viewer.desktop').read_text(encoding='utf-8')
@@ -79,6 +80,7 @@ def main():
     icon.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(ROOT / 'resources/icons/lidar-studio.svg', icon)
     write_managed(launcher, script, 0o755)
+    write_managed(legacy_launcher, script, 0o755)
     write_managed(entry, '\n'.join(lines) + '\n', 0o644)
     updater = shutil.which('update-desktop-database')
     if updater:

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -e
+if [[ -f /opt/ros/jazzy/setup.bash ]]; then
+  source /opt/ros/jazzy/setup.bash
+fi
+studio_bin_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
+exec "${studio_bin_dir}/../lib/lidar_studio/lidar_studio" "$@"

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 # PCL's VTK package exposes an MPI C target, so enable C as well as C++.
-project(lidar_opengl_viewer VERSION 0.2.0 LANGUAGES C CXX)
+project(lidar_studio VERSION 0.2.0 LANGUAGES C CXX)
 
 include(CheckLanguage)
 
@@ -174,7 +174,7 @@ target_include_directories(lidar_viewer_export PUBLIC ${CMAKE_CURRENT_SOURCE_DIR
 target_link_libraries(lidar_viewer_export PUBLIC lidar_viewer_roi lidar_viewer_bag)
 lidar_warnings(lidar_viewer_export)
 
-add_executable(lidar_viewer
+add_executable(lidar_studio
   src/main.cpp
   src/viewer_app.cpp
   src/config.cpp
@@ -188,19 +188,28 @@ add_executable(lidar_viewer
   src/algorithms/pipeline.cpp
 )
 
-lidar_warnings(lidar_viewer)
-add_dependencies(lidar_viewer lidar_viewer_native)
-target_compile_definitions(lidar_viewer PRIVATE LIDAR_VIEWER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+lidar_warnings(lidar_studio)
+add_dependencies(lidar_studio lidar_viewer_native)
+if(UNIX)
+  # Compatibility for existing source-build launchers. Desktop IDs and saved
+  # settings stay stable so a rename preserves pinned icons and user profiles.
+  add_custom_command(TARGET lidar_studio POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E rm -f "$<TARGET_FILE_DIR:lidar_studio>/lidar_viewer"
+    COMMAND "${CMAKE_COMMAND}" -E create_symlink "$<TARGET_FILE_NAME:lidar_studio>"
+      "$<TARGET_FILE_DIR:lidar_studio>/lidar_viewer"
+    VERBATIM)
+endif()
+target_compile_definitions(lidar_studio PRIVATE LIDAR_VIEWER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 if(LIDAR_VIEWER_USER_SETTINGS)
-  target_compile_definitions(lidar_viewer PRIVATE LIDAR_VIEWER_USER_SETTINGS=1)
+  target_compile_definitions(lidar_studio PRIVATE LIDAR_VIEWER_USER_SETTINGS=1)
 endif()
 
-target_include_directories(lidar_viewer PRIVATE
+target_include_directories(lidar_studio PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
   ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-target_link_libraries(lidar_viewer PRIVATE
+target_link_libraries(lidar_studio PRIVATE
   glfw
   GLEW::GLEW
   OpenGL::GL
@@ -224,8 +233,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   if(Python3_Interpreter_FOUND)
     add_custom_target(install-user-desktop
       COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/install_linux_desktop.py"
-        --binary "$<TARGET_FILE:lidar_viewer>"
-      DEPENDS lidar_viewer
+        --binary "$<TARGET_FILE:lidar_studio>"
+      DEPENDS lidar_studio
       COMMENT "Registering LiDAR Studio in the user application menu and dock"
       VERBATIM)
   endif()

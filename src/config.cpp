@@ -215,6 +215,7 @@ fs::path ProjectResourcePath(const fs::path & relative)
     for (int depth = 0; depth < 4 && !candidate.empty(); ++depth) {
       error.clear();
       if (fs::is_regular_file(candidate / "Resources/config/algorithms.yaml", error)) return candidate / "Resources";
+      if (fs::is_regular_file(candidate / "share/lidar_studio/config/algorithms.yaml", error)) return candidate / "share/lidar_studio";
       if (fs::is_regular_file(candidate / "share/lidar_viewer/config/algorithms.yaml", error)) return candidate / "share/lidar_viewer";
       if (fs::is_regular_file(candidate / "config/algorithms.yaml", error)) return candidate;
       candidate = candidate.parent_path();

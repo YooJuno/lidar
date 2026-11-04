@@ -1,11 +1,12 @@
-# LiDAR OpenGL Viewer
+# LiDAR Studio
 
 CMake + OpenGL 기반 LiDAR 뷰어입니다. `.bin`과 ROS 2 PointCloud2 bag을 지원합니다.
 
 ## Build
 
 ```bash
-cd ~/workspace/lidar
+git clone --recursive https://github.com/YooJuno/lidar_studio.git
+cd lidar_studio
 source /opt/ros/jazzy/setup.bash
 git submodule update --init --recursive
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -41,7 +42,7 @@ UI는 고정 버전의 [Dear ImGui](https://github.com/ocornut/imgui/tree/f5befd
 
 ```bash
 source /opt/ros/jazzy/setup.bash
-./build/lidar_viewer --sensor-height 0.57 --imu-level --2d
+./build/lidar_studio --sensor-height 0.57 --imu-level --2d
 ```
 
 BIN 파일이나 단일 bag 폴더를 뷰어에 드래그해 열 수도 있습니다. 하단은 소스 선택·폴더 등록·재생·타임라인에 사용하고, 캔버스 상단은 2D/3D 전환에 사용합니다. ROI 탭에서 Edit·Draw·Undo·Redo와 박스 생성·복제·삭제를 함께 관리합니다.
@@ -49,7 +50,7 @@ BIN 파일이나 단일 bag 폴더를 뷰어에 드래그해 열 수도 있습�
 입력 경로를 직접 주면 해당 데이터를 열어 시작합니다.
 
 ```bash
-./build/lidar_viewer dataset/gangnam/2019_10_04_12_28_25.bin
+./build/lidar_studio dataset/gangnam/2019_10_04_12_28_25.bin
 ```
 
 ## 실시간 LiDAR · IMU
@@ -58,7 +59,7 @@ BIN 파일이나 단일 bag 폴더를 뷰어에 드래그해 열 수도 있습�
 
 ```bash
 source /opt/ros/jazzy/setup.bash
-./build/lidar_viewer --live --topic /b2/points \
+./build/lidar_studio --live --topic /b2/points \
   --imu-topic /vn100/imu/data_ned --sensor-height 0.57 --imu-level --2d
 ```
 
@@ -76,13 +77,14 @@ source /opt/ros/jazzy/setup.bash
 | 배포 | 지원 기능 | 실행 환경 |
 | --- | --- | --- |
 | Ubuntu 24.04 x86_64 `.deb`, `.tar.gz` | BIN·ROS bag·실시간 LiDAR/IMU·MCAP 녹화·ROI·지면분리 | ROS 2 Jazzy APT 저장소 및 런타임 |
-| Windows x64 `.zip` | BIN·ROI·지면분리·네이티브 파일 선택 | 포함된 DLL과 `lidar_viewer.exe`를 같은 폴더에 유지 |
+| Windows x64 `.zip` | BIN·ROI·지면분리·네이티브 파일 선택 | 포함된 DLL과 `lidar_studio.exe`를 같은 폴더에 유지 |
 | macOS `.zip`, `.dmg` | BIN·ROI·지면분리·네이티브 파일 선택 | 패키지의 CPU 아키텍처에 맞는 macOS, OpenGL 4.1 |
 
 배포 파일은 CPU 빌드입니다. CUDA는 소스에서 선택적으로 켭니다. Windows/macOS 배포에는 ROS 2가 포함되지 않아 ROS bag·실시간 ROS 연결은 비활성화됩니다. macOS 번들은 ad-hoc 서명이며 Apple Developer ID 서명·공증은 포함하지 않습니다.
 
-- Ubuntu: ROS 2 Jazzy 저장소를 설정한 뒤 `sudo apt install ./LiDARViewer-*.deb`, 실행은 앱 메뉴의 **LiDAR Viewer** 또는 `lidar-viewer`입니다. 실행 스크립트가 Jazzy 환경을 읽습니다.
-- Windows: ZIP을 풀고 `lidar_viewer.exe`를 실행합니다. **Open file**에서 `.bin`도 선택할 수 있습니다.
+- Ubuntu: ROS 2 Jazzy 저장소를 설정한 뒤 `sudo apt install ./lidar_studio-*.deb`, 실행은 앱 메뉴의 **LiDAR Studio** 또는 `lidar_studio`입니다. 실행 스크립트가 Jazzy 환경을 읽습니다.
+- 저장소·실행 파일·배포 파일 이름은 `lidar_studio`입니다. Ubuntu 패키지 ID는 Debian 명명 규칙에 맞춘 `lidar-studio`이며, 이전 `lidar-viewer` 실행 명령도 지원합니다. 설정·모델 저장 위치와 desktop ID는 기존 값을 유지해 ROI와 설치한 모델, 독 아이콘 연결을 이어 씁니다.
+- Windows: ZIP을 풀고 `lidar_studio.exe`를 실행합니다. **Open file**에서 `.bin`도 선택할 수 있습니다.
 - macOS: DMG의 `lidar_viewer.app`을 Applications에 복사하거나 ZIP의 앱을 실행합니다.
 - 패키지 빌드는 `-DLIDAR_VIEWER_USER_SETTINGS=ON`을 사용해 사용자 설정을 Windows `%APPDATA%/LiDARViewer`, macOS `~/Library/Application Support/LiDARViewer`, Ubuntu `~/.config/lidar_viewer`에 저장합니다. 기본 설정은 배포 리소스에서 읽고 사용자 설정으로 덮어씁니다. 업데이트해도 사용자 ROI를 패키지 설정으로 덮어쓰지 않습니다. `XDG_CONFIG_HOME`도 지원합니다.
 - 소스 빌드는 기존처럼 프로젝트 `config/profiles`에 저장합니다. 사용자 경로를 쓰려면 위 CMake 옵션을 켭니다.
@@ -96,9 +98,10 @@ GitHub Actions의 **Build and release**는 PR·main push·수동 실행에서 �
 실행 중에는 상단 **Open file** 버튼 또는 **Ctrl+O**로 시스템 파일 선택 창을 열 수 있습니다. 선택하면 해당 bag을 열고 첫 프레임에서 정지합니다. 취소하거나 열기에 실패하면 현재 점군을 유지하며, 재생 중이었다면 재생도 복원합니다. 로딩 카드에는 파일명·색인한 LiDAR 프레임/전체 수·IMU 표본 수·경과 시간·선택 메시지의 스캔 진행률을 표시합니다. 전체 수를 아직 모르는 단계는 활동 표시줄로 구분합니다. **Cancel opening / Esc**로 취소할 수 있으며, 명령행에서 bag을 열어도 창이 먼저 표시됩니다. 단일 bag을 고르는 동작은 상위 폴더 전체를 등록하지 않습니다.
 
 ```bash
-cd ~/workspace/lidar
+git clone --recursive https://github.com/YooJuno/lidar_studio.git
+cd lidar_studio
 source /opt/ros/jazzy/setup.bash
-./build/lidar_viewer \
+./build/lidar_studio \
   ~/shalom_ws/data/bags/sensors_20261023_120204_157971 \
   --topic /b2/points --sensor-height 0.57 --play
 ```
@@ -118,7 +121,7 @@ source /opt/ros/jazzy/setup.bash
 폴더를 명령행에서 일회성으로 열 수도 있습니다.
 
 ```bash
-./build/lidar_viewer ~/shalom_ws/data/bags --sensor-height 0.57
+./build/lidar_studio ~/shalom_ws/data/bags --sensor-height 0.57
 ```
 
 - bag 폴더, `metadata.yaml`, 개별 `.mcap`·`.db3` 파일을 직접 읽습니다. 원본을 변경하거나 `.bin`으로 변환하지 않습니다.
@@ -142,7 +145,7 @@ source /opt/ros/jazzy/setup.bash
 왼쪽 **Align → IMU auto level**을 켜면 기록된 IMU의 중력 방향이 표시 좌표계의 +Z가 되도록 roll/pitch를 보정합니다. 보정한 점군을 지면 분할에도 사용하며 yaw와 센서 높이는 기존 설정을 유지합니다. 실제 경사로는 경사로로 남고, 지형을 평면에 강제로 맞추지는 않습니다.
 
 ```bash
-./build/lidar_viewer ~/shalom_ws/data/bags --topic /b2/points \
+./build/lidar_studio ~/shalom_ws/data/bags --topic /b2/points \
   --sensor-height 0.57 --imu-level --2d
 ```
 
@@ -261,7 +264,7 @@ GSeg3D의 원본 submodule은 그대로 두고 빌드 시 생성하는 헤더에
 
 ```bash
 xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_live_smoke.py \
-  --viewer build/lidar_viewer --output build/test_artifacts/live
+  --viewer build/lidar_studio --output build/test_artifacts/live
 ```
 
 알고리즘 회귀 검사는 음수 좌표, 물체 회전, 완전 탐색과의 클러스터 연결성 비교, 고밀도 입력, CPU/CUDA fast-grid 결과 일치와 버퍼 재사용을 확인합니다. 설정·입력 검사는 실행 디렉터리 독립성, 잘못된 숫자와 NaN/Inf BIN 샘플을 검사합니다.
@@ -273,7 +276,7 @@ OpenGL 입력·배율·크기 변경 회귀 테스트는 별도 Xvfb에서 실�
 
 ```bash
 xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_gl_smoke.py \
-  --viewer build/lidar_viewer \
+  --viewer build/lidar_studio \
   --bag ~/shalom_ws/data/bags/sensors_20261023_120204_157971 \
   --output build/test_artifacts/ui_redesign --dpi 192
 ```
@@ -282,7 +285,7 @@ xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_gl_smoke.py \
 
 ```bash
 xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_imu_rotation_smoke.py \
-  --viewer build/lidar_viewer \
+  --viewer build/lidar_studio \
   --bag ~/shalom_ws/data/bags/sensors_20261022_192513_438096 \
   --output build/test_artifacts/imu_rotation
 ```
@@ -291,14 +294,14 @@ ROI 편집·다중 박스·복제/삭제·저장/복원·표시 변환·지면�
 
 ```bash
 xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_roi_smoke.py \
-  --viewer build/lidar_viewer --output build/test_artifacts/roi
+  --viewer build/lidar_studio --output build/test_artifacts/roi
 ```
 
 빈 뷰어 시작·자동 로딩 방지·빈 상태의 재생/프레임 조작·버튼으로 파일 탐색 창 열기·취소·분할 bag 전환은 별도 Xvfb에서 검사합니다.
 
 ```bash
 xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_file_dialog_smoke.py \
-  --viewer build/lidar_viewer \
+  --viewer build/lidar_studio \
   --bag ~/shalom_ws/data/bags/sensors_20261022_192513_438096 \
   --target ~/shalom_ws/data/bags/sensors_20261023_120204_157971 \
   --output build/test_artifacts/file_dialog
@@ -321,8 +324,8 @@ Fast grid의 후보 높이 범위는 거리와 설정한 경사 한계에 따라
 재생 중 버튼·ROI 조작과 앱 공통 설정 검사는 별도 설정·합성 bag을 사용합니다.
 
 ```bash
-xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_playback_smoke.py --viewer build/lidar_viewer --output build/test_artifacts/playback
-xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_app_settings_smoke.py --viewer build/lidar_viewer --output build/test_artifacts/app-settings
+xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_playback_smoke.py --viewer build/lidar_studio --output build/test_artifacts/playback
+xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_app_settings_smoke.py --viewer build/lidar_studio --output build/test_artifacts/app-settings
 ```
 
 ## 사람·차량 인식 — 원본 TIER IV 모델
@@ -340,7 +343,7 @@ xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_app_settings_s
 
 ```bash
 source /opt/ros/jazzy/setup.bash
-./build/lidar_viewer --detect
+./build/lidar_studio --detect
 ```
 
 다른 컴퓨터에서는 Python 3.10–3.13으로 선택 기능을 한 번 설치합니다. 시스템 Python 패키지를 바꾸지 않고 사용자 폴더의 별도 가상환경에 설치합니다. Ubuntu에서 venv가 없다면 `python3-venv` 패키지가 필요합니다.
@@ -405,7 +408,7 @@ ShortRange 도입 비교(2026-10-30): 사용자가 사람이 없다고 확인한
 ```bash
 source /opt/ros/jazzy/setup.bash
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s '-screen 0 1920x1200x24' \
-  /usr/bin/python3 tests/ui_tracking_smoke.py --viewer build/lidar_viewer --output build/test_artifacts/tracking
+  /usr/bin/python3 tests/ui_tracking_smoke.py --viewer build/lidar_studio --output build/test_artifacts/tracking
 ```
 
 원본 encoder → 독립 NCHW scatter → 원본 head와 합친 ONNX의 수치 일치, 특징·좌표·NMS 및 프로세스 종료/파이프/최신 프레임 전달 검사는 다음으로 확인합니다. 가중치 경로를 생략한 Python 검사는 NumPy만 필요합니다.
@@ -416,7 +419,7 @@ python3 tests/test_centerpoint.py
 ~/.local/share/lidar_viewer/detector/runtime/bin/python tests/test_centerpoint.py \
   --model tiny --model-dir ~/.local/share/lidar_viewer/detector/centerpoint-tiny-v4.1 \
   --cloud dataset/2011_09_26/2011_09_26_drive_0005_sync/velodyne_points/data/0000000041.bin
-./build/lidar_viewer /path/to/scan.bin --detect --inspect
+./build/lidar_studio /path/to/scan.bin --detect --inspect
 ```
 
 출처와 라이선스는 `third_party/licenses/Autoware-CenterPoint-NOTICE.txt`, `third_party/licenses/AWML-CenterPoint-NOTICE.txt` 및 모델 카드에 기록합니다.
@@ -425,7 +428,7 @@ python3 tests/test_centerpoint.py
 
 점군·3D ROI 박스·스캔 링을 표현한 `resources/icons/lidar-studio.svg`가 아이콘 원본입니다. Windows 실행 파일에는 다중 해상도 ICO, macOS 앱 번들에는 ICNS, Ubuntu에는 hicolor PNG/SVG 및 desktop 연결을 포함합니다. 체크아웃에서 직접 실행할 때에도 창/작업 표시줄 아이콘을 지정합니다. 생성한 파일을 저장소에 포함하므로 일반 빌드에는 이미지 변환 도구가 필요 없습니다. 아이콘을 수정한 후에는 `uv run --with pillow --with cairosvg tools/generate_app_icons.py`로 다시 생성할 수 있습니다.
 
-소스의 `build/lidar_viewer`를 직접 실행할 때 Ubuntu 독·앱 메뉴의 아이콘을 연결하려면 한 번 등록합니다. 창 아이콘과 별도로 GNOME이 사용하는 `lidar-viewer.desktop` 항목이 필요합니다.
+소스의 `build/lidar_studio`를 직접 실행할 때 Ubuntu 독·앱 메뉴의 아이콘을 연결하려면 한 번 등록합니다. 창 아이콘과 별도로 GNOME이 사용하는 `lidar-viewer.desktop` 항목이 필요합니다.
 
 ```bash
 cmake --build build --target install-user-desktop
@@ -433,7 +436,7 @@ cmake --build build --target install-user-desktop
 python3 tools/install_linux_desktop.py --binary /absolute/path/to/lidar_viewer
 ```
 
-등록은 sudo 없이 사용자 `~/.local/bin/lidar-viewer`와 `~/.local/share/applications/lidar-viewer.desktop`, 사용자 아이콘 폴더에만 기록합니다. `XDG_DATA_HOME`도 따릅니다. 이후 앱 메뉴의 **LiDAR Studio** 또는 기존 `build/lidar_viewer` 실행 모두 같은 아이콘에 연결됩니다. 이미 실행 중인 창은 앱을 다시 켜면 새 등록을 사용합니다. 배포 패키지는 시스템 desktop 항목을 함께 설치합니다.
+등록은 sudo 없이 사용자 `~/.local/bin/lidar_studio`와 `~/.local/share/applications/lidar-viewer.desktop`, 사용자 아이콘 폴더에만 기록합니다. `XDG_DATA_HOME`도 따릅니다. 이후 앱 메뉴의 **LiDAR Studio** 또는 기존 `build/lidar_studio` 실행 모두 같은 아이콘에 연결됩니다. 이미 실행 중인 창은 앱을 다시 켜면 새 등록을 사용합니다. 배포 패키지는 시스템 desktop 항목을 함께 설치합니다.
 
 ## FugSeg 지면분리
 
