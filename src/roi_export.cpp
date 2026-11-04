@@ -155,10 +155,16 @@ std::string SourceName(const RoiExportRequest & request,std::size_t index)
   if (request.live_snapshot) return "live-"+FilenamePart(request.live_topic,48,"points");
   auto path=request.sources.at(index).handle.path;
   if (path.filename().empty()) path=path.parent_path();
-  if (path.filename()=="metadata.yaml") path=path.parent_path();
-  else if (path.has_extension() && (request.sources[index].handle.format!=InputFormat::Ros2Bag ||
-      path.extension()==".mcap" || path.extension()==".db3")) path=path.stem();
-  return FilenamePart(path.filename().u8string(),56,"source");
+  auto name=path.filename().u8string();
+  if (name=="metadata.yaml") name=path.parent_path().filename().u8string();
+  else {
+    // Parse the display name as UTF-8 text: Windows stem()/extension()
+    // interpret ':' as an alternate stream and otherwise lose part of it.
+    const auto dot=name.find_last_of('.');
+    if (dot!=std::string::npos && dot>0 && (request.sources[index].handle.format!=InputFormat::Ros2Bag ||
+        name.substr(dot)==".mcap" || name.substr(dot)==".db3")) name.resize(dot);
+  }
+  return FilenamePart(name,56,"source");
 }
 std::string FrameNumber(const RoiExportRequest & request,std::size_t index)
 {

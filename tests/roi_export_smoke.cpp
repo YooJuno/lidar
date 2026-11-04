@@ -109,7 +109,8 @@ int main()
     changed.regions.boxes[0].name=u8"센서/앞쪽*박스";
     const auto unicode=RoiExportDatasetName(changed);
     Check(unicode.find(u8"주행-기록__f000008")==0 && unicode.find(u8"센서-앞쪽-박스")!=std::string::npos &&
-      unicode.find_first_of("<>:\"/\\|?*")==std::string::npos,"Unicode names or cross-platform filename sanitization failed");
+      unicode.find_first_of("<>:\"/\\|?*")==std::string::npos,
+      ("Unicode names or cross-platform filename sanitization failed: "+unicode).c_str());
     request.destination=root/"batch";ExportRoiDataset(request,std::make_shared<RoiExportProgress>());
     Check(Npy(Sample(request.destination,"points",1)).size()==3 &&
       Sample(request.destination,"points",1).filename().string().find("input__f000010__near+overlap-")==0 &&
