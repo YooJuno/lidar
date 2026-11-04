@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Private Xvfb: direct region editing, details dialog, history and visible selection."""
-import argparse,json,os,re,shutil,struct,subprocess,tempfile,time,traceback
+import argparse,json,os,re,shlex,shutil,struct,subprocess,tempfile,time,traceback
 from pathlib import Path
 from ui_gl_smoke import X11,capture,settings_inventory
 from ui_controls import Controls
@@ -82,6 +82,38 @@ def main():
    commit();row=c.rect('roi_row_8');listing=c.rect('roi_list')
    check('selected_ninth_region_is_visible',row[1]>=listing[1] and row[3]<=listing[3])
    capture(x11,window,out/'02_nine_regions.png')
+   def names(display=False):
+    prefix='display_roi_box=' if display else 'roi_exclude_box='
+    return [shlex.split(line.split('=',1)[1])[1] for line in text().splitlines() if line.startswith(prefix)]
+   def deletion_order(display=False):
+    label='display_' if display else 'ground_'
+    def persist():
+     if not display:c.click('roi_apply')
+     c.chord('s');time.sleep(.1)
+    original=names(display);check(label+'delete_fixture_has_nine_regions',len(original)==9)
+    c.click('roi_row_6');c.click('roi_enabled_8');c.click('roi_enabled_8');c.click('roi_delete');persist()
+    check(label+'delete_removes_selected_middle_only',names(display)==original[:6]+original[7:])
+    c.click('roi_delete');persist()
+    check(label+'delete_continues_with_next_region',names(display)==original[:6]+original[8:])
+    c.click('roi_undo');persist();c.click('roi_undo');persist()
+    check(label+'undo_both_deletions_restores_regions',names(display)==original)
+    x,y,r,b=c.rect('roi_list')
+    for _ in range(3):x11.click(window,int((x+r)*.5),int((y+b)*.5),5)
+    time.sleep(.2);c.click('roi_row_8');x11.key(window,'Delete');persist()
+    check(label+'keyboard_delete_removes_last_region',names(display)==original[:-1])
+    x11.key(window,'Delete');persist()
+    check(label+'last_delete_selects_previous_region',names(display)==original[:-2])
+    for _ in range(7):c.click('roi_delete');persist()
+    check(label+'can_delete_through_last_remaining_region',names(display)==[])
+    c.click('roi_undo');persist()
+    check(label+'undo_restores_last_remaining_region',names(display)==original[:1])
+   deletion_order()
+   ground_names=names();c.click('roi_purpose_display');c.click('roi_add');c.drag((800,300),(1100,570))
+   for _ in range(8):c.click('roi_duplicate')
+   c.chord('s');time.sleep(.1);deletion_order(True)
+   check('display_deletions_preserve_ground_regions',names()==ground_names)
+   c.click('display_roi_enabled');c.chord('s')
+   c.click('roi_purpose_ground');capture(x11,window,out/'03_deletion_selection.png')
    base='\n'.join(line for line in text().splitlines() if not line.startswith('roi_'))+'\n'
    base+='roi_enabled=0\nroi_count=2\nroi_box=1 "a" 0 0 -2 4 2 2 90\nroi_exclude_box=1 "b" 8 0 -2 4 2 2 0\ncalibration_yaw_deg=19\ncalibration_pitch_deg=-12\ncalibration_roll_deg=9\ncalibration_z_m=.57\n'
    for ground in [0,1]:

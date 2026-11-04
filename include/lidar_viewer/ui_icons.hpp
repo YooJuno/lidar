@@ -5,7 +5,7 @@
 
 namespace lidar_viewer
 {
-enum class UiIcon {Select, Box, Fit, Copy, Trash, Undo, Redo, Eye, Focus, Plus, Settings, Play, Pause, Previous, Next, Folder, Live, Export};
+enum class UiIcon {Select, Box, Fit, Copy, Trash, Undo, Redo, Eye, Focus, Plus, Settings, Play, Pause, Previous, Next, Folder, Live, Export, Power};
 
 inline void DrawUiIcon(ImDrawList * draw, UiIcon icon, ImVec2 origin, float size, ImU32 color)
 {
@@ -41,6 +41,9 @@ inline void DrawUiIcon(ImDrawList * draw, UiIcon icon, ImVec2 origin, float size
       draw->AddBezierCubic(p(.08f,.5f),p(.3f,.92f),p(.7f,.92f),p(.92f,.5f),color,stroke);
       draw->AddCircle(p(.5f,.5f),size*.14f,color,16,stroke);break;
     case UiIcon::Plus:line(.5f,.15f,.5f,.85f);line(.15f,.5f,.85f,.5f);break;
+    case UiIcon::Power:
+      draw->PathArcTo(p(.5f,.54f),size*.32f,-1.f,4.14159265f,24);draw->PathStroke(color,0,stroke);
+      line(.5f,.1f,.5f,.5f);break;
     case UiIcon::Play:draw->AddTriangleFilled(p(.25f,.13f),p(.84f,.5f),p(.25f,.87f),color);break;
     case UiIcon::Pause:
       draw->AddRectFilled(p(.2f,.16f),p(.4f,.84f),color,1);draw->AddRectFilled(p(.6f,.16f),p(.8f,.84f),color,1);break;

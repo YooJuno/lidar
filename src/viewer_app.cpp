@@ -2688,10 +2688,13 @@ void DuplicateSelectedRoi(ViewerState & state)
 
 void DeleteSelectedRoi(ViewerState & state)
 {
-  if (EditedRoi(state).boxes.empty()) return;
+  auto & boxes=EditedRoi(state).boxes;
+  if (SelectedRoi(state)>=boxes.size()) return;
   EditedRoiHistory(state).Record(EditedRoi(state));
-  EditedRoi(state).boxes.erase(EditedRoi(state).boxes.begin()+static_cast<std::ptrdiff_t>(SelectedRoi(state)));
-  if (SelectedRoi(state)) --SelectedRoi(state);
+  boxes.erase(boxes.begin()+static_cast<std::ptrdiff_t>(SelectedRoi(state)));
+  // Keep the next row selected; only step back when deleting the last row.
+  SelectedRoi(state)=boxes.empty() ? 0 : std::min(SelectedRoi(state),boxes.size()-1);
+  state.roi_numeric_edit=false;state.roi_reveal_selection=true;
   MarkRoiPending(state);
 }
 
@@ -3577,37 +3580,48 @@ void BuildRoiEditor(ViewerState & state)
   if (IconButton("##Outlines",UiIcon::Eye,"Show region outlines",s,EditedRoi(state).show_boxes)) EditedRoi(state).show_boxes=!EditedRoi(state).show_boxes;
   TraceUi("roi_outlines");
   const float rows=static_cast<float>(std::clamp<std::size_t>(EditedRoi(state).boxes.size(),3,8));
-  const float preferred_height=rows*(ImGui::GetTextLineHeight()+18*s)+12*s;
+  const float preferred_height=rows*38*s+12*s;
   const float list_height=std::min(preferred_height,std::clamp(ImGui::GetContentRegionAvail().y-(display ? 230 : 190)*s,110*s,285*s));
   if (std::abs(list_height-state.roi_list_height)>1) {state.roi_reveal_selection=true;state.roi_list_height=list_height;}
   if (ImGui::BeginListBox("##RoiList",{-1,list_height})) {
+    ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign,{0,.5f});
+    ImGui::PushStyleColor(ImGuiCol_Header,{.12f,.30f,.39f,1});
     for (std::size_t i=0;i<EditedRoi(state).boxes.size();++i) {
       ImGui::PushID(static_cast<int>(i));auto & box=EditedRoi(state).boxes[i];
       ImGui::BeginDisabled(state.roi_gesture.active);
-      ImGui::Checkbox("##Enabled",&box.enabled);TraceUi(("roi_enabled_"+std::to_string(i)).c_str());
-      ImGui::SameLine();
-      if (ImGui::Selectable(box.name.empty() ? "Unnamed region" : box.name.c_str(),i==SelectedRoi(state))) {
+      const std::string label=(box.name.empty() ? "Unnamed region" : box.name)+"###Region";
+      if (ImGui::Selectable(label.c_str(),i==SelectedRoi(state),0,{ImGui::GetContentRegionAvail().x-38*s,30*s})) {
         SelectedRoi(state)=i;state.roi_numeric_edit=false;SelectRoiTool(state,ViewerState::RoiTool::Move);
       }
       TraceUi(("roi_row_"+std::to_string(i)).c_str());
       if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) FocusSelectedRoi(state);
       if (i==SelectedRoi(state) && state.roi_reveal_selection) ImGui::SetScrollHereY(.5f);
+      ImGui::SameLine();
+      const std::string toggle_tip=std::string(box.enabled ? "Disable " : "Enable ")+
+        (display ? "display crop: " : "ground exclusion: ")+box.name+
+        ". Click the region name to select it for editing or deletion.";
+      const bool inactive=!box.enabled;
+      if (inactive) ImGui::PushStyleColor(ImGuiCol_Text,ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+      if (IconButton("##Enabled",UiIcon::Power,toggle_tip.c_str(),s,box.enabled)) box.enabled=!box.enabled;
+      TraceUi(("roi_enabled_"+std::to_string(i)).c_str());
+      if (inactive) ImGui::PopStyleColor();
       ImGui::EndDisabled();ImGui::PopID();
     }
+    ImGui::PopStyleColor();ImGui::PopStyleVar();
     state.roi_reveal_selection=false;ImGui::EndListBox();TraceUi("roi_list");
   }
   if (EditedRoi(state).boxes.empty()) ImGui::TextWrapped("Add a region, then drag a rectangle in the 2D view.");
   else {
     SelectedRoi(state)=std::min(SelectedRoi(state),EditedRoi(state).boxes.size()-1);
-    auto & selected=EditedRoi(state).boxes[SelectedRoi(state)];
-    ImGui::Text("Selected: %s",selected.name.c_str());
+    ImGui::Text("Selected: %s",EditedRoi(state).boxes[SelectedRoi(state)].name.c_str());
     ImGui::BeginDisabled(state.roi_gesture.active);
     if (IconButton("##FocusRoi",UiIcon::Focus,"Find this region in the view",s)) {FocusSelectedRoi(state);SelectRoiTool(state,ViewerState::RoiTool::Move);}
     TraceUi("roi_focus");ImGui::SameLine(0,4*s);
     ImGui::BeginDisabled(EditedRoi(state).boxes.size()>=lidar_viewer::kMaxRoiBoxes);
     if (IconButton("##CopyRoi",UiIcon::Copy,"Duplicate this region. Ctrl+D",s)) DuplicateSelectedRoi(state);
     TraceUi("roi_duplicate");ImGui::EndDisabled();ImGui::SameLine(0,4*s);
-    if (IconButton("##DeleteRoi",UiIcon::Trash,"Delete this region. Delete / Ctrl+Z to undo",s)) DeleteSelectedRoi(state);
+    const auto delete_tip="Delete "+EditedRoi(state).boxes[SelectedRoi(state)].name+". Delete / Ctrl+Z to undo";
+    if (IconButton("##DeleteRoi",UiIcon::Trash,delete_tip.c_str(),s)) DeleteSelectedRoi(state);
     TraceUi("roi_delete");ImGui::SameLine(0,12*s);
     if (ImGui::Button("Details...",{-1,30*s})) state.roi_details_requested=true;
     TraceUi("roi_details");ImGui::EndDisabled();
