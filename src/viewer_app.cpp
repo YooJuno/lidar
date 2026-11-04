@@ -4417,12 +4417,6 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       else {draw->AddRectFilled({p.x-4*s,p.y-4*s},{p.x+4*s,p.y+4*s},hover ? IM_COL32(255,255,255,255) : accent,1*s);}
       if (hover && !ImGui::GetIO().WantCaptureMouse) ImGui::SetMouseCursor(h.rotate ? ImGuiMouseCursor_Hand : ImGuiMouseCursor_ResizeAll);
     }
-    const auto & box=EditedRoi(state).boxes[SelectedRoi(state)];
-    const auto center=RoiScreenPoint(state,box.center);
-    const auto size=ImGui::CalcTextSize(box.name.c_str());
-    const ImVec2 label{center.x-size.x*.5f,center.y-10*s};
-    draw->AddRectFilled({label.x-6*s,label.y-3*s},{label.x+size.x+6*s,label.y+size.y+3*s},IM_COL32(18,28,38,225),4*s);
-    draw->AddText(label,IM_COL32(222,242,245,255),box.name.c_str());
     draw->PopClipRect();
   }
   if (has_input && VisiblePoints(state).count==0 && !state.base_frame.points.empty() &&
