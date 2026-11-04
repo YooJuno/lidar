@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Private Xvfb: direct region editing, details dialog, history and visible selection."""
-import argparse,json,os,re,shlex,shutil,struct,subprocess,tempfile,time,traceback
+import argparse,json,math,os,re,shlex,shutil,struct,subprocess,tempfile,time,traceback
 from pathlib import Path
 from ui_gl_smoke import X11,capture,settings_inventory
 from ui_controls import Controls
@@ -53,6 +53,10 @@ def main():
    c.click('roi_duplicate');count(81,'duplicate_has_offset_and_same_size',2)
    edit(center=[8,0,-2],yaw=0);count(90,'multiple_region_union',2)
    edit(name='nearby');count(90,'rename_keeps_region_geometry',2)
+   c.enter('roi_bottom',-3.5);c.enter('roi_top',-.5);commit()
+   height=shlex.split([line for line in text().splitlines() if line.startswith('roi_exclude_box=')][-1].split('=',1)[1])
+   check('height_bounds_accept_direct_input',abs(float(height[4])+2)<1e-5 and abs(float(height[7])-3)<1e-5)
+   edit(center=[8,0,-2],size=[4,2,2]);count(90,'height_edit_preserves_other_box_dimensions',2)
    c.click('roi_delete');count(45,'delete_region',1);c.click('roi_undo');count(90,'undo_delete',2)
    c.click('roi_redo');count(45,'redo_delete',1);c.chord('z');count(90,'keyboard_undo',2)
    c.click('roi_enabled_1');count(45,'disable_one_region',2);c.click('roi_enabled_1');count(90,'reenable_one_region',2)
@@ -112,6 +116,30 @@ def main():
    for _ in range(8):c.click('roi_duplicate')
    c.chord('s');time.sleep(.1);deletion_order(True)
    check('display_deletions_preserve_ground_regions',names()==ground_names)
+   def camera():
+    c.chord('s');time.sleep(.1)
+    return {k:float(v) for line in text().splitlines() if '=' in line for k,v in [line.split('=',1)]
+      if k in ['camera_distance','camera_target_x','camera_target_y','camera_target_z','camera_yaw_rad']}
+   edit(center=[1,0,-2],size=[.08,.08,.1],yaw=0);c.click('roi_focus');zoom=camera()
+   check('focus_small_roi_can_zoom_below_old_limit',zoom['camera_distance']<.2)
+   x11.wheel(window,968,431,4);zoom=camera()
+   check('2d_zoom_reaches_twenty_centimeter_view',abs(zoom['camera_distance']-.1)<1e-5)
+   c.drag((1300,620),(1336,638));panned=camera();unit=.2/718;co=math.cos(zoom['camera_yaw_rad']);si=math.sin(zoom['camera_yaw_rad'])
+   check('high_zoom_panning_tracks_screen_distance',abs(panned['camera_target_x']-zoom['camera_target_x']+(36*co+18*si)*unit)<1e-5 and
+     abs(panned['camera_target_y']-zoom['camera_target_y']-(-36*si+18*co)*unit)<1e-5)
+   c.click('roi_focus');zoom=camera();x11.wheel(window,1120,500,2);anchored=camera()
+   check('zoom_keeps_cursor_world_position',
+     abs((zoom['camera_target_x']+(152*co+69*si)*2*zoom['camera_distance']/718)-
+       (anchored['camera_target_x']+(152*co+69*si)*2*anchored['camera_distance']/718))<1e-5 and
+     abs((zoom['camera_target_y']+(152*si-69*co)*2*zoom['camera_distance']/718)-
+       (anchored['camera_target_y']+(152*si-69*co)*2*anchored['camera_distance']/718))<1e-5)
+   c.click('roi_focus');x11.wheel(window,968,431,4);c.drag((968,431),(1004,449));c.chord('s')
+   box=shlex.split([line for line in text().splitlines() if line.startswith('display_roi_box=')][0].split('=',1)[1])
+   check('roi_move_matches_magnified_cloud_coordinates',abs(float(box[2])-(1+(36*co+18*si)*unit))<1e-5 and
+     abs(float(box[3])-(36*si-18*co)*unit)<1e-5)
+   capture(x11,window,out/'04_close_zoom.png');zoom=camera()
+   c.click('camera_3D');c.click('camera_2D');restored=camera()
+   check('projection_round_trip_preserves_close_zoom',all(abs(zoom[k]-restored[k])<1e-5 for k in zoom))
    c.click('display_roi_enabled');c.chord('s')
    c.click('roi_purpose_ground');capture(x11,window,out/'03_deletion_selection.png')
    base='\n'.join(line for line in text().splitlines() if not line.startswith('roi_'))+'\n'
@@ -119,6 +147,14 @@ def main():
    for ground in [0,1]:
     saved().write_text(base+f'ground_removal_enabled={ground}\nground_mode=fast_grid\n');s=inspect()
     check('pipeline_transform_ground_'+str(ground),'2 boxes | retained 3125 / 3125 points' in s and 'Ground ROI: skipped 90 | input 3035' in s)
+   process.terminate();process.wait(timeout=5);window=None
+   with log_path.open('ab') as log:process=subprocess.Popen([str(viewer),str(fixture),'--2d'],cwd=private,env=env,stdout=log,stderr=subprocess.STDOUT)
+   deadline=time.monotonic()+20
+   while not window:
+    if process.poll() is not None or time.monotonic()>deadline:raise RuntimeError('Viewer did not reopen')
+    window=x11.viewer_window();time.sleep(.1)
+   x11.focus(window);x11.resize(window,1600,960);c=Controls(x11,window,log_path);time.sleep(.3)
+   check('saved_close_zoom_survives_restart',abs(camera()['camera_distance']-.1)<1e-5)
    check('original_profiles_unchanged',before==settings_inventory(repo));result['status']='passed'
  except Exception as error:
   result.update(status='failed',error=str(error),traceback=traceback.format_exc())

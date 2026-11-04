@@ -137,18 +137,22 @@ std::string FilenamePart(const std::string & text,std::size_t limit,const char *
 }
 std::string RegionName(const RoiSettings & regions)
 {
-  auto geometry=JsonStream();WriteRegions(geometry,regions);
-  std::uint64_t hash=14695981039346656037ULL;
-  for (const unsigned char c:geometry.str()) {hash^=c;hash*=1099511628211ULL;}
-  std::string names;std::size_t count=0;
+  std::string names;std::size_t count=0;bool numbered=true;
   for (const auto & box:regions.boxes) if (box.enabled) {
-    if (count<2) {if (count) names+='+';names+=FilenamePart(box.name,24,"ROI");}
+    const auto & name=box.name;
+    numbered&=name.size()>4 && name.compare(0,4,"ROI ")==0 &&
+      std::all_of(name.begin()+4,name.end(),[](char c){return c>='0' && c<='9';});
+  }
+  for (const auto & box:regions.boxes) if (box.enabled) {
+    if (count<2) {
+      if (count) names+='-';
+      else if (numbered) names="roi";
+      names+=FilenamePart(numbered ? box.name.substr(4) : box.name,numbered ? 6 : 24,"roi");
+    }
     ++count;
   }
   if (count>2) names+="+"+std::to_string(count-2)+"more";
-  std::ostringstream suffix;suffix.imbue(std::locale::classic());
-  suffix<<std::hex<<std::setw(16)<<std::setfill('0')<<hash;
-  return (names.empty() ? "ROI" : names)+"-"+suffix.str();
+  return names.empty() ? "roi" : names;
 }
 std::string SourceName(const RoiExportRequest & request,std::size_t index)
 {
@@ -164,21 +168,25 @@ std::string SourceName(const RoiExportRequest & request,std::size_t index)
     if (dot!=std::string::npos && dot>0 && (request.sources[index].handle.format!=InputFormat::Ros2Bag ||
         name.substr(dot)==".mcap" || name.substr(dot)==".db3")) name.resize(dot);
   }
-  return FilenamePart(name,56,"source");
+  // Recording names keep their date/time; the full source path stays in JSON.
+  if (name.size()>=23 && name.compare(0,8,"sensors_")==0 && name[16]=='_' &&
+      (name.size()==23 || name[23]=='_') &&
+      std::all_of(name.begin()+8,name.begin()+16,[](char c){return c>='0' && c<='9';}) &&
+      std::all_of(name.begin()+17,name.begin()+23,[](char c){return c>='0' && c<='9';})) name=name.substr(8,15);
+  return FilenamePart(name,36,"source");
 }
 std::string FrameNumber(const RoiExportRequest & request,std::size_t index)
 {
   std::ostringstream out;out.imbue(std::locale::classic());
   // Match the viewer's one-based frame display. Live sequences remain exact.
-  out<<(request.live_snapshot ? "seq" : "f")<<std::setw(6)<<std::setfill('0');
+  out<<(request.live_snapshot ? "seq" : "f");
   if (request.live_snapshot) out<<request.live_sequence;
   else out<<static_cast<std::uint64_t>(request.sources.at(index).frame_index)+1;
   return out.str();
 }
 std::string SampleName(const RoiExportRequest & request,std::size_t index,const std::string & region_name)
 {
-  return SourceName(request,index)+"__"+FrameNumber(request,index)+"__"+region_name+
-    (request.aligned_coordinates ? "__aligned" : "__sensor");
+  return SourceName(request,index)+"_"+FrameNumber(request,index)+"_"+region_name;
 }
 void Validate(const RoiExportRequest & request)
 {
@@ -196,7 +204,7 @@ void Validate(const RoiExportRequest & request)
     ValidateRoiBox(box);
     if (box.enabled) active=true;
   }
-  if (!active) throw std::runtime_error("Check at least one display ROI to export");
+  if (!active) throw std::runtime_error("Enable at least one display ROI to export");
   for (const float v:{request.calibration.yaw_deg,request.calibration.pitch_deg,request.calibration.roll_deg,
       request.calibration.z_m,request.global_ground_offset,request.imu_mount.roll_deg,
       request.imu_mount.pitch_deg,request.imu_mount.yaw_deg})
@@ -208,9 +216,8 @@ std::string RoiExportDatasetName(const RoiExportRequest & request)
 {
   auto frames=FrameNumber(request,0);
   if (!request.live_snapshot && request.sources.size()>1)
-    frames+="-"+FrameNumber(request,request.sources.size()-1)+"_n"+std::to_string(request.sources.size());
-  return SourceName(request,0)+"__"+frames+"__"+RegionName(request.regions)+
-    (request.aligned_coordinates ? "__aligned" : "__sensor");
+    frames+="-"+FrameNumber(request,request.sources.size()-1).substr(1)+"_n"+std::to_string(request.sources.size());
+  return SourceName(request,0)+"_"+frames+"_"+RegionName(request.regions);
 }
 
 fs::path AvailableRoiExportDestination(const fs::path & parent,const RoiExportRequest & request)
@@ -218,7 +225,7 @@ fs::path AvailableRoiExportDestination(const fs::path & parent,const RoiExportRe
   const auto name=RoiExportDatasetName(request);
   auto destination=parent/fs::u8path(name);
   for (std::size_t copy=2;fs::exists(destination);++copy)
-    destination=parent/fs::u8path(name+"__"+std::to_string(copy));
+    destination=parent/fs::u8path(name+"_"+std::to_string(copy));
   return destination;
 }
 
@@ -275,7 +282,7 @@ RoiExportResult ExportRoiDataset(const RoiExportRequest & request,const std::sha
       }
       auto stem=SampleName(request,i,region_name);
       const auto copy=++used_names[stem];
-      if (copy>1) stem+="__copy"+std::to_string(copy);
+      if (copy>1) stem+="_copy"+std::to_string(copy);
       WriteNpy(request.destination/"points"/fs::u8path(stem+".npy"),raw.points,*progress);
       WritePcd(request.destination/"pointcloud"/fs::u8path(stem+".pcd"),raw.points,*progress);
       auto metadata=JsonStream();
@@ -319,11 +326,11 @@ RoiExportResult ExportRoiDataset(const RoiExportRequest & request,const std::sha
       progress->points.store(result.points);progress->exported.store(result.frames);progress->completed.store(i+1);
     }
     CheckCancel(*progress);
-    if (!result.frames) throw std::runtime_error("No points inside the checked display regions in the selected frames");
+    if (!result.frames) throw std::runtime_error("No points inside the active display regions in the selected frames");
     auto manifest=JsonStream();
     manifest<<"{\"schema\":\"lidar_studio.roi_dataset\",\"version\":1,\"status\":\"complete\",\"annotation_status\":\"unlabeled\","
       "\"features\":[\"x\",\"y\",\"z\",\"intensity\"],\"dtype\":\"float32\",\"units\":\"metres\","
-      "\"filename_pattern\":\"source__frame_1based_or_live_sequence__regions_geometry_id__coordinates\","
+      "\"filename_pattern\":\"source_frame_1based_or_live_sequence_regions\","
       "\"intensity\":\"original_decoded_values_nonfinite_replaced_with_zero\",\"point_order\":\"source_order\","
       "\"zero_xyz_returns\":\"removed\",\"coordinate_space\":"<<Json(request.aligned_coordinates ? "aligned" : "sensor")
       <<",\"profile\":"<<Json(request.profile)<<",\"frames_requested\":"<<count<<",\"frames_exported\":"<<result.frames

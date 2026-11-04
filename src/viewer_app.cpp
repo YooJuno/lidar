@@ -724,10 +724,11 @@ void SetProjectionMode(ViewerState & state, CameraState::ProjectionMode mode)
     state.camera.target = bookmark.target;
     state.camera.yaw = bookmark.yaw;
     state.camera.pitch = bookmark.pitch;
-    state.camera.distance = std::max(bookmark.distance, 2.0f);
+    state.camera.distance = mode==CameraState::ProjectionMode::View2D ?
+      lidar_viewer::TopViewHalfHeight(bookmark.distance) : std::max(bookmark.distance,1.f);
   } else if (mode == CameraState::ProjectionMode::View2D) {
     state.camera.target.z = 0.0f;
-    state.camera.distance = std::max(state.camera.distance, 2.0f);
+    state.camera.distance = lidar_viewer::TopViewHalfHeight(state.camera.distance);
     state.camera.pitch = -1.5707f;
     state.camera.yaw = 0.0f;
   } else {
@@ -2393,7 +2394,7 @@ void LoadSettingsFile(ViewerState & state, const fs::path & path)
         state.camera.pitch = std::clamp(ParseFiniteFloat(value), -1.5707f, 1.5707f);
         state.camera.has_saved_view = true;
       } else if (key == "camera_distance") {
-        state.camera.distance = std::clamp(ParseFiniteFloat(value), 1.0f, 5000.0f);
+        state.camera.distance = lidar_viewer::TopViewHalfHeight(ParseFiniteFloat(value));
         state.camera.has_saved_view = true;
       } else if (key == "camera_3d_target_x") {
         state.camera.saved_3d_view.target.x = ParseFiniteFloat(value);
@@ -2420,7 +2421,7 @@ void LoadSettingsFile(ViewerState & state, const fs::path & path)
       } else if (key == "camera_2d_pitch_rad") {
         state.camera.saved_2d_view.pitch = std::clamp(ParseFiniteFloat(value), -1.5707f, 1.5707f);
       } else if (key == "camera_2d_distance") {
-        state.camera.saved_2d_view.distance = std::clamp(ParseFiniteFloat(value), 1.0f, 5000.0f);
+        state.camera.saved_2d_view.distance = lidar_viewer::TopViewHalfHeight(ParseFiniteFloat(value));
       } else if (key == "camera_2d_valid") {
         state.camera.saved_2d_view.valid = (ParseStrictInt(value) != 0);
       } else if (key == "ground_removal_enabled") {
@@ -2531,6 +2532,8 @@ void LoadSettings(ViewerState & state)
   if (state.dataset_profile == "default") {
     LoadSettingsFile(state, SettingsPath());
   }
+  state.camera.distance=std::clamp(state.camera.distance,
+    state.camera.projection_mode==CameraState::ProjectionMode::View2D ? lidar_viewer::kMinTopViewHalfHeight : 1.f,5000.f);
   // Old tiny profiles stored uncalibrated scores without a model identity.
   // Preserve explicitly saved model thresholds; migrate legacy defaults only.
   if (!state.detector_model_loaded && state.algorithm_config.detection.model=="short_range")
@@ -2674,7 +2677,7 @@ std::optional<Vec3> RoiPointerPoint(const ViewerState & state, double x, double 
   const auto & view=state.ui_layout.viewport;
   if (view.w<1 || view.h<1) return {};
   return lidar_viewer::RoiPointFromTopView(static_cast<float>(2*(x-view.x)/view.w-1),
-    static_cast<float>(1-2*(y-view.y)/view.h),view.w/view.h,std::max(state.camera.distance,2.f),
+    static_cast<float>(1-2*(y-view.y)/view.h),view.w/view.h,lidar_viewer::TopViewHalfHeight(state.camera.distance),
     state.camera.target,state.camera.yaw,state.roi_frame,z);
 }
 
@@ -2714,7 +2717,7 @@ ImVec2 RoiScreenPoint(const ViewerState & state, Vec3 raw)
 {
   const auto p=state.roi_frame.Transform(raw)-state.camera.target;
   const auto & v=state.ui_layout.viewport;
-  const float pixels=v.h/(2*std::max(state.camera.distance,2.f));
+  const float pixels=v.h/(2*lidar_viewer::TopViewHalfHeight(state.camera.distance));
   const float c=std::cos(state.camera.yaw),s=std::sin(state.camera.yaw);
   return {v.x+v.w*.5f+(p.x*c+p.y*s)*pixels,v.y+v.h*.5f-(-p.x*s+p.y*c)*pixels};
 }
@@ -2837,7 +2840,9 @@ void CursorCallback(GLFWwindow * window, double x, double y)
   }
   if (!PointerInScene(window, *state) ||
       (ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse)) return;
-  const float scale = std::max(kPanBaseScale * state->camera.distance, 0.01f);
+  const float scale = state->camera.projection_mode==CameraState::ProjectionMode::View2D ?
+    2*lidar_viewer::TopViewHalfHeight(state->camera.distance)/std::max(state->ui_layout.viewport.h,1.f) :
+    std::max(kPanBaseScale * state->camera.distance,0.01f);
   if (state->camera.dragging_left) {
     if (state->camera.projection_mode == CameraState::ProjectionMode::View2D) {
       state->camera.target = lidar_viewer::PanTopView(
@@ -2865,8 +2870,18 @@ void ScrollCallback(GLFWwindow * window, double, double yoffset)
   auto * state = static_cast<ViewerState *>(glfwGetWindowUserPointer(window));
   if (!state || !PointerInScene(window, *state) ||
       (ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse)) return;
-  state->camera.distance = std::clamp(
-    state->camera.distance * static_cast<float>(std::pow(0.9, yoffset)), 1.0f, 5000.0f);
+  const auto distance=state->camera.distance*static_cast<float>(std::pow(0.9,yoffset));
+  if (state->camera.projection_mode==CameraState::ProjectionMode::View2D) {
+    const auto & view=state->ui_layout.viewport;
+    if (view.w<1 || view.h<1 || state->roi_gesture.active) return;
+    const float before=lidar_viewer::TopViewHalfHeight(state->camera.distance);
+    state->camera.distance=lidar_viewer::TopViewHalfHeight(distance);
+    // Keep the point under the cursor stationary while magnifying the view.
+    const float nx=static_cast<float>(2*(state->camera.last_x-view.x)/view.w-1);
+    const float ny=static_cast<float>(1-2*(state->camera.last_y-view.y)/view.h);
+    state->camera.target=lidar_viewer::PanTopView(state->camera.target,state->camera.yaw,
+      -nx*view.w/view.h,ny,before-state->camera.distance);
+  } else state->camera.distance=std::clamp(distance,1.f,5000.f);
 }
 
 void KeyCallback(GLFWwindow * window, int key, int, int action, int mods)
@@ -3292,7 +3307,8 @@ void FocusSelectedRoi(ViewerState & state)
   if (EditedRoi(state).boxes.empty()) return;
   const auto & box=EditedRoi(state).boxes[SelectedRoi(state)];
   state.camera.target=state.roi_frame.Transform(box.center);
-  state.camera.distance=std::clamp(1.25f*std::max({box.size.x,box.size.y,box.size.z}),2.f,5000.f);
+  state.camera.distance=std::clamp(1.25f*std::max({box.size.x,box.size.y,box.size.z}),
+    state.camera.projection_mode==CameraState::ProjectionMode::View2D ? lidar_viewer::kMinTopViewHalfHeight : 2.f,5000.f);
 }
 
 std::string CountText(std::uint64_t count)
@@ -3485,7 +3501,7 @@ void BuildRoiExportDialog(ViewerState & state)
       catch (const std::exception & error) {state.export_error=error.what();}
     }
     TraceUi("export_browse");ImGui::EndDisabled();
-    ImGui::TextDisabled("Names: source, frame, ROI and geometry ID. Empty frames are skipped.");
+    ImGui::TextDisabled("Names: recording, frame and ROI. Full details are saved in JSON.");
   }
   ImGui::Spacing();
   if (running) {
@@ -3576,7 +3592,7 @@ void BuildRoiEditor(ViewerState & state)
   TraceUi("roi_outlines");
   const float rows=static_cast<float>(std::clamp<std::size_t>(EditedRoi(state).boxes.size(),3,8));
   const float preferred_height=rows*38*s+12*s;
-  const float list_height=std::min(preferred_height,std::clamp(ImGui::GetContentRegionAvail().y-(display ? 230 : 190)*s,110*s,285*s));
+  const float list_height=std::min(preferred_height,std::clamp(ImGui::GetContentRegionAvail().y-(display ? 270 : 230)*s,110*s,285*s));
   if (std::abs(list_height-state.roi_list_height)>1) {state.roi_reveal_selection=true;state.roi_list_height=list_height;}
   if (ImGui::BeginListBox("##RoiList",{-1,list_height})) {
     ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign,{0,.5f});
@@ -3623,14 +3639,23 @@ void BuildRoiEditor(ViewerState & state)
     if (!EditedRoi(state).boxes.empty()) {
       auto box=EditedRoi(state).boxes[SelectedRoi(state)];
       ImGui::TextDisabled("Height range (sensor Z, m)");
-      const float half=(ImGui::GetContentRegionAvail().x-8*s)*.5f;
       float bottom=box.center.z-box.size.z*.5f,top=box.center.z+box.size.z*.5f;bool changed=false;
-      ImGui::SetNextItemWidth(half);
-      changed|=ImGui::DragFloat("##RoiBottom",&bottom,.02f,-1e6f,top-.05f,"Bottom %.2f",ImGuiSliderFlags_AlwaysClamp);
-      TraceUi("roi_bottom");ImGui::SameLine();ImGui::SetNextItemWidth(half);
-      changed|=ImGui::DragFloat("##RoiTop",&top,.02f,bottom+.05f,1e6f,"Top %.2f",ImGuiSliderFlags_AlwaysClamp);
+      const float input_x=ImGui::GetCursorPosX()+68*s;
+      ImGui::AlignTextToFramePadding();ImGui::TextUnformatted("Bottom");ImGui::SameLine(input_x);
+      ImGui::SetNextItemWidth(-1);
+      changed|=ImGui::InputFloat("##RoiBottom",&bottom,.05f,.25f,"%.2f");
+      TraceUi("roi_bottom");
+      ImGui::AlignTextToFramePadding();ImGui::TextUnformatted("Top");ImGui::SameLine(input_x);
+      ImGui::SetNextItemWidth(-1);
+      changed|=ImGui::InputFloat("##RoiTop",&top,.05f,.25f,"%.2f");
       TraceUi("roi_top");
-      if (changed) {box.center.z=(bottom+top)*.5f;box.size.z=std::max(.05f,top-bottom);EditedRoi(state).boxes[SelectedRoi(state)]=box;}
+      if (changed) {
+        if (std::isfinite(bottom) && std::isfinite(top) && top-bottom>=.05f-1e-6f) {
+          box.center.z=(bottom+top)*.5f;box.size.z=top-bottom;
+          try {lidar_viewer::ValidateRoiBox(box);EditedRoi(state).boxes[SelectedRoi(state)]=box;state.ui_error.clear();}
+          catch (const std::exception & error) {state.ui_error=error.what();}
+        } else state.ui_error="Top must be at least 0.05 m above Bottom";
+      }
     }
   }
   if (state.roi_details_requested && !EditedRoi(state).boxes.empty()) {ImGui::OpenPopup("Region details");state.roi_details_requested=false;}
@@ -4393,6 +4418,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     const auto mode_button=[&](const char * label,bool selected) {
       if (selected) ImGui::PushStyleColor(ImGuiCol_Button,{.13f,.34f,.42f,1});
       const bool clicked=ImGui::Button(label,{32*s,30*s});
+      TraceUi((std::string("camera_")+label).c_str());
       if (selected) ImGui::PopStyleColor();
       return clicked;
     };
@@ -5136,10 +5162,10 @@ int RunViewer(int argc, char ** argv)
       const Mat4 projection =
         (state.camera.projection_mode == CameraState::ProjectionMode::View2D)
         ? Orthographic(
-            -std::max(state.camera.distance, 2.0f) * aspect,
-            std::max(state.camera.distance, 2.0f) * aspect,
-            -std::max(state.camera.distance, 2.0f),
-            std::max(state.camera.distance, 2.0f),
+            -lidar_viewer::TopViewHalfHeight(state.camera.distance) * aspect,
+            lidar_viewer::TopViewHalfHeight(state.camera.distance) * aspect,
+            -lidar_viewer::TopViewHalfHeight(state.camera.distance),
+            lidar_viewer::TopViewHalfHeight(state.camera.distance),
             0.1f,
             10000.0f)
         : Perspective(45.0f * kPi / 180.0f, aspect, 0.1f, 10000.0f);

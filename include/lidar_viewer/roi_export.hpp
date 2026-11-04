@@ -49,7 +49,7 @@ struct RoiExportResult
   bool canceled{false};
 };
 
-// Human-readable source/frame/region names, safe on all supported platforms.
+// Short source/frame/region names, safe on all supported platforms.
 // Repeated exports receive a numeric suffix; the worker still creates its
 // destination exclusively to protect against races and accidental overwrites.
 std::string RoiExportDatasetName(const RoiExportRequest & request);
