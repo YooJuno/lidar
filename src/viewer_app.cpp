@@ -3394,13 +3394,7 @@ void StartRoiExport(ViewerState & state)
     request.imu_mount=state.imu_mount;request.global_ground_offset=state.global_ground_offset;
     request.profile=state.dataset_profile;
     const auto parent=ExpandFolderPath(state.export_directory.data());
-    const auto now=std::chrono::system_clock::now();
-    const auto micros=std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
-    const auto date=lidar_viewer::UtcTime(std::chrono::system_clock::to_time_t(now));
-    std::ostringstream name;name.imbue(std::locale::classic());
-    name<<"roi_export_"<<std::put_time(&date,"%Y%m%d_%H%M%S_")<<std::setfill('0')<<std::setw(6)<<micros%1000000<<"Z";
     if (parent.empty()) throw std::runtime_error("Choose an export folder");
-    request.destination=parent/name.str();
     if (state.live_mode) {
       if (!state.live_has_frame) throw std::runtime_error("Waiting for the first live frame");
       request.live_snapshot=state.base_frame;request.live_sequence=state.live_display_sequence;
@@ -3417,6 +3411,7 @@ void StartRoiExport(ViewerState & state)
           request.sources.push_back({state.frames[i],i});
       }
     }
+    request.destination=lidar_viewer::AvailableRoiExportDestination(parent,request);
     state.export_total=request.live_snapshot ? 1 : request.sources.size();
     state.export_region_count=static_cast<std::size_t>(std::count_if(request.regions.boxes.begin(),request.regions.boxes.end(),
       [](const auto & b){return b.enabled;}));
@@ -3490,7 +3485,7 @@ void BuildRoiExportDialog(ViewerState & state)
       catch (const std::exception & error) {state.export_error=error.what();}
     }
     TraceUi("export_browse");ImGui::EndDisabled();
-    ImGui::TextDisabled("Creates a new roi_export_... folder. Empty frames are skipped.");
+    ImGui::TextDisabled("Names: source, frame, ROI and geometry ID. Empty frames are skipped.");
   }
   ImGui::Spacing();
   if (running) {

@@ -96,6 +96,14 @@ def main():
     def validate_sample(path,sample,raw_expected,aligned=False):
         points=np.load(path/sample['points'],allow_pickle=False)
         meta=json.loads((path/sample['metadata']).read_text())
+        stem=Path(sample['points']).stem
+        source_name=Path(meta['source']['path']).stem
+        check('sample_names_identify_source_frame_and_roi',stem.startswith(source_name+'__') and
+            f'__f{meta["source"]["frame_index"]+1:06d}__' in stem and
+            all(region['name'].replace(' ','-') in stem for region in meta['roi_sensor_frame']) and
+            meta['source']['frame_number']==meta['source']['frame_index']+1)
+        check('paired_formats_keep_matching_names',stem==sample['id']==Path(sample['pcd']).stem==Path(sample['metadata']).stem)
+        check('dataset_folder_identifies_source_and_frames',path.name.startswith(source_name+'__f') or '_n' in path.name)
         check('npy_float32_xyzi',points.dtype==np.float32 and points.shape==(len(raw_expected),4))
         binary=(path/sample['pcd']).read_bytes();header,payload=binary.split(b'DATA binary\n',1)
         check('pcd_fields_and_payload_match_numpy',b'FIELDS x y z intensity\n' in header and

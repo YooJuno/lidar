@@ -1,5 +1,6 @@
 #include "lidar_viewer/roi_export.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <fstream>
@@ -37,6 +38,12 @@ template<class F> void Reject(F action)
   bool rejected=false;try {action();} catch (const std::exception &) {rejected=true;}
   Check(rejected,"Expected export to reject invalid input");
 }
+fs::path Sample(const fs::path & root,const char * folder,std::size_t index=0)
+{
+  std::vector<fs::path> files;
+  for (const auto & entry:fs::directory_iterator(root/folder)) files.push_back(entry.path());
+  std::sort(files.begin(),files.end());return files.at(index);
+}
 }
 
 int main()
@@ -55,16 +62,19 @@ int main()
     auto progress=std::make_shared<RoiExportProgress>();
     const auto result=ExportRoiDataset(request,progress);
     Check(result.frames==1 && result.points==3 && progress->completed==1,"Wrong exported counts");
-    const auto points=Npy(result.destination/"points/00000000.npy");
+    const auto point_file=Sample(result.destination,"points");
+    Check(point_file.filename().u8string().find("live-points__seq000057__near+overlap-")==0 &&
+      point_file.stem().u8string().find("__sensor")!=std::string::npos,"Live sample name lost sequence or ROI names");
+    const auto points=Npy(point_file);
     Check(points.size()==3 && points[0].intensity==42 && points[1].intensity==84 && points[2].intensity==512 &&
       points[0].x==1 && points[0].z==-.5f,"Lost original XYZI, duplicate points, ordering or ROI union");
-    const auto pcd=Text(result.destination/"pointcloud/00000000.pcd");
+    const auto pcd=Text(Sample(result.destination,"pointcloud"));
     const auto at=pcd.find("DATA binary\n");
     Check(at!=std::string::npos && pcd.find("FIELDS x y z intensity\n")!=std::string::npos &&
       pcd.find("WIDTH 3\n")!=std::string::npos && pcd.substr(at+12)==
       std::string(reinterpret_cast<const char *>(points.data()),points.size()*sizeof(KittiPoint)),
       "PCD and NPY point payloads differ");
-    const auto meta=Text(result.destination/"metadata/00000000.json");
+    const auto meta=Text(Sample(result.destination,"metadata"));
     Check(meta.find("\"annotation_status\":\"unlabeled\"")!=std::string::npos &&
       meta.find("\"timestamp_ns\":\"1793710800123456789\"")!=std::string::npos &&
       meta.find("lidar\\\"\\\\\\u000aframe")!=std::string::npos,"Incomplete or improperly escaped metadata");
@@ -74,7 +84,7 @@ int main()
     request.live_snapshot->source_intensities=intensities;
     for (auto & p:request.live_snapshot->points) p.intensity=.5f;
     ExportRoiDataset(request,std::make_shared<RoiExportProgress>());
-    const auto aligned=Npy(request.destination/"points/00000000.npy");
+    const auto aligned=Npy(Sample(request.destination,"points"));
     Check(std::abs(aligned[0].x)<1e-5 && std::abs(aligned[0].y-1)<1e-5 &&
       std::abs(aligned[0].z-1)<1e-5 && aligned[0].intensity==42,"Aligned coordinates/intensity are incorrect");
     // Exercise the original-intensity file-loading path, which differs from
@@ -86,13 +96,33 @@ int main()
     const auto normalized=LoadFrame({input});
     Check(original.points[2].intensity==512 && normalized.points[2].intensity<=1,"Original loading changed display behavior or normalized training values");
     request.live_snapshot.reset();request.sources={{{input},7},{{input},9}};request.aligned_coordinates=false;
+    const auto dataset_name=RoiExportDatasetName(request);
+    Check(dataset_name.find("input__f000008-f000010_n2__near+overlap-")==0,"Dataset name lost source, one-based range or regions");
+    auto changed=request;changed.regions.boxes[0].center.x+=.1f;
+    Check(RoiExportDatasetName(changed)!=dataset_name,"Changed box geometry reused the same name");
+    changed=request;changed.regions.boxes[2].center.x+=1;
+    Check(RoiExportDatasetName(changed)==dataset_name,"Disabled box changed the export name");
+    const auto fresh=AvailableRoiExportDestination(root,request);fs::create_directory(fresh);
+    Check(AvailableRoiExportDestination(root,request)==fs::u8path(fresh.u8string()+"__2"),"Repeated export did not get a safe numeric suffix");
+    changed=request;changed.sources[0].handle.path=fs::u8path(u8"주행:기록?.mcap");
+    changed.sources[0].handle.format=InputFormat::Ros2Bag;
+    changed.regions.boxes[0].name=u8"센서/앞쪽*박스";
+    const auto unicode=RoiExportDatasetName(changed);
+    Check(unicode.find(u8"주행-기록__f000008")==0 && unicode.find(u8"센서-앞쪽-박스")!=std::string::npos &&
+      unicode.find_first_of("<>:\"/\\|?*")==std::string::npos,"Unicode names or cross-platform filename sanitization failed");
     request.destination=root/"batch";ExportRoiDataset(request,std::make_shared<RoiExportProgress>());
-    Check(Npy(request.destination/"points/00000001.npy").size()==3 &&
-      Text(request.destination/"metadata/00000001.json").find("\"frame_index\":9")!=std::string::npos,
+    Check(Npy(Sample(request.destination,"points",1)).size()==3 &&
+      Sample(request.destination,"points",1).filename().string().find("input__f000010__near+overlap-")==0 &&
+      Text(Sample(request.destination,"metadata",1)).find("\"frame_index\":9,\"frame_number\":10")!=std::string::npos,
       "Batch source indices or frame payloads were lost");
     const auto saved=Text(request.destination/"metadata.json");
     Reject([&]{ExportRoiDataset(request,std::make_shared<RoiExportProgress>());});
     Check(Text(request.destination/"metadata.json")==saved,"Existing export was overwritten");
+    changed=request;changed.sources[1]=changed.sources[0];changed.destination=root/"duplicate-sources";
+    Check(ExportRoiDataset(changed,std::make_shared<RoiExportProgress>()).frames==2 &&
+      Npy(Sample(changed.destination,"points",1)).size()==3 &&
+      Sample(changed.destination,"points",1).stem().string().find("__copy2")!=std::string::npos,
+      "Repeated source/frame names overwrote another sample");
     request.destination=root/"empty";request.regions.boxes={RoiBox{"empty",true,{90,90,90},{1,1,1},0}};
     Reject([&]{ExportRoiDataset(request,std::make_shared<RoiExportProgress>());});
     Check(!fs::exists(request.destination),"Empty failed export left a misleading dataset");

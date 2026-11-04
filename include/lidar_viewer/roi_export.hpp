@@ -49,6 +49,12 @@ struct RoiExportResult
   bool canceled{false};
 };
 
+// Human-readable source/frame/region names, safe on all supported platforms.
+// Repeated exports receive a numeric suffix; the worker still creates its
+// destination exclusively to protect against races and accidental overwrites.
+std::string RoiExportDatasetName(const RoiExportRequest & request);
+fs::path AvailableRoiExportDestination(const fs::path & parent,const RoiExportRequest & request);
+
 // CPU/file I/O only, intended for a reusable BackgroundWorker. Original point
 // order/intensity are preserved; display colors, exclusions and predictions
 // never become labels. Every successful sample has identical NPY/PCD data.

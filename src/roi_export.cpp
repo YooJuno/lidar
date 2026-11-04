@@ -10,6 +10,7 @@
 #include <locale>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_map>
 
 namespace lidar_viewer
 {
@@ -117,6 +118,62 @@ void WriteRegions(std::ostream & out,const RoiSettings & regions)
   }
   out<<']';
 }
+std::string FilenamePart(const std::string & text,std::size_t limit,const char * fallback)
+{
+  std::string result;
+  for (const unsigned char c:text) {
+    const bool unsafe=c<=32 || c==127 || std::string("<>:\"/\\|?*").find(static_cast<char>(c))!=std::string::npos;
+    if (unsafe) {if (!result.empty() && result.back()!='-') result+='-';}
+    else result+=static_cast<char>(c);
+  }
+  if (result.size()>limit) {
+    std::size_t end=limit;
+    while (end && (static_cast<unsigned char>(result[end])&0xc0)==0x80) --end;
+    result.resize(end);
+  }
+  while (!result.empty() && (result.back()=='-' || result.back()=='.' || result.back()==' ')) result.pop_back();
+  if (result.empty() || result==".") return fallback;
+  return result;
+}
+std::string RegionName(const RoiSettings & regions)
+{
+  auto geometry=JsonStream();WriteRegions(geometry,regions);
+  std::uint64_t hash=14695981039346656037ULL;
+  for (const unsigned char c:geometry.str()) {hash^=c;hash*=1099511628211ULL;}
+  std::string names;std::size_t count=0;
+  for (const auto & box:regions.boxes) if (box.enabled) {
+    if (count<2) {if (count) names+='+';names+=FilenamePart(box.name,24,"ROI");}
+    ++count;
+  }
+  if (count>2) names+="+"+std::to_string(count-2)+"more";
+  std::ostringstream suffix;suffix.imbue(std::locale::classic());
+  suffix<<std::hex<<std::setw(16)<<std::setfill('0')<<hash;
+  return (names.empty() ? "ROI" : names)+"-"+suffix.str();
+}
+std::string SourceName(const RoiExportRequest & request,std::size_t index)
+{
+  if (request.live_snapshot) return "live-"+FilenamePart(request.live_topic,48,"points");
+  auto path=request.sources.at(index).handle.path;
+  if (path.filename().empty()) path=path.parent_path();
+  if (path.filename()=="metadata.yaml") path=path.parent_path();
+  else if (path.has_extension() && (request.sources[index].handle.format!=InputFormat::Ros2Bag ||
+      path.extension()==".mcap" || path.extension()==".db3")) path=path.stem();
+  return FilenamePart(path.filename().u8string(),56,"source");
+}
+std::string FrameNumber(const RoiExportRequest & request,std::size_t index)
+{
+  std::ostringstream out;out.imbue(std::locale::classic());
+  // Match the viewer's one-based frame display. Live sequences remain exact.
+  out<<(request.live_snapshot ? "seq" : "f")<<std::setw(6)<<std::setfill('0');
+  if (request.live_snapshot) out<<request.live_sequence;
+  else out<<static_cast<std::uint64_t>(request.sources.at(index).frame_index)+1;
+  return out.str();
+}
+std::string SampleName(const RoiExportRequest & request,std::size_t index,const std::string & region_name)
+{
+  return SourceName(request,index)+"__"+FrameNumber(request,index)+"__"+region_name+
+    (request.aligned_coordinates ? "__aligned" : "__sensor");
+}
 void Validate(const RoiExportRequest & request)
 {
   if (request.destination.empty() || request.destination.filename().empty() ||
@@ -141,6 +198,24 @@ void Validate(const RoiExportRequest & request)
 }
 }  // namespace
 
+std::string RoiExportDatasetName(const RoiExportRequest & request)
+{
+  auto frames=FrameNumber(request,0);
+  if (!request.live_snapshot && request.sources.size()>1)
+    frames+="-"+FrameNumber(request,request.sources.size()-1)+"_n"+std::to_string(request.sources.size());
+  return SourceName(request,0)+"__"+frames+"__"+RegionName(request.regions)+
+    (request.aligned_coordinates ? "__aligned" : "__sensor");
+}
+
+fs::path AvailableRoiExportDestination(const fs::path & parent,const RoiExportRequest & request)
+{
+  const auto name=RoiExportDatasetName(request);
+  auto destination=parent/fs::u8path(name);
+  for (std::size_t copy=2;fs::exists(destination);++copy)
+    destination=parent/fs::u8path(name+"__"+std::to_string(copy));
+  return destination;
+}
+
 RoiExportResult ExportRoiDataset(const RoiExportRequest & request,const std::shared_ptr<RoiExportProgress> & progress)
 {
   if (!progress) throw std::invalid_argument("Export requires a progress state");
@@ -149,6 +224,7 @@ RoiExportResult ExportRoiDataset(const RoiExportRequest & request,const std::sha
   RoiSettings regions=request.regions;regions.enabled=true;
   for (auto & box:regions.boxes) box.mode=RoiBoxMode::Include;
   const PreparedRoi mask(regions);
+  const auto region_name=RegionName(regions);
   RoiExportResult result;result.destination=request.destination;
   // Exclusive creation protects previous exports and arbitrary user folders.
   if (!fs::create_directory(request.destination)) throw std::runtime_error("Export directory already exists; choose a new name");
@@ -157,6 +233,7 @@ RoiExportResult ExportRoiDataset(const RoiExportRequest & request,const std::sha
     settings::AtomicWriteText(request.destination/"metadata.json","{\"schema\":\"lidar_studio.roi_dataset\",\"version\":1,\"status\":\"exporting\"}\n");
     const std::size_t count=request.live_snapshot ? 1 : request.sources.size();
     auto samples=JsonStream(),empty=JsonStream();bool first_sample=true,first_empty=true;
+    std::unordered_map<std::string,std::size_t> used_names;
     for (std::size_t i=0;i<count;++i) {
       CheckCancel(*progress);
       FrameData raw=request.live_snapshot ? *request.live_snapshot :
@@ -190,10 +267,11 @@ RoiExportResult ExportRoiDataset(const RoiExportRequest & request,const std::sha
         first_empty=false;empty<<frame_index;++result.empty_frames;progress->empty.store(result.empty_frames);
         progress->completed.store(i+1);continue;
       }
-      std::ostringstream id;id.imbue(std::locale::classic());id<<std::setw(8)<<std::setfill('0')<<i;
-      const auto stem=id.str();
-      WriteNpy(request.destination/"points"/(stem+".npy"),raw.points,*progress);
-      WritePcd(request.destination/"pointcloud"/(stem+".pcd"),raw.points,*progress);
+      auto stem=SampleName(request,i,region_name);
+      const auto copy=++used_names[stem];
+      if (copy>1) stem+="__copy"+std::to_string(copy);
+      WriteNpy(request.destination/"points"/fs::u8path(stem+".npy"),raw.points,*progress);
+      WritePcd(request.destination/"pointcloud"/fs::u8path(stem+".pcd"),raw.points,*progress);
       auto metadata=JsonStream();
       metadata<<"{\"schema\":\"lidar_studio.roi_sample\",\"version\":1,\"id\":"<<Json(stem)
         <<",\"point_count\":"<<raw.points.size()<<",\"source_point_count\":"<<source_count
@@ -204,7 +282,7 @@ RoiExportResult ExportRoiDataset(const RoiExportRequest & request,const std::sha
         const auto & source=request.sources[i];const auto & handle=source.handle;
         metadata<<Json(handle.format==InputFormat::Ros2Bag ? "rosbag" : handle.format==InputFormat::KittiXyzi ? "bin" : "ouster_legacy")
           <<",\"path\":"<<Json(handle.path.u8string())<<",\"topic\":"<<Json(handle.bag_topic)
-          <<",\"frame_index\":"<<source.frame_index<<",\"bag_duplicate_index\":"<<handle.bag_duplicate_index
+          <<",\"frame_index\":"<<source.frame_index<<",\"frame_number\":"<<static_cast<std::uint64_t>(source.frame_index)+1<<",\"bag_duplicate_index\":"<<handle.bag_duplicate_index
           <<",\"payload_offset\":"<<handle.payload_offset;
       }
       metadata<<",\"frame_id\":"<<Json(raw.frame_id)<<",\"timestamp_ns\":";
@@ -226,7 +304,7 @@ RoiExportResult ExportRoiDataset(const RoiExportRequest & request,const std::sha
         <<"},\"ground_offset_m\":"<<request.global_ground_offset<<",\"height_offset_m\":"<<resolved.effective.z_m
         <<",\"roi_sensor_frame\":";WriteRegions(metadata,regions);
       metadata<<",\"annotation_status\":\"unlabeled\",\"ground_filter_applied\":false,\"ground_exclusions_applied\":false}\n";
-      settings::AtomicWriteText(request.destination/"metadata"/(stem+".json"),metadata.str());
+      settings::AtomicWriteText(request.destination/"metadata"/fs::u8path(stem+".json"),metadata.str());
       if (!first_sample) samples<<',';
       first_sample=false;samples<<"{\"id\":"<<Json(stem)<<",\"source_frame_index\":"<<frame_index
         <<",\"points\":"<<Json("points/"+stem+".npy")<<",\"pcd\":"<<Json("pointcloud/"+stem+".pcd")
@@ -239,6 +317,7 @@ RoiExportResult ExportRoiDataset(const RoiExportRequest & request,const std::sha
     auto manifest=JsonStream();
     manifest<<"{\"schema\":\"lidar_studio.roi_dataset\",\"version\":1,\"status\":\"complete\",\"annotation_status\":\"unlabeled\","
       "\"features\":[\"x\",\"y\",\"z\",\"intensity\"],\"dtype\":\"float32\",\"units\":\"metres\","
+      "\"filename_pattern\":\"source__frame_1based_or_live_sequence__regions_geometry_id__coordinates\","
       "\"intensity\":\"original_decoded_values_nonfinite_replaced_with_zero\",\"point_order\":\"source_order\","
       "\"zero_xyz_returns\":\"removed\",\"coordinate_space\":"<<Json(request.aligned_coordinates ? "aligned" : "sensor")
       <<",\"profile\":"<<Json(request.profile)<<",\"frames_requested\":"<<count<<",\"frames_exported\":"<<result.frames

@@ -110,10 +110,10 @@ def main():
             controls.click('tab_ROI');controls.click('roi_purpose_display');controls.click('roi_export')
             controls.enter('export_directory','.')
             controls.click('export_start')
-            wait_for(lambda:len(list(private.glob('roi_export_*/metadata.json')))==1 or
+            wait_for(lambda:len(list(private.glob('live-*__seq*/metadata.json')))==1 or
                 'ROI export failed:' in log_path.read_text(errors='replace'))
             if 'ROI export failed:' in log_path.read_text(errors='replace'):raise AssertionError('Live ROI export failed')
-            exported=next(private.glob('roi_export_*/metadata.json'))
+            exported=next(private.glob('live-*__seq*/metadata.json'))
             wait_for(lambda:json.loads(exported.read_text())['status']=='complete')
             dataset=json.loads(exported.read_text());sample=dataset['samples'][0]
             detail=json.loads((exported.parent/sample['metadata']).read_text())
