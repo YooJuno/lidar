@@ -35,11 +35,16 @@ int main(int argc, char ** argv)
     if (mode == "cancel") return 1;
     if (mode == "error") return 2;
     if (mode == "wait") {std::this_thread::sleep_for(std::chrono::seconds(10)); return 1;}
-    bool literal = false;
+    bool literal = false,directory=false;
     for (int i = 1; i < argc; ++i) {
       if (std::string(argv[i]) == "--filename=/tmp/bag 'quoted' $(false); space/한글/") literal = true;
+      if (std::string(argv[i]) == "--directory") directory=true;
     }
     if (!literal) return 2;
+    if (mode=="directory") {
+      if (!directory) return 2;
+      std::cout<<"/tmp/bag 'quoted' $(false); space/한글/\n";return 0;
+    }
     std::cout << "/tmp/bag 'quoted' $(false); space/한글/metadata.yaml\n";
     return 0;
   }
@@ -58,6 +63,11 @@ int main(int argc, char ** argv)
     Check(selected.error.empty() && selected.path == "/tmp/bag 'quoted' $(false); space/한글/metadata.yaml",
       "chooser changed literal path arguments or output");
     Check(!dialog.Active(), "completed chooser still active");
+    setenv("LIDAR_TEST_CHOOSER_MODE","directory",1);
+    dialog.OpenDirectory("/tmp/bag 'quoted' $(false); space/한글");
+    const auto folder=Await(dialog);
+    Check(folder.error.empty() && folder.path=="/tmp/bag 'quoted' $(false); space/한글/",
+      "directory chooser changed the literal path or omitted directory mode");
     setenv("LIDAR_TEST_CHOOSER_MODE", "cancel", 1);
     dialog.OpenBag({});
     const auto cancelled = Await(dialog);

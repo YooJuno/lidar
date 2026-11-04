@@ -5,7 +5,7 @@
 
 namespace lidar_viewer
 {
-enum class UiIcon {Select, Box, Fit, Copy, Trash, Undo, Redo, Eye, Focus, Plus, Settings, Play, Pause, Previous, Next, Folder, Live};
+enum class UiIcon {Select, Box, Fit, Copy, Trash, Undo, Redo, Eye, Focus, Plus, Settings, Play, Pause, Previous, Next, Folder, Live, Export};
 
 inline void DrawUiIcon(ImDrawList * draw, UiIcon icon, ImVec2 origin, float size, ImU32 color)
 {
@@ -49,6 +49,9 @@ inline void DrawUiIcon(ImDrawList * draw, UiIcon icon, ImVec2 origin, float size
     case UiIcon::Folder:
       line(.1f,.28f,.1f,.82f);line(.1f,.82f,.9f,.82f);line(.9f,.82f,.9f,.34f);
       line(.9f,.34f,.48f,.34f);line(.48f,.34f,.38f,.19f);line(.38f,.19f,.1f,.19f);line(.1f,.19f,.1f,.28f);break;
+    case UiIcon::Export:
+      line(.5f,.08f,.5f,.65f);line(.27f,.43f,.5f,.66f);line(.5f,.66f,.73f,.43f);
+      line(.15f,.65f,.15f,.88f);line(.15f,.88f,.85f,.88f);line(.85f,.88f,.85f,.65f);break;
     case UiIcon::Live:
       draw->AddCircleFilled(p(.5f,.5f),size*.12f,color,12);
       for (const float r:{.28f,.43f}) {

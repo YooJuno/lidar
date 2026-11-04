@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -10,8 +11,10 @@ import tempfile
 import time
 import traceback
 import yaml
+import numpy as np
 
 from ui_gl_smoke import X11, capture, changed_pixels, settings_inventory
+from ui_controls import Controls
 
 
 def main():
@@ -27,13 +30,14 @@ def main():
     (private / "build").mkdir(parents=True)
     shutil.copytree(repo / "config", private / "config")
     profile = private / "config/profiles/rosbag.cfg"
-    clean_profile = '\n'.join(line for line in profile.read_text().splitlines() if not line.startswith('roi_'))
+    clean_profile = '\n'.join(line for line in profile.read_text().splitlines() if not line.startswith(('roi_','display_roi_')))
     profile.write_text(clean_profile + "\nground_removal_enabled=0\nclustering_enabled=0\ndetection_enabled=0\n"
-        "roi_enabled=0\nroi_count=0\n")
+        "roi_enabled=0\nroi_count=0\ndisplay_roi_enabled=0\ndisplay_roi_count=1\n"
+        'display_roi_box=1 "export" 0 0 0 100 100 100 0\n')
     viewer = private / "build/lidar_viewer"
     shutil.copy2(args.viewer.resolve(), viewer)
     env = dict(os.environ, ROS_DOMAIN_ID="188", ROS_AUTOMATIC_DISCOVERY_RANGE="LOCALHOST",
-        XDG_CONFIG_HOME=str(output / "isolated_config"))
+        XDG_CONFIG_HOME=str(output / "isolated_config"),LIDAR_VIEWER_UI_TRACE="1")
     before = settings_inventory(repo)
     result = {"status": "started", "checks": {}, "output": str(output)}
     process = publisher = x11 = window = None
@@ -100,6 +104,28 @@ def main():
             counts = {t["topic_metadata"]["name"]: t["message_count"] for t in data["topics_with_message_count"]}
             result["checks"]["received_and_recorded_while_frozen"] = counts.get("/fixture/points", 0) >= 8 and counts.get("/fixture/imu", 0) >= 50
             result["checks"]["static_tf_recorded"] = counts.get("/tf_static", 0) >= 1
+            # Export the exact frozen frame, using raw XYZI rather than display
+            # colors or a new frame pulled from the still-running subscriber.
+            controls=Controls(x11,window,log_path)
+            controls.click('tab_ROI');controls.click('roi_purpose_display');controls.click('roi_export')
+            controls.enter('export_directory','.')
+            controls.click('export_start')
+            wait_for(lambda:len(list(private.glob('roi_export_*/metadata.json')))==1 or
+                'ROI export failed:' in log_path.read_text(errors='replace'))
+            if 'ROI export failed:' in log_path.read_text(errors='replace'):raise AssertionError('Live ROI export failed')
+            exported=next(private.glob('roi_export_*/metadata.json'))
+            wait_for(lambda:json.loads(exported.read_text())['status']=='complete')
+            dataset=json.loads(exported.read_text());sample=dataset['samples'][0]
+            detail=json.loads((exported.parent/sample['metadata']).read_text())
+            cloud=np.load(exported.parent/sample['points'],allow_pickle=False)
+            result["checks"]["frozen_live_roi_export_has_source_and_imu"] = (
+                detail['source']['kind']=='live' and detail['source']['topic']=='/fixture/points'
+                and detail['source']['sequence']==int(re.findall(r'Live display paused at frame (\d+)',log_path.read_text())[-1])
+                and detail['imu']['applied'])
+            result["checks"]["frozen_live_export_preserves_intensity_and_pause"] = (
+                cloud.shape[1]==4 and len(cloud)>0 and np.array_equal(np.unique(cloud[:,3]),[20,70,80,90,100,110,120,130,140])
+                and "Live display resumed" not in log_path.read_text(errors="replace"))
+            controls.click('export_close')
             x11.click(window, 410, 837)
             wait_for(lambda: "Live display resumed" in log_path.read_text(errors="replace"))
             time.sleep(.3)

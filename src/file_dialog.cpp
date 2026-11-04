@@ -19,16 +19,30 @@ bool FileDialog::Active() const {return child_ > 0;}
 
 void FileDialog::OpenBag(const std::filesystem::path & initial_folder)
 {
+  Open(initial_folder,false);
+}
+void FileDialog::OpenDirectory(const std::filesystem::path & initial_folder)
+{
+  Open(initial_folder,true);
+}
+void FileDialog::Open(const std::filesystem::path & initial_folder,bool directory)
+{
   if (Active()) return;
   std::string filename = initial_folder.string();
   if (!filename.empty() && filename.back() != '/') filename += '/';
 #ifdef __APPLE__
-  const std::string script="on run argv\ntry\nset picked to choose file with prompt \"Open LiDAR data\" default location (POSIX file (item 1 of argv))\nreturn POSIX path of picked\non error detail number code\nif code is -128 then return \"\"\nerror detail number code\nend try\nend run";
+  const std::string script=std::string("on run argv\ntry\nset picked to choose ")+(directory ? "folder" : "file")+
+    " with prompt \""+(directory ? "Choose export folder" : "Open LiDAR data")+
+    "\" default location (POSIX file (item 1 of argv))\nreturn POSIX path of picked\non error detail number code\nif code is -128 then return \"\"\nerror detail number code\nend try\nend run";
   std::vector<std::string> arguments{"osascript","-e",script, filename.empty() ? "/" : filename};
 #else
-  std::vector<std::string> arguments{"zenity", "--file-selection", "--title=Open LiDAR data",
-    "--file-filter=LiDAR data | metadata.yaml *.db3 *.mcap *.bin",
-    "--file-filter=All files | *", "--filename=" + filename};
+  std::vector<std::string> arguments{"zenity", "--file-selection",
+    directory ? "--title=Choose export folder" : "--title=Open LiDAR data","--filename="+filename};
+  if (directory) arguments.push_back("--directory");
+  else {
+    arguments.push_back("--file-filter=LiDAR data | metadata.yaml *.db3 *.mcap *.bin");
+    arguments.push_back("--file-filter=All files | *");
+  }
 #endif
   std::vector<char *> argv;
   for (auto & argument : arguments) argv.push_back(argument.data());

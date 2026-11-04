@@ -16,6 +16,7 @@
 #include "lidar_viewer/camera_2d.hpp"
 #include "lidar_viewer/roi.hpp"
 #include "lidar_viewer/roi_editor.hpp"
+#include "lidar_viewer/roi_export.hpp"
 #include "lidar_viewer/display_alignment.hpp"
 #include "lidar_viewer/ui_icons.hpp"
 #include "lidar_viewer/app_icon.hpp"
@@ -44,6 +45,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <locale>
 #include <sstream>
 #include <optional>
 #include <stdexcept>
@@ -439,7 +441,11 @@ struct ViewerState
   bool input_load_autoplay{false};
   bool input_load_previous_playing{false};
   std::future<BagLoadResult> bag_load_future;
-  ~ViewerState() {if (input_load) input_load->Cancel();if (duration_cancel) duration_cancel->store(true);}
+  ~ViewerState() {
+    if (input_load) input_load->Cancel();
+    if (duration_cancel) duration_cancel->store(true);
+    if (export_progress) export_progress->cancel.store(true);
+  }
   lidar_viewer::FileDialog bag_picker;
   lidar_viewer::LiveSession live;
   lidar_viewer::LiveStats live_stats;
@@ -527,6 +533,19 @@ struct ViewerState
   std::size_t selected_display_roi{0};
   lidar_viewer::RoiHistory display_roi_history;
   bool display_roi_pending{false};
+  bool open_roi_export{false};
+  bool export_aligned{false};
+  int export_scope{0},export_first{1},export_last{1},export_stride{1};
+  std::array<char,4096> export_directory{};
+  lidar_viewer::FileDialog export_picker;
+  std::unique_ptr<lidar_viewer::BackgroundWorker> export_worker;
+  std::future<lidar_viewer::RoiExportResult> export_future;
+  std::shared_ptr<lidar_viewer::RoiExportProgress> export_progress;
+  std::size_t export_total{0};
+  std::size_t export_region_count{0};
+  double export_started_at{0};
+  std::string export_error,export_message;
+  fs::path export_destination;
   lidar_viewer::RoiSettings saved_roi;
   lidar_viewer::RoiSettings analysis_roi;
   lidar_viewer::RoiSettings applied_exclusions;
@@ -1257,6 +1276,7 @@ void ApplyCalibration(ViewerState & state, const FrameData * source = nullptr,
 {
   const auto started=std::chrono::steady_clock::now();
   FrameData frame=source ? *source : state.base_frame;
+  frame.source_intensities.reset();
   lidar_viewer::ImuLevelingResult leveling;
   leveling.status="Off";
   if (state.imu_level_enabled) {
@@ -3329,6 +3349,172 @@ void TraceUi(const char * id)
   std::cout<<"UI "<<id<<' '<<a.x<<' '<<a.y<<' '<<b.x<<' '<<b.y<<std::endl;
 }
 
+void UpdateRoiExport(ViewerState & state)
+{
+  try {
+    if (const auto selected=state.export_picker.Poll()) {
+      if (!selected->error.empty()) state.export_error=selected->error;
+      else if (!selected->path.empty()) {
+        const auto path=selected->path.u8string();
+        if (path.size()>=state.export_directory.size()) state.export_error="The selected path is too long";
+        else {std::fill(state.export_directory.begin(),state.export_directory.end(),0);
+          std::copy(path.begin(),path.end(),state.export_directory.begin());}
+      }
+    }
+  } catch (const std::exception & error) {state.export_error=error.what();}
+  if (!state.export_future.valid() ||
+      state.export_future.wait_for(std::chrono::seconds(0))!=std::future_status::ready) return;
+  try {
+    const auto result=state.export_future.get();
+    state.export_message=result.canceled ? "Export canceled" :
+      "Saved "+CountText(result.points)+" points in "+std::to_string(result.frames)+" frames";
+    SetTransientStatus(state,state.export_message);
+    std::cout<<"ROI export: "<<state.export_message<<" | "<<result.destination.u8string()<<std::endl;
+  } catch (const std::exception & error) {
+    state.export_error=error.what();state.export_message.clear();
+    SetTransientStatus(state,"ROI export failed: "+state.export_error);
+    std::cerr<<"ROI export failed: "<<state.export_error<<std::endl;
+  }
+}
+
+void StartRoiExport(ViewerState & state)
+{
+  if (state.export_future.valid() || state.export_picker.Active()) return;
+  try {
+    lidar_viewer::RoiExportRequest request;
+    request.regions=state.display_roi;request.aligned_coordinates=state.export_aligned;
+    request.calibration=state.calibration;request.imu_level_enabled=state.imu_level_enabled;
+    request.imu_mount=state.imu_mount;request.global_ground_offset=state.global_ground_offset;
+    request.profile=state.dataset_profile;
+    const auto parent=ExpandFolderPath(state.export_directory.data());
+    const auto now=std::chrono::system_clock::now();
+    const auto micros=std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+    const auto date=lidar_viewer::UtcTime(std::chrono::system_clock::to_time_t(now));
+    std::ostringstream name;name.imbue(std::locale::classic());
+    name<<"roi_export_"<<std::put_time(&date,"%Y%m%d_%H%M%S_")<<std::setfill('0')<<std::setw(6)<<micros%1000000<<"Z";
+    if (parent.empty()) throw std::runtime_error("Choose an export folder");
+    request.destination=parent/name.str();
+    if (state.live_mode) {
+      if (!state.live_has_frame) throw std::runtime_error("Waiting for the first live frame");
+      request.live_snapshot=state.base_frame;request.live_sequence=state.live_display_sequence;
+      request.live_topic=state.live_points_topic.data();
+    } else {
+      if (state.frames.empty()) throw std::runtime_error("Open a recording first");
+      if (state.export_scope==0) request.sources.push_back({state.frames[state.current_index],state.current_index});
+      else {
+        if (state.export_first<1 || state.export_last<state.export_first || state.export_stride<1 ||
+            static_cast<std::size_t>(state.export_last)>state.frames.size())
+          throw std::runtime_error("Choose a valid frame range and sampling step");
+        for (std::size_t i=static_cast<std::size_t>(state.export_first-1);
+            i<static_cast<std::size_t>(state.export_last);i+=static_cast<std::size_t>(state.export_stride))
+          request.sources.push_back({state.frames[i],i});
+      }
+    }
+    state.export_total=request.live_snapshot ? 1 : request.sources.size();
+    state.export_region_count=static_cast<std::size_t>(std::count_if(request.regions.boxes.begin(),request.regions.boxes.end(),
+      [](const auto & b){return b.enabled;}));
+    state.export_destination=request.destination;state.export_progress=std::make_shared<lidar_viewer::RoiExportProgress>();
+    state.export_error.clear();state.export_message.clear();state.export_started_at=glfwGetTime();
+    if (!state.export_worker) state.export_worker=std::make_unique<lidar_viewer::BackgroundWorker>();
+    state.export_future=state.export_worker->Submit([request=std::move(request),progress=state.export_progress] {
+      return lidar_viewer::ExportRoiDataset(request,progress);
+    });
+  } catch (const std::exception & error) {state.export_error=error.what();}
+}
+
+void BuildRoiExportDialog(ViewerState & state)
+{
+  const float s=state.ui_layout.scale;
+  if (state.open_roi_export) {
+    ImGui::OpenPopup("Export ROI dataset");state.open_roi_export=false;
+    if (!state.export_directory[0]) {
+      auto parent=lidar_viewer::UserHome()/"Documents";
+      if (!fs::is_directory(parent)) parent=lidar_viewer::UserHome();
+      const auto path=parent.u8string();
+      if (path.size()<state.export_directory.size()) std::copy(path.begin(),path.end(),state.export_directory.begin());
+    }
+    state.export_last=static_cast<int>(std::min<std::size_t>(state.frames.size(),std::numeric_limits<int>::max()));
+  }
+  const auto display=ImGui::GetIO().DisplaySize;
+  const float width=std::min(600*s,display.x-32*s);
+  ImGui::SetNextWindowPos({display.x*.5f,display.y*.5f},ImGuiCond_Appearing,{.5f,.5f});
+  ImGui::SetNextWindowSizeConstraints({width,0},{width,display.y-32*s});
+  ImGui::SetNextWindowSize({width,0},ImGuiCond_Appearing);
+  if (!ImGui::BeginPopupModal("Export ROI dataset",nullptr,ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoSavedSettings)) return;
+  const bool running=state.export_future.valid(),picking=state.export_picker.Active();
+  const auto regions=std::count_if(state.display_roi.boxes.begin(),state.display_roi.boxes.end(),[](const auto & b){return b.enabled;});
+  ImGui::TextWrapped("Export points inside %zu checked display regions.",
+    running ? state.export_region_count : static_cast<std::size_t>(regions));
+  ImGui::TextDisabled("NumPy XYZI + PCD + metadata  |  Original intensity");
+  if (!running) {
+    ImGui::Spacing();ImGui::BeginDisabled(picking);
+    ImGui::TextUnformatted("Frames");
+    if (state.live_mode) ImGui::Text("Current live frame #%llu",static_cast<unsigned long long>(state.live_display_sequence));
+    else {
+      ImGui::RadioButton("Current frame",&state.export_scope,0);TraceUi("export_current");
+      ImGui::SameLine();ImGui::TextDisabled("%zu / %zu",state.current_index+1,state.frames.size());
+      ImGui::RadioButton("Frame range",&state.export_scope,1);TraceUi("export_range");
+      if (state.export_scope==1) {
+        if (ImGui::BeginTable("##ExportRange",3,ImGuiTableFlags_SizingStretchSame|ImGuiTableFlags_NoSavedSettings)) {
+          ImGui::TableNextRow();
+          ImGui::TableSetColumnIndex(0);ImGui::TextDisabled("First frame");
+          ImGui::TableSetColumnIndex(1);ImGui::TextDisabled("Last frame");
+          ImGui::TableSetColumnIndex(2);ImGui::TextDisabled("Every N frames");
+          ImGui::TableNextRow();
+          ImGui::TableSetColumnIndex(0);ImGui::SetNextItemWidth(-1);ImGui::InputInt("##ExportFirst",&state.export_first,0,0);TraceUi("export_first");
+          ImGui::TableSetColumnIndex(1);ImGui::SetNextItemWidth(-1);ImGui::InputInt("##ExportLast",&state.export_last,0,0);TraceUi("export_last");
+          ImGui::TableSetColumnIndex(2);ImGui::SetNextItemWidth(-1);ImGui::InputInt("##ExportStride",&state.export_stride,0,0);TraceUi("export_stride");
+          ImGui::EndTable();
+        }
+      }
+    }
+    ImGui::Spacing();ImGui::TextUnformatted("Coordinates");
+    if (ImGui::RadioButton("Sensor coordinates (original)",!state.export_aligned)) state.export_aligned=false;
+    TraceUi("export_sensor");
+    if (ImGui::RadioButton("Aligned coordinates (as in viewer)",state.export_aligned)) state.export_aligned=true;
+    TraceUi("export_aligned");
+    ImGui::TextDisabled("Frame time and coordinate transforms are saved with each sample.");
+    ImGui::Spacing();ImGui::TextUnformatted("Destination folder");
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x-96*s);
+    ImGui::InputText("##ExportDirectory",state.export_directory.data(),state.export_directory.size());TraceUi("export_directory");
+    ImGui::SameLine();
+    if (ImGui::Button("Browse...",{88*s,0})) {
+      try {state.export_picker.OpenDirectory(ExpandFolderPath(state.export_directory.data()));}
+      catch (const std::exception & error) {state.export_error=error.what();}
+    }
+    TraceUi("export_browse");ImGui::EndDisabled();
+    ImGui::TextDisabled("Creates a new roi_export_... folder. Empty frames are skipped.");
+  }
+  ImGui::Spacing();
+  if (running) {
+    ImGui::TextWrapped("%s",state.export_destination.u8string().c_str());
+    const auto completed=state.export_progress->completed.load();
+    ImGui::ProgressBar(static_cast<float>(completed)/std::max<std::size_t>(1,state.export_total),{-1,0});
+    ImGui::Text("%zu / %zu frames  |  %s points  |  %.1f s",completed,state.export_total,
+      CountText(state.export_progress->points.load()).c_str(),glfwGetTime()-state.export_started_at);
+    ImGui::BeginDisabled(state.export_progress->cancel.load());
+    if (ImGui::Button("Cancel export")) state.export_progress->cancel.store(true);
+    TraceUi("export_cancel");ImGui::EndDisabled();ImGui::SameLine();
+  } else {
+    if (!state.export_message.empty()) {
+      ImGui::TextColored({.42f,.85f,.65f,1},"%s",state.export_message.c_str());
+      if (state.export_message!="Export canceled") {
+        ImGui::TextWrapped("%s",state.export_destination.u8string().c_str());
+        if (ImGui::SmallButton("Copy output path")) ImGui::SetClipboardText(state.export_destination.u8string().c_str());
+        TraceUi("export_copy_path");
+      }
+    }
+    if (!state.export_error.empty()) ImGui::TextWrapped("Export failed: %s",state.export_error.c_str());
+    ImGui::TextWrapped("Exported samples are unlabeled. Add object boxes or point labels in your annotation tool.");
+    ImGui::BeginDisabled(picking || regions==0 || state.loading_bag_source.has_value() || state.roi_gesture.active);
+    if (lidar_viewer::ActionButton("##StartExport",lidar_viewer::UiIcon::Export,"Export dataset",{160*s,32*s},s)) StartRoiExport(state);
+    TraceUi("export_start");ImGui::EndDisabled();ImGui::SameLine();
+  }
+  if (ImGui::Button(running ? "Hide" : "Close",{90*s,32*s})) ImGui::CloseCurrentPopup();
+  TraceUi("export_close");
+  ImGui::EndPopup();
+}
+
 void BuildRoiEditor(ViewerState & state)
 {
   if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsKeyPressed(ImGuiKey_Tab)) state.roi_numeric_edit=false;
@@ -3388,7 +3574,7 @@ void BuildRoiEditor(ViewerState & state)
   TraceUi("roi_outlines");
   const float rows=static_cast<float>(std::clamp<std::size_t>(EditedRoi(state).boxes.size(),3,8));
   const float preferred_height=rows*(ImGui::GetTextLineHeight()+18*s)+12*s;
-  const float list_height=std::min(preferred_height,std::clamp(ImGui::GetContentRegionAvail().y-190*s,110*s,285*s));
+  const float list_height=std::min(preferred_height,std::clamp(ImGui::GetContentRegionAvail().y-(display ? 230 : 190)*s,110*s,285*s));
   if (std::abs(list_height-state.roi_list_height)>1) {state.roi_reveal_selection=true;state.roi_list_height=list_height;}
   if (ImGui::BeginListBox("##RoiList",{-1,list_height})) {
     for (std::size_t i=0;i<EditedRoi(state).boxes.size();++i) {
@@ -3473,6 +3659,15 @@ void BuildRoiEditor(ViewerState & state)
     state.roi_numeric_edit=ImGui::IsAnyItemActive();MarkRoiPending(state);RebuildRoiGeometry(state);
   }
   if (!ImGui::IsAnyItemActive()) state.roi_numeric_edit=false;
+  if (display) {
+    ImGui::Spacing();
+    const bool can_export=(state.live_mode ? state.live_has_frame : !state.frames.empty()) &&
+      std::any_of(state.display_roi.boxes.begin(),state.display_roi.boxes.end(),[](const auto & b){return b.enabled;});
+    ImGui::BeginDisabled(!can_export || state.roi_gesture.active);
+    if (lidar_viewer::ActionButton("##ExportRoi",UiIcon::Export,
+        state.export_future.valid() ? "Export progress..." : "Export points...",{-1,32*s},s)) state.open_roi_export=true;
+    TraceUi("roi_export");ImGui::EndDisabled();
+  }
   ImGui::PopID();
   ImGui::PopStyleVar(2);
 }
@@ -4121,6 +4316,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   BuildFolderPicker(state);
   if (state.open_live_dialog) {ImGui::OpenPopup("Live sensors");state.open_live_dialog=false;}
   BuildLiveDialog(state);
+  BuildRoiExportDialog(state);
   ImGui::End();
 
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {16.f * s, 4.f * s});
@@ -4853,6 +5049,7 @@ int RunViewer(int argc, char ** argv)
     while (!glfwWindowShouldClose(window)) {
       glfwPollEvents();
       CompleteBagPicker(state, window);
+      UpdateRoiExport(state);
       CompleteBagLoad(state);
       UpdateSourceDurations(state);
       const bool geometry_ready=CompleteGeometry(state);
@@ -5000,6 +5197,7 @@ int RunViewer(int argc, char ** argv)
     }
 
     if (state.input_load) state.input_load->Cancel();
+    if (state.export_progress) state.export_progress->cancel.store(true);
     state.live.Disconnect();
     glDeleteProgram(program);
     glDeleteProgram(state.grid.program);

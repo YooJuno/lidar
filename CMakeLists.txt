@@ -133,7 +133,7 @@ lidar_warnings(lidar_viewer_roi)
 
 if(WIN32)
   add_library(lidar_viewer_file_dialog STATIC src/file_dialog_win.cpp)
-  target_link_libraries(lidar_viewer_file_dialog PUBLIC comdlg32 ole32)
+  target_link_libraries(lidar_viewer_file_dialog PUBLIC comdlg32 ole32 shell32)
 else()
   add_library(lidar_viewer_file_dialog STATIC src/file_dialog.cpp)
 endif()
@@ -169,10 +169,14 @@ target_include_directories(lidar_viewer_tracking PUBLIC ${CMAKE_CURRENT_SOURCE_D
 target_link_libraries(lidar_viewer_tracking PRIVATE Eigen3::Eigen)
 lidar_warnings(lidar_viewer_tracking)
 
+add_library(lidar_viewer_export STATIC src/roi_export.cpp src/data_io.cpp)
+target_include_directories(lidar_viewer_export PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(lidar_viewer_export PUBLIC lidar_viewer_roi lidar_viewer_bag)
+lidar_warnings(lidar_viewer_export)
+
 add_executable(lidar_viewer
   src/main.cpp
   src/viewer_app.cpp
-  src/data_io.cpp
   src/config.cpp
   src/algorithms/ground_removal.cpp
   src/algorithms/ground_removal_gseg3d.cpp
@@ -210,6 +214,7 @@ target_link_libraries(lidar_viewer PRIVATE
   lidar_viewer_live
   lidar_viewer_detector
   lidar_viewer_tracking
+  lidar_viewer_export
 )
 
 # Source builds also need a desktop entry: GNOME docks use the desktop ID
@@ -264,6 +269,10 @@ if(BUILD_TESTING)
   add_executable(roi_smoke_test tests/roi_smoke.cpp)
   target_link_libraries(roi_smoke_test PRIVATE lidar_viewer_roi)
   add_test(NAME roi_smoke_test COMMAND roi_smoke_test)
+  add_executable(roi_export_smoke_test tests/roi_export_smoke.cpp)
+  target_link_libraries(roi_export_smoke_test PRIVATE lidar_viewer_export Threads::Threads)
+  add_test(NAME roi_export_smoke_test COMMAND roi_export_smoke_test)
+  set_tests_properties(roi_export_smoke_test PROPERTIES TIMEOUT 30)
   add_executable(object_tracker_smoke_test tests/object_tracker_smoke.cpp)
   target_link_libraries(object_tracker_smoke_test PRIVATE lidar_viewer_tracking lidar_viewer_detector)
   add_test(NAME object_tracker_smoke_test COMMAND object_tracker_smoke_test)

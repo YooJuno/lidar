@@ -67,6 +67,9 @@ struct FrameHandle
 struct FrameData
 {
   std::vector<KittiPoint> points;
+  // Live display normalization retains the decoded values in source order.
+  // Copies share this immutable buffer; derived/reordered clouds clear it.
+  std::shared_ptr<const std::vector<float>> source_intensities;
   Vec3 center{};
   float radius{30.0f};
   float min_z{0.0f};
@@ -80,4 +83,7 @@ struct FrameData
 std::vector<FrameHandle> ResolveInputFrames(
   const fs::path & input, const std::string & bag_topic = "/b2/points", const std::string & imu_topic = "",
   lidar_viewer::InputLoadState * load = nullptr);
-FrameData LoadFrame(const FrameHandle & handle);
+enum class FrameIntensity {DisplayNormalized, Original};
+enum class FrameReadIsolation {Shared, Independent};
+FrameData LoadFrame(const FrameHandle & handle, FrameIntensity intensity = FrameIntensity::DisplayNormalized,
+  FrameReadIsolation isolation = FrameReadIsolation::Shared);

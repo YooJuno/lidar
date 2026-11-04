@@ -1,6 +1,7 @@
 #include "lidar_viewer/file_dialog.hpp"
 #include "lidar_viewer/platform.hpp"
 #include <commdlg.h>
+#include <shlobj.h>
 #include <atomic>
 #include <chrono>
 #include <future>
@@ -13,6 +14,18 @@ struct FileDialog::NativeState
   std::atomic<HWND> window{nullptr};
   std::atomic<bool> cancelled{false};
   std::future<FileDialogResult> result;
+  std::wstring initial_folder;
+  static int CALLBACK FolderHook(HWND window,UINT message,LPARAM,LPARAM parameter)
+  {
+    auto * state=reinterpret_cast<NativeState *>(parameter);
+    if (message==BFFM_INITIALIZED) {
+      state->window.store(window);
+      if (state->cancelled.load()) PostMessageW(window,WM_CLOSE,0,0);
+      else if (!state->initial_folder.empty())
+        SendMessageW(window,BFFM_SETSELECTIONW,TRUE,reinterpret_cast<LPARAM>(state->initial_folder.c_str()));
+    }
+    return 0;
+  }
   static UINT_PTR CALLBACK Hook(HWND child, UINT message, WPARAM, LPARAM parameter)
   {
     if (message==WM_INITDIALOG) {
@@ -27,13 +40,33 @@ FileDialog::~FileDialog() {Cancel();}
 bool FileDialog::Active() const {return native_!=nullptr;}
 void FileDialog::OpenBag(const std::filesystem::path & folder)
 {
+  Open(folder,false);
+}
+void FileDialog::OpenDirectory(const std::filesystem::path & folder)
+{
+  Open(folder,true);
+}
+void FileDialog::Open(const std::filesystem::path & folder,bool directory)
+{
   if (Active()) return;
   auto state=std::make_shared<NativeState>();
-  state->result=std::async(std::launch::async,[state,folder] {
+  state->result=std::async(std::launch::async,[state,folder,directory] {
     const HRESULT initialized=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
     if (FAILED(initialized)) return FileDialogResult{{},"Cannot initialize native file chooser"};
     std::vector<wchar_t> buffer(32768,0);
     const auto initial=folder.wstring();
+    if (directory) {
+      state->initial_folder=initial;
+      BROWSEINFOW options{};options.lpszTitle=L"Choose export folder";
+      options.ulFlags=BIF_RETURNONLYFSDIRS|BIF_NEWDIALOGSTYLE;
+      options.lpfn=NativeState::FolderHook;options.lParam=reinterpret_cast<LPARAM>(state.get());
+      const auto item=SHBrowseForFolderW(&options);
+      const bool accepted=item && SHGetPathFromIDListEx(item,buffer.data(),static_cast<DWORD>(buffer.size()),GPFIDL_DEFAULT);
+      if (item) CoTaskMemFree(item);
+      state->window.store(nullptr);CoUninitialize();
+      if (accepted) return FileDialogResult{std::filesystem::path(buffer.data()),{}};
+      return FileDialogResult{{},item ? "Cannot read the selected directory" : ""};
+    }
     OPENFILENAMEW options{}; options.lStructSize=sizeof(options);
     options.lpstrFilter=L"LiDAR data\0metadata.yaml;*.db3;*.mcap;*.bin\0All files\0*.*\0\0";
     options.lpstrFile=buffer.data(); options.nMaxFile=static_cast<DWORD>(buffer.size());

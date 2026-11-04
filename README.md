@@ -210,6 +210,29 @@ ROI 탭 상단에서 용도를 선택합니다. 두 기능은 별도의 박스 �
 
 Apply와 표시 제한 전환은 앱 재시작·bag 재로딩 없이 반영하며 재생·정지 상태를 유지합니다. 실제 박스 드래그 중에만 화면을 고정하고 놓거나 취소하면 이전 상태로 복귀합니다. 원본 ROS 구독·녹화는 계속됩니다. 파일 읽기·분석은 각각 재사용하는 작업 스레드에서 실행하고, 읽기 캐시는 최대 3프레임·64 MiB로 제한합니다. 단일 프레임이 64 MiB보다 크면 그 프레임 하나만 유지합니다.
 
+
+### 학습·라벨링용 ROI 점군 내보내기
+
+**ROI → Display ROI → Export points…**에서 현재 프레임 또는 프레임 구간과 추출 간격을 정하고, **Browse…**로 저장할 상위 폴더를 선택한 뒤 **Export dataset**을 누릅니다. 체크한 표시용 ROI 안의 점을 합집합으로 추출합니다. 화면의 표시 제한 스위치·Ground only·지면 제외 박스·검출 박스는 내보내기 대상과 라벨을 바꾸지 않습니다. 실시간 입력에서는 버튼을 누른 시점에 표시 중인 프레임을 저장합니다.
+
+내보내기는 별도 작업 스레드와 전용 bag 리더를 재사용하며 재생·센서 수신·원본 녹화를 유지합니다. 진행률에서 취소하거나 Hide로 창을 닫아 둘 수 있고 ROI 탭의 Export progress…로 다시 확인합니다. 매번 새로운 `roi_export_날짜_시각Z` 폴더를 만들며, 기존 데이터셋을 덮어쓰지 않습니다. 폴더명 시각은 UTC입니다. 취소·오류가 발생한 작업의 새 폴더는 정리합니다. 강제 종료나 전원 중단으로 남은 폴더는 최상위 metadata의 status가 `complete`인지 확인해야 합니다.
+
+```text
+roi_export_.../
+├── metadata.json           # 데이터셋 목록·ROI·보정 설정·완료 상태
+├── points/00000000.npy     # float32, N×4: x y z intensity
+├── pointcloud/00000000.pcd # 같은 XYZI의 binary PCD
+└── metadata/00000000.json  # 원본 경로·프레임·시각·IMU·좌표 변환
+```
+
+- **Sensor coordinates (original)**: 원래 센서 XYZ와 intensity를 저장합니다. BIN·bag 표시용 intensity 정규화를 적용하지 않고 원본에서 다시 읽습니다.
+- **Aligned coordinates (as in viewer)**: 표시 yaw/pitch/roll/Z와 해당 프레임의 IMU 보정을 적용한 XYZ를 저장합니다. intensity는 원래 값입니다. 파일마다 원본 센서 좌표에서 출력 좌표로 가는 4×4 행렬을 함께 저장합니다.
+- 포인트 순서와 중복점은 원본 디코딩 순서대로 유지합니다. 미수신을 나타내는 XYZ=0과 유효하지 않은 XYZ는 제거하고, 비정상 intensity는 0으로 처리합니다. ROI 안에 점이 없는 프레임은 건너뛰고 원본 프레임 번호를 metadata에 기록합니다.
+- 구간 입력의 First/Last는 1부터 시작하며 양 끝을 포함하고, metadata의 source.frame_index는 0부터 시작합니다. 시각은 정밀도 손실을 피하기 위해 나노초 정수의 문자열로 저장하며, BIN처럼 시각이 없는 입력은 null입니다. 원본 frame_id·bag 경로·토픽·프레임 번호와 IMU 적용 여부·유효 보정 각도·장착 설정을 보존합니다. 원본 센서 좌표의 ROI와 출력 좌표 행렬을 함께 사용하면 라벨 좌표를 일관되게 맞출 수 있습니다.
+- 내보낸 데이터는 `annotation_status: unlabeled`입니다. 객체 검출 예측이나 지면 분류 결과를 정답으로 저장하지 않습니다. 사람·차량 학습에는 별도로 클래스·3D 박스를 라벨링하고, 지면 분할 학습에는 각 포인트의 지면/비지면 라벨을 붙여야 합니다.
+
+NPY는 [NumPy 표준 형식](https://numpy.org/doc/2.0/reference/generated/numpy.lib.format.html), PCD는 [PCL v0.7 binary 형식](https://pointclouds.org/documentation/tutorials/pcd_file_format.html)을 사용합니다. 예를 들어 `np.load("points/00000000.npy", allow_pickle=False)`로 읽을 수 있습니다. OpenPCDet 커스텀 학습에는 points 아래 NPY와 별도로 작성한 라벨을 연결하고, PCD 라벨링 도구에는 pointcloud 아래 파일을 가져갑니다. 선택한 학습 프레임워크의 클래스·박스 좌표 규칙에 맞춰 라벨을 변환해야 합니다.
+
 ## Notes
 
 - KITTI 스타일 `float32 x, y, z, intensity` `.bin` 파일을 바로 지원합니다.

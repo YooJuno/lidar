@@ -17,7 +17,7 @@ std::optional<std::uint64_t> ReadBagDurationNs(const fs::path & input);
 std::vector<FrameHandle> ResolveBagFrames(
   const fs::path & input, const std::string & topic = "/b2/points", const std::string & imu_topic = "",
   lidar_viewer::InputLoadState * load = nullptr);
-FrameData LoadBagFrame(const FrameHandle & handle);
+FrameData LoadBagFrame(const FrameHandle & handle, bool independent_reader = false);
 
 #ifdef LIDAR_VIEWER_HAS_ROSBAG
 // Decode declared PointField offsets, row padding, and byte order rather than

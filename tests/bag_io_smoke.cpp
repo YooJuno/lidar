@@ -285,19 +285,21 @@ void TestStorage(const std::string & storage_id)
       "Duplicate receipt timestamps lost exact frame identity");
     Check(LoadBagFrame(handles[2]).points[0].x == 9 && LoadBagFrame(handles[0]).points[0].x == 1 &&
       LoadBagFrame(handles[1]).points[0].x == 9, "Backward seeking/duplicate frame access failed");
-    const auto read_sequence = [&handles](bool reverse) {
+    const auto read_sequence = [&handles](bool reverse,bool independent) {
         for (std::size_t iteration = 0; iteration < 48; ++iteration) {
           const auto slot = iteration % handles.size();
           const auto index = reverse ? handles.size() - 1 - slot : slot;
-          const auto frame = LoadBagFrame(handles[index]);
+          const auto frame = LoadBagFrame(handles[index],independent);
           Check(frame.points.size() == 1 && frame.points[0].x == (index == 0 ? 1 : 9),
             "Concurrent reader seeks mixed point-cloud frames");
         }
       };
-    auto forward = std::async(std::launch::async, read_sequence, false);
-    auto backward = std::async(std::launch::async, read_sequence, true);
+    auto forward = std::async(std::launch::async, read_sequence, false,false);
+    auto backward = std::async(std::launch::async, read_sequence, true,false);
+    auto exporting = std::async(std::launch::async, read_sequence, true,true);
     forward.get();
     backward.get();
+    exporting.get();
     Check(ResolveBagFrames(folder / "metadata.yaml", "/another/cloud").size() == 1,
       "Explicit topic/metadata.yaml selection failed");
     Check(ResolveBagFrames(folder, "").size() == 3, "Automatic preferred topic selection failed");

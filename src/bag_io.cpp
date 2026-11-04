@@ -473,15 +473,9 @@ std::vector<FrameHandle> ResolveBagFrames(
   return frames;
 }
 
-FrameData LoadBagFrame(const FrameHandle & handle)
+static FrameData ReadBagFrame(const FrameHandle & handle,ReaderCache & cache)
 {
   const fs::path path = BagPath(handle.path);
-  // Retain only one storage reader process-wide. Serialize the complete cursor
-  // operation, including decode, so concurrent loader/prefetch requests cannot
-  // seek one another's reader between selecting and loading a frame.
-  static ReaderCache cache;
-  static std::mutex reader_mutex;
-  const std::lock_guard<std::mutex> guard(reader_mutex);
   if (!cache.reader || cache.path != path || cache.topic != handle.bag_topic) {
     cache.reader = std::make_unique<rosbag2_cpp::Reader>();
     OpenReader(*cache.reader, path);
@@ -515,6 +509,19 @@ FrameData LoadBagFrame(const FrameHandle & handle)
   }
   throw std::runtime_error("Indexed bag frame is missing; input bag may have changed: " + handle.label);
 }
+FrameData LoadBagFrame(const FrameHandle & handle,bool independent_reader)
+{
+  if (independent_reader) {
+    // One extra reusable reader on the export worker. Batch export must not
+    // steal the playback reader's cursor or hold its seek/decode mutex.
+    thread_local ReaderCache independent;
+    return ReadBagFrame(handle,independent);
+  }
+  static ReaderCache shared;
+  static std::mutex mutex;
+  const std::lock_guard<std::mutex> guard(mutex);
+  return ReadBagFrame(handle,shared);
+}
 #else
 std::vector<FrameHandle> ResolveBagFrames(const fs::path &, const std::string &, const std::string &,
   lidar_viewer::InputLoadState *)
@@ -524,7 +531,7 @@ std::vector<FrameHandle> ResolveBagFrames(const fs::path &, const std::string &,
     "with ROS bag support enabled; .bin loading remains available without ROS.");
 }
 
-FrameData LoadBagFrame(const FrameHandle &)
+FrameData LoadBagFrame(const FrameHandle &,bool)
 {
   throw std::runtime_error("This viewer was built without ROS 2 bag support");
 }

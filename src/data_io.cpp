@@ -37,7 +37,7 @@ constexpr std::array<float, kOusterLegacyChannels> kOs1_64AzimuthOffsetDeg{{
   3.164f, 1.055f, -1.055f, -3.164f, 3.164f, 1.055f, -1.055f, -3.164f
 }};
 
-void FinalizeFrame(FrameData & frame)
+void FinalizeFrame(FrameData & frame, FrameIntensity intensity)
 {
   // Match the bag decoder's handling of invalid samples before bounds,
   // percentile selection and spatial hashing see any NaN/Inf coordinates.
@@ -98,6 +98,7 @@ void FinalizeFrame(FrameData & frame)
   std::nth_element(z_samples.begin(), z_samples.begin() + static_cast<std::ptrdiff_t>(ground_index), z_samples.end());
   frame.ground_z = z_samples[ground_index];
 
+  if (intensity == FrameIntensity::Original) return;
   const float intensity_range = max_intensity - min_intensity;
   if (intensity_range > 1e-6f) {
     for (auto & p : frame.points) {
@@ -185,7 +186,7 @@ std::vector<FrameHandle> ResolveFramesFromFile(const fs::path & file_path)
   throw std::runtime_error("Unsupported .bin format: " + file_path.string());
 }
 
-FrameData LoadKittiFrame(const fs::path & file_path)
+FrameData LoadKittiFrame(const fs::path & file_path, FrameIntensity intensity)
 {
   std::ifstream stream(file_path, std::ios::binary);
   if (!stream) {
@@ -208,11 +209,11 @@ FrameData LoadKittiFrame(const fs::path & file_path)
     throw std::runtime_error("Failed to read: " + file_path.string());
   }
 
-  FinalizeFrame(frame);
+  FinalizeFrame(frame,intensity);
   return frame;
 }
 
-FrameData LoadOusterLegacyFrame(const FrameHandle & handle)
+FrameData LoadOusterLegacyFrame(const FrameHandle & handle, FrameIntensity intensity)
 {
   std::ifstream stream(handle.path, std::ios::binary);
   if (!stream) {
@@ -275,7 +276,7 @@ FrameData LoadOusterLegacyFrame(const FrameHandle & handle)
     }
   }
 
-  FinalizeFrame(frame);
+  FinalizeFrame(frame,intensity);
   return frame;
 }
 }  // namespace
@@ -321,15 +322,15 @@ std::vector<FrameHandle> ResolveInputFrames(
   return frames;
 }
 
-FrameData LoadFrame(const FrameHandle & handle)
+FrameData LoadFrame(const FrameHandle & handle, FrameIntensity intensity, FrameReadIsolation isolation)
 {
   if (handle.format == InputFormat::Ros2Bag) {
-    auto frame = LoadBagFrame(handle);
-    FinalizeFrame(frame);
+    auto frame = LoadBagFrame(handle,isolation==FrameReadIsolation::Independent);
+    FinalizeFrame(frame,intensity);
     return frame;
   }
   if (handle.format == InputFormat::OusterLegacyContainer) {
-    return LoadOusterLegacyFrame(handle);
+    return LoadOusterLegacyFrame(handle,intensity);
   }
-  return LoadKittiFrame(handle.path);
+  return LoadKittiFrame(handle.path,intensity);
 }

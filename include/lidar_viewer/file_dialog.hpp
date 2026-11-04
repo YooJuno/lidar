@@ -24,11 +24,13 @@ public:
   FileDialog(const FileDialog &) = delete;
   FileDialog & operator=(const FileDialog &) = delete;
   void OpenBag(const std::filesystem::path & initial_folder);
+  void OpenDirectory(const std::filesystem::path & initial_folder);
   bool Active() const;
   std::optional<FileDialogResult> Poll();
   void Cancel() noexcept;
 
 private:
+  void Open(const std::filesystem::path & initial_folder, bool directory);
 #ifdef _WIN32
   struct NativeState;
   std::shared_ptr<NativeState> native_;
