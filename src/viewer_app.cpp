@@ -1634,7 +1634,7 @@ bool CompleteFrameRequest(ViewerState & state)
 
 void MarkGridDirty(ViewerState & state)
 {
-  state.grid_settings.spacing = std::clamp(state.grid_settings.spacing, 0.5f, 50.0f);
+  state.grid_settings.spacing = std::clamp(state.grid_settings.spacing, 0.1f, 50.0f);
   state.grid_settings.thickness = std::clamp(state.grid_settings.thickness, 1.0f, 6.0f);
   state.grid_settings.count = std::clamp(state.grid_settings.count, 2, 100);
   state.grid.dirty = true;
@@ -3818,7 +3818,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       ImGui::Spacing();ImGui::Spacing();ImGui::Checkbox("Reference grid",&state.grid_settings.enabled);
       if (ImGui::CollapsingHeader("Grid settings")) {
         bool dirty=false;ImGui::SetNextItemWidth(-1);
-        dirty|=ImGui::SliderFloat("##Spacing",&state.grid_settings.spacing,.5f,20,"Spacing: %.1f m",ImGuiSliderFlags_AlwaysClamp);
+        dirty|=ImGui::SliderFloat("##Spacing",&state.grid_settings.spacing,.1f,20,"Spacing: %.1f m",ImGuiSliderFlags_AlwaysClamp);
         ImGui::SetNextItemWidth(-1);dirty|=ImGui::SliderInt("##Extent",&state.grid_settings.count,2,100,"Extent: %d cells",ImGuiSliderFlags_AlwaysClamp);
         ImGui::SetNextItemWidth(-1);dirty|=ImGui::SliderFloat("##GridLines",&state.grid_settings.thickness,1,4,"Line width: %.1f",ImGuiSliderFlags_AlwaysClamp);
         if (dirty) MarkGridDirty(state);
@@ -4517,7 +4517,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     bounded(ground.final_distance_threshold_m,.02f,.5f,.2f);
     bounded(ground.candidate_grid_cell_m, .1f, 5, .8f);
     bounded(state.camera.point_size, 1, 8, 2);
-    bounded(state.grid_settings.spacing, .5f, 50, 2);
+    bounded(state.grid_settings.spacing, .1f, 50, 2);
     bounded(state.grid_settings.thickness, 1, 6, 1);
     bounded(state.ui_scale, .75f, 1.5f, 1);
     bounded(state.tracking_params.max_missed_s,.1f,2.f,.8f);
