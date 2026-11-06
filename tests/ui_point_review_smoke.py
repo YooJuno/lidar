@@ -47,10 +47,10 @@ def main():
     def same_view(a,b):return all(abs(x-y)<1e-5 for x,y in zip(a[1:],b[1:]))
     def windows():return [w for w in x11.children(x11.root)if 'LiDAR Studio'in x11.title(w)]
     def loaded(after):wait(lambda:'Opened point cloud:'in log_path.read_text()[after:]);controls.rect('dataset_current_0',after=after)
-    def bag_camera():
+    def bag_camera(profile="rosbag"):
         controls.chord('s');time.sleep(.15)
-        path=out/'settings/lidar_viewer/profiles/rosbag.cfg'
-        if not path.exists():path=private/'config/profiles/rosbag.cfg'
+        path=out/f'settings/lidar_viewer/profiles/{profile}.cfg'
+        if not path.exists():path=private/f'config/profiles/{profile}.cfg'
         return {k:float(v)for line in path.read_text().splitlines()if '='in line for k,v in[line.split('=',1)]if k in ['camera_distance','camera_target_x','camera_target_y','camera_target_z','camera_yaw_rad','camera_pitch_rad']}
     try:
         x11=X11();subprocess.run(['xrdb','-merge'],input='Xft.dpi: 96\n',text=True,check=True)
@@ -94,6 +94,8 @@ def main():
         check('reopening_review_reuses_the_dataset_and_view',same_view(saved,camera())and len(windows())==1)
         controls.click('dataset_list');fresh=len(log_path.read_text());x11.key(window,'Escape');controls.rect('open_dataset',after=fresh)
         check('escape_returns_to_the_bag',process.poll()is None)
+        controls.click('camera_3D');selection.write_text(str(data/'group0/points/sample.npy'));fresh=len(log_path.read_text());controls.chord('o');loaded(fresh)
+        check('regular_file_open_initializes_an_upright_dataset_view',bag_camera('dataset')['camera_pitch_rad']>0)
         check('original_configuration_unchanged',settings_inventory(repo)==before);result['status']='passed'
     except Exception as error:
         result.update(status='failed',error=str(error),traceback=traceback.format_exc())

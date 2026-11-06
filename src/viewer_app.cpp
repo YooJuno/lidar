@@ -2041,6 +2041,10 @@ void CompleteBagLoad(ViewerState & state)
       state.ground_removal_enabled = staged.ground_removal_enabled;
       state.ground_view=staged.ground_view;
       state.camera = staged.camera;
+      if(!state.camera.has_saved_view && !state.frames.empty() && state.frames.front().dataset_sample &&
+          state.camera.projection_mode==CameraState::ProjectionMode::View3D) {
+        state.camera.yaw=-.8f;state.camera.pitch=.55f;
+      }
       state.grid_settings = staged.grid_settings;
       state.grid.dirty = true;
       state.color_mode = staged.color_mode;
