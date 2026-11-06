@@ -251,7 +251,7 @@ void Scan(const fs::path & root,std::vector<FrameHandle> & frames,InputLoadState
   }
   for(const auto & child:children) {
     const auto name=child.filename().u8string();
-    if(name=="labels" || name=="annotations" || name=="metadata" || name=="training" || name==".git" || name=="__pycache__") continue;
+    if(name==".lidar_studio_trash" || name=="labels" || name=="annotations" || name=="metadata" || name=="training" || name==".git" || name=="__pycache__") continue;
     Scan(child,frames,load,include_bin,depth+1);
   }
 }

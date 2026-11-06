@@ -32,7 +32,7 @@ def fixture(root):
 
 def main():
     with tempfile.TemporaryDirectory(prefix='studio-training-')as temporary:
-        root=Path(temporary);data=root/'data';fixture(data);records=list(samples(data));assert len(records)==2
+        root=Path(temporary);data=root/'data';fixture(data);fixture(data/'.lidar_studio_trash');records=list(samples(data));assert len(records)==2
         train,val=split(records,.2,42);assert set(train).isdisjoint(val)and len(train)==len(val)==1
         manifest=prepare_litept(data,root/'litept-prepared',.2,42,False);info=json.loads(manifest.read_text())
         with np.load(info['context_npz'],allow_pickle=False)as arrays:

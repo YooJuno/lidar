@@ -1,4 +1,5 @@
 #include "lidar_viewer/dataset.hpp"
+#include "lidar_viewer/dataset_curation.hpp"
 #include <chrono>
 #include <cstring>
 #include <fstream>
@@ -9,6 +10,7 @@
 namespace
 {
 void Check(bool ok,const char * error) {if(!ok) throw std::runtime_error(error);}
+std::string Read(const fs::path & path) {std::ifstream file(path,std::ios::binary);return {std::istreambuf_iterator<char>(file),std::istreambuf_iterator<char>()};}
 void Text(const fs::path & path,const std::string & text) {std::ofstream file(path);file<<text;}
 void Npy(const fs::path & path,const std::string & type,std::size_t rows,std::size_t columns,const std::string & payload,bool fortran=false)
 {
@@ -86,6 +88,44 @@ int main()
     }
     const auto folders=lidar_viewer::ResolveDatasetFrames(root/"numbered_folders");
     Check(folders.size()==4 && folders[0].label=="sample_2" && folders[1].label=="sample_10" && folders[2].label=="sample_1864" && folders[3].label=="sample_15506","Sample folders are not in numeric frame order");
+    const auto curate=root/"curation";for(const auto * dir:{"points","pointcloud","metadata","labels","annotations"}) fs::create_directories(curate/dir);
+    for(const auto * id:{"a","b"}) {
+      Npy(curate/"points"/(std::string(id)+".npy"),"<f4",2,4,bytes);
+      Npy(curate/"labels"/(std::string(id)+".npy"),"<i4",2,1,{reinterpret_cast<char *>(file_labels),sizeof(file_labels)});
+      Text(curate/"metadata"/(std::string(id)+".json"),"{\"point_count\":2}");
+    }
+    Npy(curate/"labels/a-custom.npy","<i4",2,1,{reinterpret_cast<char *>(file_labels),sizeof(file_labels)});Text(curate/"annotations/a-custom.json","{\"boxes\":[]}");
+    Text(curate/"annotations/a.json","{\"boxes\":[]}");Text(curate/"pointcloud/a.pcd","PCD alias");
+    const std::string manifest="{\"schema\":\"lidar_studio.roi_dataset\",\"version\":1,\"flag\":true,\"status\":\"complete\",\"frames_exported\":2,\"points_exported\":4,\"samples\":[{\"id\":\"a-custom\",\"points\":\"points/a.npy\",\"pcd\":\"pointcloud/a.pcd\",\"metadata\":\"metadata/a.json\"},{\"id\":\"b\",\"points\":\"points/b.npy\",\"metadata\":\"metadata/b.json\"}]}";
+    Text(curate/"metadata.json",manifest);auto editable=lidar_viewer::ResolveDatasetFrames(curate);
+    auto removed=lidar_viewer::TrashDatasetSample(editable[0]);
+    Check(!fs::exists(curate/"points/a.npy") && !fs::exists(curate/"pointcloud/a.pcd") && !fs::exists(curate/"labels/a.npy") && !fs::exists(curate/"metadata/a.json") && !fs::exists(curate/"annotations/a.json"),"Sample deletion left its own annotations or alternate point format");
+    Check(!fs::exists(curate/"labels/a-custom.npy") && !fs::exists(curate/"annotations/a-custom.json"),"Deletion missed annotations named by manifest ID");
+    Check(fs::exists(curate/"points/b.npy") && lidar_viewer::ResolveDatasetFrames(curate).size()==1,"Deleting one sample damaged its neighbor");
+    const auto changed=Read(curate/"metadata.json");
+    Check(changed.find("\"version\":1")!=std::string::npos && changed.find("\"flag\":true")!=std::string::npos && changed.find("\"frames_exported\":1")!=std::string::npos && changed.find("\"points_exported\":2")!=std::string::npos,"Manifest edit changed JSON types or left stale sample counts");
+    Text(curate/"points/a.npy","new file");Reject([&]{lidar_viewer::RestoreDatasetSample(removed);});Check(Read(curate/"points/a.npy")=="new file","Recovery overwrote a new file");fs::remove(curate/"points/a.npy");
+    Text(curate/"metadata.json",changed+" ");Reject([&]{lidar_viewer::RestoreDatasetSample(removed);});Check(!fs::exists(curate/"points/a.npy"),"Recovery ignored a changed manifest");Text(curate/"metadata.json",changed);
+    lidar_viewer::RestoreDatasetSample(removed);Check(Read(curate/"metadata.json")==manifest && Read(curate/"points/a.npy")==Read(root/"points/second.npy") && fs::exists(curate/"labels/a.npy"),"Recovery did not restore original files and manifest bytes");
+    auto first_deleted=lidar_viewer::TrashDatasetSample(lidar_viewer::ResolveDatasetFrames(curate)[0]);
+    auto last_deleted=lidar_viewer::TrashDatasetSample(lidar_viewer::ResolveDatasetFrames(curate)[0]);
+    Check(lidar_viewer::ResolveDatasetFrames(curate).empty(),"Deleting the last sample left a malformed or nonempty manifest");
+    lidar_viewer::RestoreDatasetSample(last_deleted);lidar_viewer::RestoreDatasetSample(first_deleted);
+    Check(Read(curate/"metadata.json")==manifest,"Multiple deletions could not be undone in reverse order");
+    auto shared=manifest;const auto at=shared.find("metadata/b.json");shared.replace(at,std::string("metadata/b.json").size(),"metadata/a.json");Text(curate/"metadata.json",shared);
+    auto shared_deleted=lidar_viewer::TrashDatasetSample(lidar_viewer::ResolveDatasetFrames(curate)[0]);Check(fs::exists(curate/"metadata/a.json"),"Deletion removed metadata shared by another sample");lidar_viewer::RestoreDatasetSample(shared_deleted);
+    const auto curated_coord=root/"curated_coord";fs::create_directory(curated_coord);
+    Npy(curated_coord/"coord.npy","<f4",2,4,bytes);Npy(curated_coord/"segment.npy","<i4",2,1,{reinterpret_cast<char *>(file_labels),sizeof(file_labels)});Text(curated_coord/"meta.json","{}");Text(curated_coord/"keep.txt","unrelated");
+    auto coord_deleted=lidar_viewer::TrashDatasetSample(lidar_viewer::ResolveDatasetFrames(curated_coord)[0]);
+    Check(lidar_viewer::ResolveDatasetFrames(curated_coord).empty() && !fs::exists(curated_coord/"segment.npy") && Read(curated_coord/"keep.txt")=="unrelated","Organized deletion did not skip trash or preserve unrelated files");
+    lidar_viewer::RestoreDatasetSample(coord_deleted);Check(LoadFrame(lidar_viewer::ResolveDatasetFrames(curated_coord)[0]).annotations->point_labels==std::vector<std::int32_t>({0,1}),"Organized recovery lost labels");
+    const auto relative_curate=fs::relative(curate,fs::current_path());
+    auto relative_deleted=lidar_viewer::TrashDatasetSample(lidar_viewer::ResolveDatasetFrames(relative_curate)[0]);lidar_viewer::RestoreDatasetSample(relative_deleted);
+    const auto flat=root/"curated_flat";fs::create_directory(flat);Npy(flat/"first.npy","<f4",2,4,bytes);Npy(flat/"second.npy","<f4",2,4,bytes);
+    Npy(flat/"segment.npy","<i4",2,1,{reinterpret_cast<char *>(file_labels),sizeof(file_labels)});
+    auto flat_deleted=lidar_viewer::TrashDatasetSample(lidar_viewer::ResolveDatasetFrames(flat)[0]);
+    Check(fs::exists(flat/"segment.npy") && LoadFrame(lidar_viewer::ResolveDatasetFrames(flat)[0]).annotations->point_labels.size()==2,"Deletion removed a shared flat-folder label mask");lidar_viewer::RestoreDatasetSample(flat_deleted);
+    Reject([&]{lidar_viewer::TrashDatasetSample(ResolveInputFrames(root/"raw/sample.bin")[0]);});
     Npy(root/"object.npy","|O8",2,4,bytes);Reject([&]{LoadFrame(ResolveInputFrames(root/"object.npy")[0]);});
     Npy(root/"fortran.npy","<f4",2,4,bytes,true);Reject([&]{LoadFrame(ResolveInputFrames(root/"fortran.npy")[0]);});
     Npy(root/"truncated.npy","<f4",3,4,bytes);Reject([&]{LoadFrame(ResolveInputFrames(root/"truncated.npy")[0]);});

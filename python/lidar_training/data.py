@@ -1,5 +1,7 @@
 """Read annotated exports without guessing labels from ROI names or model predictions."""
 import hashlib
+import fnmatch
+import os
 import json
 from pathlib import Path
 import numpy as np
@@ -11,11 +13,18 @@ def inside(root, name):
     return path
 
 
+def visible_files(root,pattern):
+    for directory,folders,files in os.walk(root):
+        folders[:]=[name for name in folders if name!='.lidar_studio_trash']
+        for name in fnmatch.filter(files,pattern):yield Path(directory)/name
+
+
 def samples(root):
     root=Path(root).expanduser().resolve()
     if not root.is_dir():raise ValueError('Choose a dataset folder')
     seen=set()
-    for manifest in sorted(root.rglob('metadata.json')):
+    for manifest in sorted(visible_files(root,'metadata.json')):
+        if '.lidar_studio_trash' in manifest.parts:continue
         meta=json.loads(manifest.read_text())
         if meta.get('schema')!='lidar_studio.roi_dataset':continue
         if meta.get('status')!='complete':raise ValueError(f'Incomplete export: {manifest.parent}')
@@ -27,7 +36,8 @@ def samples(root):
                 labels=manifest.parent/'labels'/(entry['id']+'.npy'),
                 boxes=manifest.parent/'annotations'/(entry['id']+'.json'))
             seen.add(path)
-    for path in sorted(root.rglob('coord.npy')):
+    for path in sorted(visible_files(root,'coord.npy')):
+        if '.lidar_studio_trash' in path.parts:continue
         if path in seen:continue
         metadata=path.parent/'meta.json'
         yield dict(path=path,root=path.parent,id=path.parent.name,
@@ -35,7 +45,8 @@ def samples(root):
             labels=path.parent/'segment.npy',boxes=path.parent/'annotations.json')
         seen.add(path)
     if not seen:
-        for path in sorted(root.rglob('*.npy')):
+        for path in sorted(visible_files(root,'*.npy')):
+            if '.lidar_studio_trash' in path.parts:continue
             if path.parent.name in ('labels','metadata','annotations') or path.stem in ('segment','weak_segment','intensity','ring','point_time','point_index'):continue
             yield dict(path=path,root=root,id=path.stem,meta={},labels=root/'labels'/(path.stem+'.npy'),boxes=root/'annotations'/(path.stem+'.json'))
 
