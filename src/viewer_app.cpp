@@ -439,7 +439,6 @@ struct ViewerState
   std::optional<std::size_t> current_bag_source;
   std::optional<std::size_t> loading_bag_source;
   std::shared_ptr<lidar_viewer::InputLoadState> input_load;
-  std::chrono::steady_clock::time_point input_load_started;
   bool input_load_autoplay{false};
   bool input_load_previous_playing{false};
   std::future<BagLoadResult> bag_load_future;
@@ -1766,7 +1765,6 @@ void OpenBagSource(ViewerState & state, std::size_t index)
       return result;
     });
     state.input_load=std::move(load);
-    state.input_load_started=std::chrono::steady_clock::now();
     state.input_load_autoplay=false;
     state.loading_bag_source = index;
     state.ui_error.clear();
@@ -2483,7 +2481,7 @@ void LoadSettingsFile(ViewerState & state, const fs::path & path)
         if (value!="tiny" && value!="short_range") throw std::invalid_argument("Unknown detector model");
         state.algorithm_config.detection.model=value;state.detector_model_loaded=true;
       } else if (key == "detection_min_score") {
-        state.algorithm_config.detection.min_confidence=std::clamp(ParseFiniteFloat(value),.1f,.9f);
+        state.algorithm_config.detection.min_confidence=std::clamp(ParseFiniteFloat(value),.1f,1.f);
       } else if (key == "detection_classes") {
         const int mask=ParseStrictInt(value);
         if (mask<0 || mask>31) throw std::invalid_argument("Invalid detection classes");
@@ -3361,11 +3359,18 @@ std::string CountText(std::uint64_t count)
   return text;
 }
 
-std::string LoadElapsed(const ViewerState & state)
+std::string LoadEta(const lidar_viewer::InputLoadProgress & progress,bool canceled)
 {
-  const auto seconds=std::chrono::duration_cast<std::chrono::seconds>(
-    std::chrono::steady_clock::now()-state.input_load_started).count();
-  std::ostringstream out;out<<seconds/60<<':'<<std::setw(2)<<std::setfill('0')<<seconds%60;
+  if(canceled) return "Stopping reader...";
+  if(progress.stage!=lidar_viewer::InputLoadStage::Opening && progress.stage!=lidar_viewer::InputLoadStage::Indexing)
+    return "Finalizing...";
+  if(!progress.indexing_eta_seconds) return "ETA calculating...";
+  if(*progress.indexing_eta_seconds<=0) return "Finalizing...";
+  const auto seconds=static_cast<std::uint64_t>(std::ceil(*progress.indexing_eta_seconds));
+  std::ostringstream out;out<<"ETA ~";
+  if(seconds>=3600) out<<seconds/3600<<':'<<std::setw(2)<<std::setfill('0')<<(seconds/60)%60;
+  else out<<seconds/60;
+  out<<':'<<std::setw(2)<<std::setfill('0')<<seconds%60;
   return out.str();
 }
 
@@ -3399,7 +3404,8 @@ void BuildInputLoading(ViewerState & state)
   ImGui::TextDisabled("%s",overlay);
   if (progress.total_frames) ImGui::Text("%s / %s LiDAR frames",CountText(progress.frames).c_str(),CountText(progress.total_frames).c_str());
   else ImGui::Text("%s LiDAR frames",CountText(progress.frames).c_str());
-  ImGui::TextDisabled("%s IMU samples  |  elapsed %s",CountText(progress.imu_samples).c_str(),LoadElapsed(state).c_str());
+  ImGui::TextDisabled("%s IMU samples  |  %s",CountText(progress.imu_samples).c_str(),LoadEta(progress,canceled).c_str());
+  Tip("Estimated time to finish indexing. IMU preparation and display setup follow.");
   ImGui::Spacing();
   ImGui::BeginDisabled(canceled);
   if (ImGui::Button("Cancel opening",{140*s,0})) state.input_load->Cancel();
@@ -4265,9 +4271,13 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
           ImGui::EndTable();
         }
         if (!detection.classes) ImGui::TextColored({1,.74f,.4f,1},"No targets selected");
-        ImGui::SetNextItemWidth(-1);
-        filter_changed|=ImGui::SliderFloat("##DetectionScore",&detection.min_confidence,.1f,.9f,"Min score: %.2f",ImGuiSliderFlags_AlwaysClamp);
-        Tip("Class and score selections filter cached model results instantly. They do not reload the model or rerun inference. Scores are not calibrated probabilities.");
+        ImGui::AlignTextToFramePadding();ImGui::TextUnformatted("Min score");ImGui::SameLine();
+        ImGui::SetNextItemWidth(-1);float score=detection.min_confidence;
+        if(ImGui::InputFloat("##DetectionScore",&score,.01f,.1f,"%.2f") && std::isfinite(score)) {
+          detection.min_confidence=std::round(std::clamp(score,.1f,1.f)*100.f)/100.f;filter_changed=true;
+        }
+        TraceUi("object_score");
+        Tip("Type a score from 0.10 to 1.00, or use -/+ for 0.01 steps (Ctrl: 0.10). Filters cached results without rerunning inference. Scores are not calibrated probabilities.");
         if (filter_changed) FilterDetections(state);
         if (detection.min_confidence<(detection.model=="short_range" ? .5f : .35f)) {
           ImGui::TextColored({1,.74f,.4f,1},"Low-confidence candidates visible");
@@ -4523,7 +4533,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     const auto progress=state.input_load->Snapshot();
     ImGui::TextColored({.44f,.76f,1,1},"%s | %s frames | %s",
       state.input_load->Cancelled() ? "Canceling..." : lidar_viewer::InputLoadStageName(progress.stage),
-      CountText(progress.frames).c_str(),LoadElapsed(state).c_str());
+      CountText(progress.frames).c_str(),LoadEta(progress,state.input_load->Cancelled()).c_str());
   }
   else if (!state.transient_status.empty()) ImGui::TextColored({.44f, .86f, .68f, 1}, "%s", state.transient_status.c_str());
   else if (long_wait) ImGui::TextDisabled("%s",state.requested_frame ? "Reading selected frame..." : "Processing selected frame...");
