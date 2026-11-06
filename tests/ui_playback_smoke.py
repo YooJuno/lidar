@@ -70,7 +70,7 @@ def main():
             # Ordinary controls, including holding a tab button, keep playback active.
             for x in [50,100,155,255]: x11.click(window,x,140)
             x11.key(window,'r');c.drag((800,300),(1100,570))
-            c.click('roi_duplicate');c.click('roi_delete')
+            c.roi_action('duplicate');c.roi_action('delete')
             x11.click(window,1567,30);x11.key(window,'Escape')
             controls=shot('03_controls');time.sleep(.35);controls_later=shot('04_controls_motion')
             check('controls_and_roi_actions_keep_playing_state',changed_pixels(playing,controls,header)==0)
