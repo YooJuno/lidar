@@ -74,15 +74,31 @@ int main()
       std::string(reinterpret_cast<const char *>(points.data()),points.size()*sizeof(KittiPoint)),
       "PCD and NPY point payloads differ");
     const auto meta=Text(Sample(result.destination,"metadata"));
+    Check(meta.find("\"roi_name\":\"near\",\"class_name\":\"near\"")!=std::string::npos &&
+      meta.find("\"roi_name\":\"disabled\"")==std::string::npos && meta.find("\"category\":\"\"")!=std::string::npos,
+      "ROI class hints must preserve names, omit disabled regions and keep mixed crops unclassified");
     Check(meta.find("\"annotation_status\":\"unlabeled\"")!=std::string::npos &&
       meta.find("\"timestamp_ns\":\"1793710800123456789\"")!=std::string::npos &&
       meta.find("lidar\\\"\\\\\\u000aframe")!=std::string::npos,"Incomplete or improperly escaped metadata");
-    request.destination=root/"aligned";request.aligned_coordinates=true;
+    auto without_labels=request;without_labels.destination=root/"no-labels";without_labels.roi_names_as_labels=false;
+    ExportRoiDataset(without_labels,std::make_shared<RoiExportProgress>());
+    const auto unlabeled=Text(Sample(without_labels.destination,"metadata"));
+    Check(unlabeled.find("\"class_name\":\"\"")!=std::string::npos &&
+      unlabeled.find("\"source\":\"none\"")!=std::string::npos &&
+      Npy(Sample(without_labels.destination,"points")).size()==points.size(),"Disabling class hints changed the point cloud or assigned labels");
+    request.destination=root/"aligned";request.aligned_coordinates=true;request.class_name="train_front";
     auto intensities=std::make_shared<std::vector<float>>();
     for (const auto & p:frame.points) intensities->push_back(p.intensity);
     request.live_snapshot->source_intensities=intensities;
     for (auto & p:request.live_snapshot->points) p.intensity=.5f;
     ExportRoiDataset(request,std::make_shared<RoiExportProgress>());
+    const auto labeled=Text(Sample(request.destination,"metadata"));
+    Check(labeled.find("\"roi_name\":\"near\",\"class_name\":\"train_front\"")!=std::string::npos &&
+      labeled.find("\"category\":\"train_front\"")!=std::string::npos &&
+      labeled.find("\"point_annotations\":\"not_provided\"")!=std::string::npos && !fs::exists(request.destination/"labels"),
+      "Common class must preserve ROI names without inventing point annotations");
+    auto invalid=request;invalid.class_name="invalid\nlabel";invalid.destination=root/"invalid-label";
+    Reject([&] {ExportRoiDataset(invalid,std::make_shared<RoiExportProgress>());});
     const auto aligned=Npy(Sample(request.destination,"points"));
     Check(std::abs(aligned[0].x)<1e-5 && std::abs(aligned[0].y-1)<1e-5 &&
       std::abs(aligned[0].z-1)<1e-5 && aligned[0].intensity==42,"Aligned coordinates/intensity are incorrect");

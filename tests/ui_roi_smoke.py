@@ -53,6 +53,17 @@ def main():
    c.click('roi_duplicate');count(81,'duplicate_has_offset_and_same_size',2)
    edit(center=[8,0,-2],yaw=0);count(90,'multiple_region_union',2)
    edit(name='nearby');count(90,'rename_keeps_region_geometry',2)
+   c.click('roi_rename_0');c.enter('roi_rename_name','train front');commit()
+   def region_names(display=False):
+    prefix='display_roi_box='if display else'roi_exclude_box='
+    return[shlex.split(line.split('=',1)[1])[1]for line in text().splitlines()if line.startswith(prefix)]
+   check('list_rename_targets_clicked_region_only',region_names()==['train front','nearby'])
+   c.click('roi_undo');commit();check('list_rename_undo_restores_name',region_names()==['ROI 1','nearby'])
+   c.click('roi_redo');commit();check('list_rename_redo_restores_name',region_names()==['train front','nearby'])
+   c.click('roi_rename_1');c.enter('roi_rename_name','');c.click('roi_rename_cancel');commit()
+   check('empty_name_and_cancel_keep_region_unchanged',region_names()==['train front','nearby'])
+   count(90,'list_rename_preserves_geometry_and_ground_input',2)
+   c.click('roi_row_1')
    c.enter('roi_bottom',-3.5);c.enter('roi_top',-.5);commit()
    height=shlex.split([line for line in text().splitlines() if line.startswith('roi_exclude_box=')][-1].split('=',1)[1])
    check('height_bounds_accept_direct_input',abs(float(height[4])+2)<1e-5 and abs(float(height[7])-3)<1e-5)
@@ -122,6 +133,8 @@ def main():
    deletion_order()
    ground_names=names();c.click('roi_purpose_display');c.click('roi_add');c.drag((800,300),(1100,570))
    for _ in range(8):c.click('roi_duplicate')
+   c.click('roi_rename_8');c.enter('roi_rename_name','person');c.chord('s');time.sleep(.1)
+   check('display_region_list_rename_is_saved',region_names(True)[-1]=='person')
    c.chord('s');time.sleep(.1);deletion_order(True)
    check('display_deletions_preserve_ground_regions',names()==ground_names)
    def camera():

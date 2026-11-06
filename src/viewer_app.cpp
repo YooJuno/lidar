@@ -536,6 +536,8 @@ struct ViewerState
   lidar_viewer::RoiHistory display_roi_history;
   bool display_roi_pending{false};
   bool open_roi_export{false};
+  bool roi_rename_requested{false};
+  std::array<char,128> roi_rename_name{};
   lidar_viewer::FileDialog dataset_picker;
   bool dataset_tab_requested{false},open_training{false};
   bool dataset_fit_each{true};std::optional<std::size_t> dataset_fitted_index;
@@ -544,6 +546,8 @@ struct ViewerState
   bool export_aligned{false};
   int export_scope{0},export_first{1},export_last{1},export_stride{1};
   std::array<char,4096> export_directory{};
+  std::array<char,128> export_class_name{};
+  bool export_roi_name_labels{true};
   lidar_viewer::FileDialog export_picker;
   std::unique_ptr<lidar_viewer::BackgroundWorker> export_worker;
   std::future<lidar_viewer::RoiExportResult> export_future;
@@ -3447,6 +3451,7 @@ void StartRoiExport(ViewerState & state)
     request.calibration=state.calibration;request.imu_level_enabled=state.imu_level_enabled;
     request.imu_mount=state.imu_mount;request.global_ground_offset=state.global_ground_offset;
     request.profile=state.dataset_profile;
+    request.class_name=state.export_class_name.data();request.roi_names_as_labels=state.export_roi_name_labels;
     const auto parent=ExpandFolderPath(state.export_directory.data());
     if (parent.empty()) throw std::runtime_error("Choose an export folder");
     if (state.live_mode) {
@@ -3524,6 +3529,11 @@ void BuildRoiExportDialog(ViewerState & state)
         }
       }
     }
+    ImGui::Spacing();ImGui::TextUnformatted("Class label (optional)");ImGui::SetNextItemWidth(-1);
+    ImGui::InputTextWithHint("##ExportClass","e.g. person, car, train_front",state.export_class_name.data(),state.export_class_name.size());
+    TraceUi("export_class_name");
+    ImGui::Checkbox("Use ROI names when class is empty",&state.export_roi_name_labels);TraceUi("export_roi_labels");
+    ImGui::TextDisabled("ROI names are always preserved. Class labels are annotation hints.");
     ImGui::Spacing();ImGui::TextUnformatted("Coordinates");
     if (ImGui::RadioButton("Sensor coordinates (original)",!state.export_aligned)) state.export_aligned=false;
     TraceUi("export_sensor");
@@ -3639,13 +3649,17 @@ void BuildRoiEditor(ViewerState & state)
       ImGui::PushID(static_cast<int>(i));auto & box=EditedRoi(state).boxes[i];
       ImGui::BeginDisabled(state.roi_gesture.active);
       const std::string label=(box.name.empty() ? "Unnamed region" : box.name)+"###Region";
-      if (ImGui::Selectable(label.c_str(),i==SelectedRoi(state),0,{ImGui::GetContentRegionAvail().x-38*s,30*s})) {
+      if (ImGui::Selectable(label.c_str(),i==SelectedRoi(state),0,{ImGui::GetContentRegionAvail().x-76*s,30*s})) {
         SelectedRoi(state)=i;state.roi_numeric_edit=false;SelectRoiTool(state,ViewerState::RoiTool::Move);
       }
       TraceUi(("roi_row_"+std::to_string(i)).c_str());
       if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) FocusSelectedRoi(state);
       if (i==SelectedRoi(state) && state.roi_reveal_selection) ImGui::SetScrollHereY(.5f);
       ImGui::SameLine();
+      if (IconButton("##Rename",UiIcon::Rename,"Rename this region",s)) {
+        SelectedRoi(state)=i;state.roi_numeric_edit=false;state.roi_rename_requested=true;
+      }
+      TraceUi(("roi_rename_"+std::to_string(i)).c_str());ImGui::SameLine();
       const std::string toggle_tip=std::string(box.enabled ? "Disable " : "Enable ")+
         (display ? "display crop: " : "ground exclusion: ")+box.name+
         ". Click the region name to select it for editing or deletion.";
@@ -3695,6 +3709,33 @@ void BuildRoiEditor(ViewerState & state)
         } else state.ui_error="Top must be at least 0.05 m above Bottom";
       }
     }
+  }
+  if (state.roi_rename_requested && !EditedRoi(state).boxes.empty()) {
+    state.roi_rename_name.fill(0);
+    const auto & name=EditedRoi(state).boxes[SelectedRoi(state)].name;
+    std::copy_n(name.begin(),std::min(name.size(),state.roi_rename_name.size()-1),state.roi_rename_name.begin());
+    ImGui::OpenPopup("Rename region");state.roi_rename_requested=false;
+  }
+  ImGui::SetNextWindowSize({340*s,0},ImGuiCond_Appearing);
+  if (ImGui::BeginPopupModal("Rename region",nullptr,ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoSavedSettings)) {
+    ImGui::TextUnformatted("Region name");ImGui::SetNextItemWidth(-1);
+    if(ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+    const bool entered=ImGui::InputText("##Rename",state.roi_rename_name.data(),state.roi_rename_name.size(),
+      ImGuiInputTextFlags_EnterReturnsTrue|ImGuiInputTextFlags_AutoSelectAll);
+    TraceUi("roi_rename_name");
+    const bool blank=std::string(state.roi_rename_name.data()).find_first_not_of(" \t")==std::string::npos;
+    ImGui::BeginDisabled(blank);
+    const bool save=ImGui::Button("Save",{140*s,0});TraceUi("roi_rename_save");ImGui::EndDisabled();
+    if((entered || save) && !blank && !EditedRoi(state).boxes.empty()) {
+      auto box=EditedRoi(state).boxes[SelectedRoi(state)];box.name=state.roi_rename_name.data();
+      try {
+        lidar_viewer::ValidateRoiBox(box);EditedRoi(state).boxes[SelectedRoi(state)]=std::move(box);
+        state.roi_reveal_selection=true;state.ui_error.clear();ImGui::CloseCurrentPopup();
+      } catch(const std::exception & error) {state.ui_error=error.what();}
+    }
+    ImGui::SameLine();
+    if(ImGui::Button("Cancel",{140*s,0}) || ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
+    TraceUi("roi_rename_cancel");ImGui::EndPopup();
   }
   if (state.roi_details_requested && !EditedRoi(state).boxes.empty()) {ImGui::OpenPopup("Region details");state.roi_details_requested=false;}
   ImGui::SetNextWindowSize({440*s,0},ImGuiCond_Appearing);

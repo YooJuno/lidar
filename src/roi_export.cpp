@@ -118,6 +118,37 @@ void WriteRegions(std::ostream & out,const RoiSettings & regions)
   }
   out<<']';
 }
+std::string ClassName(const RoiExportRequest & request,const RoiBox & box)
+{
+  const auto first=request.class_name.find_first_not_of(" \t");
+  if(first!=std::string::npos) return request.class_name.substr(first,request.class_name.find_last_not_of(" \t")-first+1);
+  return request.roi_names_as_labels ? box.name : "";
+}
+std::string Category(const RoiExportRequest & request)
+{
+  std::string category;bool first=true;
+  for(const auto & box:request.regions.boxes) if(box.enabled) {
+    const auto name=ClassName(request,box);
+    if(!first && name!=category) return ""; // A mixed crop has no single class.
+    category=name;first=false;
+  }
+  return category;
+}
+void WriteLabeling(std::ostream & out,const RoiExportRequest & request)
+{
+  out<<"{\"status\":\"draft\",\"point_annotations\":\"not_provided\",\"common_class\":"<<Json(request.class_name)
+    <<",\"roi_names_as_labels\":"<<(request.roi_names_as_labels ? "true" : "false")<<",\"regions\":[";
+  bool first=true;std::size_t region_index=0;
+  for(std::size_t i=0;i<request.regions.boxes.size();++i) {
+    const auto & box=request.regions.boxes[i];if(!box.enabled) continue;
+    if(!first) out<<',';
+    first=false;const auto name=ClassName(request,box);
+    const bool common=request.class_name.find_first_not_of(" \t")!=std::string::npos;
+    out<<"{\"roi_index\":"<<region_index++<<",\"source_roi_index\":"<<i<<",\"roi_name\":"<<Json(box.name)<<",\"class_name\":"<<Json(name)
+      <<",\"source\":"<<Json(common ? "common_class" : name.empty() ? "none" : "roi_name")<<'}';
+  }
+  out<<"]}";
+}
 std::string FilenamePart(const std::string & text,std::size_t limit,const char * fallback)
 {
   std::string result;
@@ -190,6 +221,8 @@ std::string SampleName(const RoiExportRequest & request,std::size_t index,const 
 }
 void Validate(const RoiExportRequest & request)
 {
+  if(request.class_name.size()>127 || request.class_name.find_first_of("\r\n")!=std::string::npos || request.class_name.find('\0')!=std::string::npos)
+    throw std::runtime_error("Class label must be at most 127 bytes without line breaks");
   if (request.destination.empty() || request.destination.filename().empty() ||
       request.destination.filename()=="." || request.destination.filename()=="..")
     throw std::runtime_error("Choose a new output directory");
@@ -317,6 +350,7 @@ RoiExportResult ExportRoiDataset(const RoiExportRequest & request,const std::sha
         <<",\"pitch\":"<<resolved.effective.pitch_deg<<",\"roll\":"<<resolved.effective.roll_deg
         <<"},\"ground_offset_m\":"<<request.global_ground_offset<<",\"height_offset_m\":"<<resolved.effective.z_m
         <<",\"roi_sensor_frame\":";WriteRegions(metadata,regions);
+      metadata<<",\"category\":"<<Json(Category(request))<<",\"labeling\":";WriteLabeling(metadata,request);
       metadata<<",\"annotation_status\":\"unlabeled\",\"ground_filter_applied\":false,\"ground_exclusions_applied\":false}\n";
       settings::AtomicWriteText(request.destination/"metadata"/fs::u8path(stem+".json"),metadata.str());
       if (!first_sample) samples<<',';
@@ -344,7 +378,8 @@ RoiExportResult ExportRoiDataset(const RoiExportRequest & request,const std::sha
       <<",\"imu_frame\":"<<Json(request.imu_mount.imu_frame)<<",\"lidar_frame\":"<<Json(request.imu_mount.lidar_frame)
       <<",\"roll_deg\":"<<request.imu_mount.roll_deg<<",\"pitch_deg\":"<<request.imu_mount.pitch_deg
       <<",\"yaw_deg\":"<<request.imu_mount.yaw_deg<<"},\"roi_sensor_frame\":";
-    WriteRegions(manifest,regions);manifest<<",\"samples\":["<<samples.str()<<"]}\n";
+    WriteRegions(manifest,regions);manifest<<",\"category\":"<<Json(Category(request))<<",\"labeling\":";
+    WriteLabeling(manifest,request);manifest<<",\"samples\":["<<samples.str()<<"]}\n";
     settings::AtomicWriteText(request.destination/"metadata.json",manifest.str());
     return result;
   } catch (...) {

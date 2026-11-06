@@ -27,6 +27,9 @@ struct RoiExportRequest
   ImuMountSettings imu_mount;
   float global_ground_offset{0};
   std::string profile;
+  // Class hints for annotation, separate from point/box ground truth.
+  std::string class_name;
+  bool roi_names_as_labels{true};
   std::vector<RoiExportSource> sources;
   // Live input is already decoded, before calibration or ground processing.
   std::optional<FrameData> live_snapshot;

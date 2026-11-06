@@ -5,7 +5,7 @@
 
 namespace lidar_viewer
 {
-enum class UiIcon {Select, Box, Fit, Copy, Trash, Undo, Redo, Eye, Focus, Plus, Settings, Play, Pause, Previous, Next, Folder, Live, Export, Power};
+enum class UiIcon {Select, Box, Fit, Copy, Trash, Undo, Redo, Eye, Focus, Plus, Settings, Play, Pause, Previous, Next, Folder, Live, Export, Power, Rename};
 
 inline void DrawUiIcon(ImDrawList * draw, UiIcon icon, ImVec2 origin, float size, ImU32 color)
 {
@@ -15,6 +15,9 @@ inline void DrawUiIcon(ImDrawList * draw, UiIcon icon, ImVec2 origin, float size
   switch (icon) {
     case UiIcon::Select:
       line(.2f,.12f,.8f,.56f);line(.8f,.56f,.51f,.59f);line(.51f,.59f,.38f,.86f);line(.38f,.86f,.2f,.12f);break;
+    case UiIcon::Rename:
+      line(.2f,.62f,.64f,.18f);line(.64f,.18f,.82f,.36f);line(.82f,.36f,.38f,.8f);
+      line(.38f,.8f,.15f,.85f);line(.15f,.85f,.2f,.62f);line(.57f,.25f,.75f,.43f);break;
     case UiIcon::Box:
       draw->AddRect(p(.18f,.25f),p(.82f,.82f),color,2,0,stroke);
       line(.18f,.25f,.36f,.1f);line(.36f,.1f,.95f,.1f);line(.95f,.1f,.95f,.65f);line(.95f,.65f,.82f,.82f);break;

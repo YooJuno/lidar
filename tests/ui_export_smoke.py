@@ -127,9 +127,16 @@ def main():
         source=frames/f'{sample["source_frame_index"]:05d}.bin'
         validate_sample(path,sample,expected(source))
         check('metadata_preserves_both_rois_and_no_fake_labels',len(manifest['roi_sensor_frame'])==2 and not (path/'labels').exists())
+        hints=manifest['labeling']
+        check('roi_names_are_default_class_hints',hints['point_annotations']=='not_provided'and
+            [item['class_name']for item in hints['regions']]==[item['name']for item in manifest['roi_sensor_frame']])
         capture(x11,window,out/'01_sensor_export.png')
-        c.click('export_aligned');path,manifest=start_export();sample=manifest['samples'][0]
+        c.enter('export_class_name','person');c.click('export_aligned');path,manifest=start_export();sample=manifest['samples'][0]
         meta=validate_sample(path,sample,expected(frames/f'{sample["source_frame_index"]:05d}.bin'),True)
+        check('common_class_overrides_hints_and_keeps_roi_names',meta['category']=='person'and
+            all(item['class_name']=='person'and item['source']=='common_class'for item in meta['labeling']['regions'])and
+            [item['roi_name']for item in meta['labeling']['regions']]==[item['name']for item in meta['roi_sensor_frame']]and
+            meta['labeling']==manifest['labeling']and meta['annotation_status']=='unlabeled')
         check('manual_alignment_and_ground_offset_saved',meta['effective_alignment_deg']=={'yaw':23,'pitch':-7,'roll':5}
             and abs(meta['ground_offset_m']+.57)<1e-6 and abs(meta['height_offset_m']-.57)<1e-6)
         c.click('export_close');x11.key(window,'space');time.sleep(.2)

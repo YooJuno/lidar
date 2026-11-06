@@ -55,7 +55,8 @@ struct TrainingWorkspace::Impl
     fs::create_directories(settings_path.parent_path());lidar_viewer::settings::AtomicWriteText(settings_path,Text(settings));
   }
   void Load() {
-    const auto value=settings.get_child("profiles."+recipes[static_cast<std::size_t>(selected)].id,Tree{});
+    const Tree empty;
+    const auto value=settings.get_child("profiles."+recipes[static_cast<std::size_t>(selected)].id,empty);
 #ifdef _WIN32
     Set(python,value.get<std::string>("python","python"));
 #else
