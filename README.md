@@ -32,7 +32,7 @@ cmake --build build --parallel 2
 
 ## 사용
 
-입력 없이 실행한 뒤 **Open file**에서 `.bin`, `.mcap`, `.db3` 또는 bag 폴더의 `metadata.yaml`을 선택합니다. 파일을 창에 드롭하거나 명령행으로 열 수도 있습니다.
+입력 없이 실행한 뒤 **Open file**에서 `.bin`, `.npy`, `.pcd`, `.mcap`, `.db3` 또는 bag 폴더의 `metadata.yaml`을 선택합니다. 파일을 창에 드롭하거나 명령행으로 열 수도 있습니다.
 
 ```bash
 ./build/lidar_studio /path/to/scan.bin
@@ -47,6 +47,8 @@ cmake --build build --parallel 2
 | **ROI → Display ROI** | 체크한 박스 안의 포인트만 표시 |
 | **ROI → Ground exclusion** | 박스 안의 점을 지면 검출 입력에서 제외. 편집 후 **Apply** |
 | **Objects** | 사람·차량 등 객체 검출, 클러스터 표시, 객체 ID 추적 |
+| **Datasets → Data** | ROI 추출 폴더·NPY·PCD를 열고 목록·방향키로 샘플 확인 |
+| **Train** | LitePT·CenterPoint 학습 환경 검사, 파라미터 설정, 학습·중지·로그 확인 |
 
 센서 드라이버는 별도로 실행합니다. 학습 모델 검출은 [모델 설치](https://github.com/YooJuno/lidar_studio/blob/main/docs/guide.md#사람차량-인식--원본-tier-iv-모델)가 필요합니다.
 
@@ -63,6 +65,15 @@ cmake --build build --parallel 2
 `20261028_134010_f14797_roi1-2.npy`처럼 기록 시각·프레임·ROI로 짧게 저장합니다. 전체 원본명·박스 좌표·좌표계는 JSON에 보존합니다. 다시 내보내면 번호를 붙여 기존 파일을 보존합니다.
 
 내보낸 점군은 **미라벨링 데이터**입니다. 객체 박스·클래스 또는 점별 지면 라벨은 별도로 작성합니다.
+
+## 데이터셋·학습
+
+**Datasets**에서 내보낸 데이터셋 폴더를 엽니다. **←/→**로 넘기며 저장된 좌표 그대로 확인하고, **Train**에서 모델·라벨링한 데이터·출력 폴더를 선택합니다. 학습 중에도 뷰어를 사용할 수 있습니다.
+
+- **LitePT**: 기존 `training.run` 학습 프로젝트와 CUDA Python 환경을 연결합니다. 점별 배경·열차 전면부·철제 라벨이 필요합니다.
+- **CenterPoint**: MMDetection3D 학습 환경과 3D 박스 라벨이 필요합니다. Linux CUDA 환경 설치: `python3 tools/setup_centerpoint_training.py --python python3.11`.
+
+**Check setup**으로 환경·라벨·학습/검증 분리를 검사한 뒤 **Start training**을 누릅니다. [라벨 형식·모델별 설정](https://github.com/YooJuno/lidar_studio/blob/main/docs/guide.md#데이터셋-열람과-학습)
 
 ## 개발·배포
 

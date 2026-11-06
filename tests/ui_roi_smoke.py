@@ -2,7 +2,7 @@
 """Private Xvfb: direct region editing, details dialog, history and visible selection."""
 import argparse,json,math,os,re,shlex,shutil,struct,subprocess,tempfile,time,traceback
 from pathlib import Path
-from ui_gl_smoke import X11,capture,settings_inventory
+from ui_gl_smoke import X11,capture,changed_pixels,settings_inventory
 from ui_controls import Controls
 
 def main():
@@ -60,6 +60,14 @@ def main():
    c.click('roi_delete');count(45,'delete_region',1);c.click('roi_undo');count(90,'undo_delete',2)
    c.click('roi_redo');count(45,'redo_delete',1);c.chord('z');count(90,'keyboard_undo',2)
    c.click('roi_enabled_1');count(45,'disable_one_region',2);c.click('roi_enabled_1');count(90,'reenable_one_region',2)
+   visible=capture(x11,window,out/'enabled_regions.png')
+   c.click('roi_enabled_0');c.click('roi_enabled_1');x11.move(window,200,140)
+   disabled=capture(x11,window,out/'disabled_regions.png')
+   c.click('roi_outlines');x11.move(window,200,140)
+   hidden=capture(x11,window,out/'outlines_hidden.png')
+   check('disabled_regions_have_no_outlines_or_handles',changed_pixels(disabled,hidden,(380,180,1540,750))==0)
+   check('enabled_regions_have_visible_outlines',changed_pixels(visible,disabled,(380,180,1540,750))>30)
+   c.click('roi_outlines');c.click('roi_enabled_0');c.click('roi_enabled_1');commit()
    capture(x11,window,out/'01_simple_panel.png')
    offset=len(log_path.read_text());time.sleep(.2)
    check('numeric_fields_are_absent_from_main_panel','UI roi_center' not in log_path.read_text()[offset:])

@@ -1,5 +1,6 @@
 #include "lidar_viewer/data_io.hpp"
 #include "lidar_viewer/bag_io.hpp"
+#include "lidar_viewer/dataset.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -37,7 +38,7 @@ constexpr std::array<float, kOusterLegacyChannels> kOs1_64AzimuthOffsetDeg{{
   3.164f, 1.055f, -1.055f, -3.164f, 3.164f, 1.055f, -1.055f, -3.164f
 }};
 
-void FinalizeFrame(FrameData & frame, FrameIntensity intensity)
+void FinalizeFrame(FrameData & frame, FrameIntensity intensity,bool cropped_dataset=false)
 {
   // Match the bag decoder's handling of invalid samples before bounds,
   // percentile selection and spatial hashing see any NaN/Inf coordinates.
@@ -88,7 +89,7 @@ void FinalizeFrame(FrameData & frame, FrameIntensity intensity)
   };
   const Vec3 extent = max_corner - min_corner;
   frame.radius = std::max({extent.x, extent.y, extent.z}) * 0.7f;
-  frame.radius = std::max(frame.radius, 10.0f);
+  frame.radius = cropped_dataset ? std::max(.001f,std::sqrt(extent.x*extent.x+extent.y*extent.y+extent.z*extent.z)*.5f) : std::max(frame.radius,10.f);
   frame.min_z = min_corner.z;
   frame.max_z = max_corner.z;
 
@@ -289,9 +290,16 @@ std::vector<FrameHandle> ResolveInputFrames(
   if (IsRos2BagInput(input)) {
     return ResolveBagFrames(input, bag_topic, imu_topic, load);
   }
+  if (lidar_viewer::IsDatasetFile(input)) return lidar_viewer::ResolveDatasetFrames(input,load);
+  if (input.filename()=="metadata.json" && fs::is_regular_file(input))
+    return lidar_viewer::ResolveDatasetFrames(input.parent_path(),load);
+  if (fs::is_directory(input)) {
+    auto dataset=lidar_viewer::ResolveDatasetFrames(input,load);
+    if (!dataset.empty()) return dataset;
+  }
   if (fs::is_regular_file(input)) {
     if (input.extension() != ".bin") {
-      throw std::runtime_error("Expected .bin, .mcap, .db3 or a ROS 2 bag directory: " + input.string());
+      throw std::runtime_error("Expected .bin, .npy, .pcd, dataset metadata.json or ROS 2 bag: " + input.string());
     }
     return ResolveFramesFromFile(input);
   }
@@ -324,6 +332,9 @@ std::vector<FrameHandle> ResolveInputFrames(
 
 FrameData LoadFrame(const FrameHandle & handle, FrameIntensity intensity, FrameReadIsolation isolation)
 {
+  if (handle.format==InputFormat::Numpy || handle.format==InputFormat::Pcd) {
+    auto frame=lidar_viewer::LoadDatasetFrame(handle);FinalizeFrame(frame,intensity,true);return frame;
+  }
   if (handle.format == InputFormat::Ros2Bag) {
     auto frame = LoadBagFrame(handle,isolation==FrameReadIsolation::Independent);
     FinalizeFrame(frame,intensity);

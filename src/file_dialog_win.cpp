@@ -46,18 +46,19 @@ void FileDialog::OpenDirectory(const std::filesystem::path & folder)
 {
   Open(folder,true);
 }
-void FileDialog::Open(const std::filesystem::path & folder,bool directory)
+void FileDialog::OpenFile(const std::filesystem::path & folder) {Open(folder,false,true);}
+void FileDialog::Open(const std::filesystem::path & folder,bool directory,bool any_file)
 {
   if (Active()) return;
   auto state=std::make_shared<NativeState>();
-  state->result=std::async(std::launch::async,[state,folder,directory] {
+  state->result=std::async(std::launch::async,[state,folder,directory,any_file] {
     const HRESULT initialized=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
     if (FAILED(initialized)) return FileDialogResult{{},"Cannot initialize native file chooser"};
     std::vector<wchar_t> buffer(32768,0);
     const auto initial=folder.wstring();
     if (directory) {
       state->initial_folder=initial;
-      BROWSEINFOW options{};options.lpszTitle=L"Choose export folder";
+      BROWSEINFOW options{};options.lpszTitle=L"Choose folder";
       options.ulFlags=BIF_RETURNONLYFSDIRS|BIF_NEWDIALOGSTYLE;
       options.lpfn=NativeState::FolderHook;options.lParam=reinterpret_cast<LPARAM>(state.get());
       const auto item=SHBrowseForFolderW(&options);
@@ -68,9 +69,9 @@ void FileDialog::Open(const std::filesystem::path & folder,bool directory)
       return FileDialogResult{{},item ? "Cannot read the selected directory" : ""};
     }
     OPENFILENAMEW options{}; options.lStructSize=sizeof(options);
-    options.lpstrFilter=L"LiDAR data\0metadata.yaml;*.db3;*.mcap;*.bin\0All files\0*.*\0\0";
+    options.lpstrFilter=any_file ? L"All files\0*.*\0\0" : L"LiDAR data\0metadata.yaml;metadata.json;*.db3;*.mcap;*.bin;*.npy;*.pcd\0All files\0*.*\0\0";
     options.lpstrFile=buffer.data(); options.nMaxFile=static_cast<DWORD>(buffer.size());
-    options.lpstrInitialDir=initial.c_str(); options.lpstrTitle=L"Open LiDAR data";
+    options.lpstrInitialDir=initial.c_str(); options.lpstrTitle=any_file ? L"Choose file" : L"Open LiDAR data";
     options.Flags=OFN_FILEMUSTEXIST|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR|OFN_EXPLORER|OFN_ENABLEHOOK;
     options.lpfnHook=NativeState::Hook; options.lCustData=reinterpret_cast<LPARAM>(state.get());
     const bool accepted=GetOpenFileNameW(&options)!=0;

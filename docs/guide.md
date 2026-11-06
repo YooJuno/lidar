@@ -2,7 +2,7 @@
 
 일반적인 설치·실행은 [README](../README.md)를 참고하세요. 이 문서는 센서 설정, 알고리즘, 테스트와 측정 기록을 다룹니다.
 
-CMake + OpenGL 기반 LiDAR 뷰어입니다. `.bin`과 ROS 2 PointCloud2 bag을 지원합니다.
+CMake + OpenGL 기반 LiDAR 뷰어입니다. `.bin`, NPY·PCD 데이터셋과 ROS 2 PointCloud2 bag을 지원합니다.
 
 ## Build
 
@@ -209,7 +209,7 @@ ROI 탭 상단에서 용도를 선택합니다. 두 기능은 별도의 박스 �
 3. 지면 제외용 박스를 편집했다면 **Apply**를 누릅니다. 적용 전에는 이전에 적용한 영역을 계속 사용합니다. 박스를 전부 체크 해제하고 Apply하면 전체 점군이 지면 검출 입력으로 돌아갑니다.
 4. 두 목록을 다음 실행에도 유지하려면 **Save profile / Ctrl+S**로 저장합니다. 지면 제외에 미적용 변경이 있으면 먼저 Apply합니다.
 
-영역 목록은 박스 개수에 맞게 늘어나고 선택 항목을 자동으로 스크롤해 보여 줍니다. 선택한 용도의 박스만 윤곽을 표시하므로 겹친 박스를 잘못 편집하지 않습니다. 표시용 윤곽은 청록색, 지면 제외용 윤곽은 주황색입니다. 용도 전환은 이미 적용된 두 기능을 끄지 않습니다.
+영역 목록은 박스 개수에 맞게 늘어나고 선택 항목을 자동으로 스크롤해 보여 줍니다. 선택한 용도에서 체크한 박스만 윤곽과 편집 핸들을 표시합니다. 비활성 박스는 회색 윤곽도 숨깁니다. 표시용 윤곽은 청록색, 지면 제외용 윤곽은 주황색입니다. 용도 전환은 이미 적용된 두 기능을 끄지 않습니다.
 
 박스는 IMU·수동 회전·Z 보정 전의 센서 좌표에 저장되며 점군과 같은 표시 변환을 사용합니다. 각 목록의 복제·삭제·되돌리기/다시 실행은 독립적이고, 아이콘 또는 **Ctrl+D / Delete / Ctrl+Z / Ctrl+Y**로 조작합니다. 선택 박스 맞춤 아이콘 또는 목록 더블클릭으로 해당 위치를 볼 수 있습니다. 용도마다 최대 128개입니다. 기존 `roi_*` 설정은 좌표·크기·체크 상태를 보존해 지면 제외용으로 불러오며, 표시용 박스는 별도의 `display_roi_*` 항목에 저장합니다.
 
@@ -237,6 +237,44 @@ Apply와 표시 제한 전환은 앱 재시작·bag 재로딩 없이 반영하�
 - 내보낸 데이터는 `annotation_status: unlabeled`입니다. 객체 검출 예측이나 지면 분류 결과를 정답으로 저장하지 않습니다. 사람·차량 학습에는 별도로 클래스·3D 박스를 라벨링하고, 지면 분할 학습에는 각 포인트의 지면/비지면 라벨을 붙여야 합니다.
 
 NPY는 [NumPy 표준 형식](https://numpy.org/doc/2.0/reference/generated/numpy.lib.format.html), PCD는 [PCL v0.7 binary 형식](https://pointclouds.org/documentation/tutorials/pcd_file_format.html)을 사용합니다. 예를 들어 metadata.json의 samples에 있는 points 경로를 `np.load(path, allow_pickle=False)`로 읽을 수 있습니다. OpenPCDet 커스텀 학습에는 points 아래 NPY와 별도로 작성한 라벨을 연결하고, PCD 라벨링 도구에는 pointcloud 아래 파일을 가져갑니다. 선택한 학습 프레임워크의 클래스·박스 좌표 규칙에 맞춰 라벨을 변환해야 합니다.
+
+## 데이터셋 열람과 학습
+
+상단 **Datasets**에서 ROI 내보내기 폴더 또는 NPY·PCD 폴더를 선택합니다. **Data** 목록, 하단 타임라인, **←/→**로 샘플을 넘깁니다. **Fit each sample**은 샘플마다 화면을 맞춥니다. 원본 좌표를 확인하도록 dataset 프로필의 IMU·센서 높이·지면 검출은 기본적으로 꺼져 있습니다. 파일 읽기는 뷰어 작업 스레드에서 수행합니다.
+
+NPY는 pickle 없는 C-order float32/float64 N×3/4를 지원합니다. PCD는 ascii/binary XYZ와 선택 intensity를 지원하며 binary_compressed는 지원하지 않습니다. 내보내기 폴더의 NPY와 PCD를 같은 샘플로 중복 표시하지 않습니다. 정리된 샘플 폴더의 `coord.npy`, `intensity.npy`, `meta.json`, `segment.npy`도 읽습니다. 포인트 라벨은 Data에서 존재 여부를 확인하며, 표시 색상을 정답으로 저장하지 않습니다.
+
+**Train**에서 모델·학습용 Python·트레이너 프로젝트·데이터·출력 폴더를 설정합니다. **Check setup**은 실제 선택한 Python에서 환경과 라벨을 검사합니다. **Start training**은 별도 프로세스로 실행하고 epoch·loss·로그를 표시합니다. Hide 후에도 학습하며 뷰어를 사용할 수 있고 Stop으로 자식 프로세스까지 종료합니다. 출력은 `litept_001`, `centerpoint_001`처럼 분리하고 request·validation·result JSON, training.log, prepared 데이터, model 체크포인트를 보존합니다. 체크포인트는 추론 모델로 자동 교체하지 않습니다.
+
+### LitePT
+
+`training/run.py`와 `training/litept_adapter.py`가 있는 기존 LitePT 학습 프로젝트, 해당 프로젝트의 CUDA PyTorch 환경을 연결합니다. `training.run --model litept --recipe robust_v1`을 실행하며 epoch·샘플당 포인트 수·yaw 증강·seed를 설정합니다. optimizer와 한 스캔 단위 batch는 프로젝트 recipe를 따릅니다. 기존 구조물 모델 설정이 있으면 해당 환경과 프로젝트를 찾아 사용합니다.
+
+내보내기 데이터에는 `labels/<샘플 id>.npy`, 정리된 샘플 폴더에는 `segment.npy`를 작성합니다. 포인트 순서와 같은 N개 정수이며 **-1 무시 / 0 배경 / 1 열차 전면부 / 2 철제**입니다. ROI만 골랐다는 이유로 모든 점을 양성 라벨로 만들지 않습니다. 배경과 전경이 모두 필요하며, `weak_segment.npy` 또는 weak/pseudo 표시 라벨은 **Allow existing weak ROI labels**를 켰을 때만 허용합니다. aligned 내보내기는 metadata의 강체 변환으로 센서 좌표를 복원합니다. 기존 `context_npz`·`train_indices`·`val_indices`가 있는 준비된 split JSON도 선택할 수 있습니다.
+
+### CenterPoint
+
+[MMDetection3D 1.x CenterPoint](https://github.com/open-mmlab/mmdetection3d/tree/v1.4.0/configs/centerpoint)의 실제 학습 경로를 사용합니다. Linux x64 NVIDIA CUDA 환경의 설치·등록:
+
+```bash
+python3 tools/setup_centerpoint_training.py --python python3.11
+```
+
+별도 가상환경에 PyTorch 2.1.2/cu118, MMCV 2.1.0, MMEngine 0.10.7, MMDetection 3.3.0, MMDetection3D v1.4.0을 고정합니다. 설치한 환경은 **Train → CenterPoint → Environment**에 표시됩니다. 다른 환경은 Python·프로젝트·base config를 직접 지정합니다. 뷰어의 Windows·macOS 지원과 별개로 이 설치기는 Linux CUDA 학습용입니다.
+
+`annotations/<샘플 id>.json` 또는 정리된 샘플 폴더의 `annotations.json`에 명시적인 3D 박스를 작성합니다. 빈 boxes는 배경 샘플입니다. 좌표계는 점군과 같아야 하며 크기는 XYZ 전체 길이, 중심은 기하학적 중심, yaw는 센서 Z축 기준 도 단위입니다.
+
+```json
+{"coordinate_space":"sensor","boxes":[
+  {"class_name":"person","center_m":[2,0,0.8],"size_m":[0.6,0.6,1.7],"yaw_deg":0}
+]}
+```
+
+클래스 목록은 annotation 이름에 맞춰 설정합니다. epoch·batch·learning rate·workers·seed를 조정할 수 있습니다. 단일 프레임 데이터에서 multi-sweep·외부 object database는 사용하지 않으며, 측정되지 않은 속도는 회귀 loss에서 제외합니다. 검증은 일반 3D box AP(IoU 0.25/0.5)이며 nuScenes NDS가 아닙니다. 정답이 없는 클래스는 AP 평가 불가로 로그에 표시하고 평균에서 제외합니다.
+
+폴더 입력은 원본 recording 단위로 학습·검증을 분리합니다. recording 하나라면 100프레임 블록과 경계 10프레임 간격을 사용합니다. 충분한 독립 샘플이 없으면 학습을 시작하지 않습니다. 라벨 품질과 별도의 검증 세트 없이 epoch만 늘리는 것으로 노이즈 감소를 보장할 수 없습니다.
+
+새 모델은 `python/lidar_training/adapters.json`에 항목을 추가하고 `validate(request)`, `run(request, output)` 어댑터를 구현해 연결합니다. 2026-11-06에 두 실제 CUDA 트레이너의 합성 데이터 1 epoch·검증·체크포인트 저장과 GUI 학습/취소를 검사했습니다. 이 검사는 현장 정확도 측정이 아닙니다.
 
 ## Notes
 

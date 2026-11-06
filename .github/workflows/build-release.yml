@@ -113,6 +113,15 @@ jobs:
           source /opt/ros/jazzy/setup.bash
           xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_export_smoke.py \
             --viewer build/lidar_studio --output build/test_artifacts/export
+      - name: Dataset browser and asynchronous training controls GUI test
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          /usr/bin/python3 tests/training_adapter_smoke.py
+          xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_dataset_training_smoke.py \
+            --viewer build/lidar_studio --output build/test_artifacts/dataset-training
       - name: Ground-only and obstacles-only display GUI test
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'

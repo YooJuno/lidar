@@ -49,8 +49,11 @@ enum class InputFormat
   KittiXyzi,
   OusterLegacyContainer,
   Ros2Bag,
+  Numpy,
+  Pcd,
 };
 
+namespace lidar_viewer {struct DatasetSample;}
 struct FrameHandle
 {
   fs::path path;
@@ -62,6 +65,7 @@ struct FrameHandle
   std::int64_t bag_timestamp_ns{0};
   std::size_t bag_duplicate_index{0};
   std::shared_ptr<const lidar_viewer::ImuTimeline> imu_timeline{};
+  std::shared_ptr<const lidar_viewer::DatasetSample> dataset_sample{};
 };
 
 struct FrameData

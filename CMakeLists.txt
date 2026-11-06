@@ -169,14 +169,16 @@ target_include_directories(lidar_viewer_tracking PUBLIC ${CMAKE_CURRENT_SOURCE_D
 target_link_libraries(lidar_viewer_tracking PRIVATE Eigen3::Eigen)
 lidar_warnings(lidar_viewer_tracking)
 
-add_library(lidar_viewer_export STATIC src/roi_export.cpp src/data_io.cpp)
+add_library(lidar_viewer_export STATIC src/roi_export.cpp src/data_io.cpp src/dataset.cpp src/training_job.cpp)
 target_include_directories(lidar_viewer_export PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(lidar_viewer_export SYSTEM PRIVATE ${PCL_INCLUDE_DIRS})
 target_link_libraries(lidar_viewer_export PUBLIC lidar_viewer_roi lidar_viewer_bag)
 lidar_warnings(lidar_viewer_export)
 
 add_executable(lidar_studio
   src/main.cpp
   src/viewer_app.cpp
+  src/training_ui.cpp
   src/config.cpp
   src/algorithms/ground_removal.cpp
   src/algorithms/ground_removal_gseg3d.cpp
@@ -289,10 +291,10 @@ if(BUILD_TESTING)
   add_executable(imu_alignment_smoke_test tests/imu_alignment_smoke.cpp)
   target_link_libraries(imu_alignment_smoke_test PRIVATE lidar_viewer_bag)
   add_test(NAME imu_alignment_smoke_test COMMAND imu_alignment_smoke_test)
-  add_executable(config_data_smoke_test tests/config_data_smoke.cpp src/config.cpp src/data_io.cpp)
+  add_executable(config_data_smoke_test tests/config_data_smoke.cpp src/config.cpp)
   target_include_directories(config_data_smoke_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_compile_definitions(config_data_smoke_test PRIVATE LIDAR_VIEWER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
-  target_link_libraries(config_data_smoke_test PRIVATE lidar_viewer_bag)
+  target_link_libraries(config_data_smoke_test PRIVATE lidar_viewer_export)
   add_test(NAME config_data_smoke_test COMMAND config_data_smoke_test)
   add_executable(settings_io_smoke_test tests/settings_io_smoke.cpp)
   target_include_directories(settings_io_smoke_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -321,6 +323,7 @@ if(BUILD_TESTING)
   target_include_directories(algorithm_smoke_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(algorithm_smoke_test PRIVATE lidar_viewer_gseg3d lidar_viewer_patchworkpp lidar_viewer_fugseg lidar_viewer_bag)
   add_test(NAME algorithm_smoke_test COMMAND algorithm_smoke_test)
+  include(cmake/StudioWorkspaceTests.cmake)
 endif()
 
 include(cmake/Packaging.cmake)

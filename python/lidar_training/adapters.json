@@ -1,0 +1,4 @@
+[
+  {"id":"litept","title":"LitePT · point segmentation","module":"lidar_training.litept","task":"Point labels: background / train front / steel structure","parameters":["epochs","max_points","seed","yaw_range"],"uses_config":false},
+  {"id":"centerpoint","title":"CenterPoint · 3D objects","module":"lidar_training.centerpoint","task":"3D box annotations: person, car and selected classes","parameters":["epochs","batch_size","learning_rate","workers","seed"],"uses_config":true}
+]
