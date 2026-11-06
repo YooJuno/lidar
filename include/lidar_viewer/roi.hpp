@@ -20,7 +20,17 @@ struct RoiBox
   Vec3 size{20, 20, 6};
   float yaw_deg{0};
   RoiBoxMode mode{RoiBoxMode::Include};
+  int color_index{-1}; // Legacy/default: cyan for display, orange for exclusion.
 };
+
+struct RoiColor {float r,g,b;const char * name;};
+inline constexpr std::array<RoiColor,8> kRoiColors{{
+  {.33f,.80f,.87f,"Cyan"},{1.f,.59f,.31f,"Orange"},{.39f,.84f,.55f,"Green"},{.40f,.61f,1.f,"Blue"},
+  {.70f,.54f,1.f,"Purple"},{.97f,.49f,.73f,"Pink"},{.96f,.82f,.35f,"Yellow"},{.98f,.44f,.44f,"Red"}}};
+inline int RoiColorIndex(const RoiBox & box) {
+  return box.color_index>=0 && box.color_index<8 ? box.color_index : box.mode==RoiBoxMode::Exclude ? 1 : 0;
+}
+inline const RoiColor & RoiBoxColor(const RoiBox & box) {return kRoiColors[static_cast<std::size_t>(RoiColorIndex(box))];}
 
 struct RoiSettings
 {

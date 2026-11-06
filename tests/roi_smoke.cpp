@@ -24,6 +24,12 @@ int main()
   try {
     RoiBox a{"first \"box\" \\ A", true, {3, -2, 1}, {4, 2, 6}, 90};
     RoiSettings settings{true, true, {a}};
+    auto colored=settings;colored.boxes[0].color_index=4;
+    Check(SameRoi(ParseRoiSettings(SerializeRoiSettings(colored)),colored),"Palette color did not survive profile round trip");
+    Check(SameRoiGeometry(settings,colored) && !SameRoi(settings,colored),"Color changed the ROI filter or was missing from edit history");
+    Check(DuplicateRoi(colored.boxes[0],colored).color_index==4,"Duplicate lost the selected color");
+    Reject([&]{ParseRoiSettings("roi_count=0\nroi_color=0 3\n");});
+    Reject([&]{ParseRoiSettings(SerializeRoiSettings(settings)+"roi_color=0 8\n");});
     PreparedRoi filter(settings);
     Check(filter.Contains(a.center), "box center rejected");
     Check(filter.Contains({3, 0, 4}), "boundary rejected");

@@ -9,15 +9,21 @@
 
 namespace lidar_viewer
 {
-inline bool SameRoi(const RoiSettings & a, const RoiSettings & b)
+inline bool SameRoiGeometry(const RoiSettings & a, const RoiSettings & b)
 {
-  if (a.enabled != b.enabled || a.show_boxes != b.show_boxes || a.boxes.size() != b.boxes.size()) return false;
+  if (a.enabled != b.enabled || a.boxes.size() != b.boxes.size()) return false;
   for (std::size_t i=0; i<a.boxes.size(); ++i) {
     const auto & x=a.boxes[i]; const auto & y=b.boxes[i];
-    if (x.name!=y.name || x.enabled!=y.enabled || x.mode!=y.mode || x.yaw_deg!=y.yaw_deg ||
+    if (x.enabled!=y.enabled || x.mode!=y.mode || x.yaw_deg!=y.yaw_deg ||
         x.center.x!=y.center.x || x.center.y!=y.center.y || x.center.z!=y.center.z ||
         x.size.x!=y.size.x || x.size.y!=y.size.y || x.size.z!=y.size.z) return false;
   }
+  return true;
+}
+inline bool SameRoi(const RoiSettings & a,const RoiSettings & b) {
+  if(a.show_boxes!=b.show_boxes || !SameRoiGeometry(a,b)) return false;
+  for(std::size_t i=0;i<a.boxes.size();++i)
+    if(a.boxes[i].name!=b.boxes[i].name || a.boxes[i].color_index!=b.boxes[i].color_index) return false;
   return true;
 }
 

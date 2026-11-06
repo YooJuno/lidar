@@ -43,8 +43,13 @@ class Controls:
         self.x11.click(self.window,int(at),int((y+b)*.5))
         self.chord('a')
         for ch in str(value):
-            key={'-':'minus','.':'period',' ':'space'}.get(ch,ch)
+            shifted={'_':'minus',':':'semicolon','+':'equal','"':'apostrophe','?':'slash'}
+            shift=ch in shifted or ch.isascii()and ch.isupper()
+            if shift:self.event('Shift_L',True)
+            key=shifted.get(ch,{'-':'minus','.':'period',' ':'space','/':'slash',"'":'apostrophe','\\':'backslash'}.get(ch,ch.lower()))
             self.event(key,True);self.event(key,False)
+            if shift:self.event('Shift_L',False)
+            self.x11.x.XSync(self.x11.display,False);time.sleep(.02)
         self.event('Return',True);self.event('Return',False);self.x11.x.XSync(self.x11.display,False);time.sleep(.15)
     def drag(self,a,b):
         x=self.x11;x.move(self.window,*a);x.xt.XTestFakeButtonEvent(x.display,1,True,0);x.x.XSync(x.display,False)

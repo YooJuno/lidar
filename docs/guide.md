@@ -216,6 +216,8 @@ ROI 탭 상단에서 용도를 선택합니다. 두 기능은 별도의 박스 �
 Apply와 표시 제한 전환은 앱 재시작·bag 재로딩 없이 반영하며 재생·정지 상태를 유지합니다. 실제 박스 드래그 중에만 화면을 고정하고 놓거나 취소하면 이전 상태로 복귀합니다. 원본 ROS 구독·녹화는 계속됩니다. 파일 읽기·분석은 각각 재사용하는 작업 스레드에서 실행하고, 읽기 캐시는 최대 3프레임·64 MiB로 제한합니다. 단일 프레임이 64 MiB보다 크면 그 프레임 하나만 유지합니다.
 
 
+ROI 이름 우클릭 → **Details… → Color**에서 청록·주황·초록·파랑·보라·분홍·노랑·빨강 중 하나를 선택합니다. 목록의 색 점과 윤곽·편집 핸들에 즉시 반영됩니다. 색은 프로필·복제·Undo/Redo와 내보내기 metadata에 보존하며, 기존 설정 파일의 박스 좌표 형식은 유지합니다.
+
 ### 학습·라벨링용 ROI 점군 내보내기
 
 ROI 목록의 **이름 우클릭 → Rename… → 이름 입력 → Enter/Save**로 표시용·지면 제외용 박스의 이름을 바꿉니다. Cancel/Esc로 취소하며 이름 변경도 Undo/Redo와 프로필 저장을 지원합니다.
@@ -225,6 +227,8 @@ ROI 목록의 **이름 우클릭 → Rename… → 이름 입력 → Enter/Save*
 이 이름들은 JSON의 `labeling.regions`에 `roi_name`, `class_name`, 출처와 함께 **draft 라벨 후보**로 저장합니다. 하나의 클래스일 때는 `category`에도 기록합니다. NPY/PCD의 XYZI 형식과 파일 이름은 바꾸지 않으며, 포인트별 정답·객체 박스 라벨을 자동으로 만들지 않습니다. 실제 학습에는 해당 모델이 요구하는 라벨이 추가로 필요합니다.
 
 **ROI → Display ROI → Export points…**에서 현재 프레임 또는 프레임 구간과 추출 간격을 정하고, **Browse…**로 저장할 상위 폴더를 선택한 뒤 **Export dataset**을 누릅니다. 활성화한 표시용 ROI 안의 점을 합집합으로 추출합니다. 화면의 표시 제한 스위치·Ground only·지면 제외 박스·검출 박스는 내보내기 대상과 라벨을 바꾸지 않습니다. 실시간 입력에서는 버튼을 누른 시점에 표시 중인 프레임을 저장합니다.
+
+**빠른 저장:** Export points 아래 **Export folder**에 경로를 입력하거나 폴더 아이콘으로 선택합니다. 경로는 프로그램을 다시 열어도 유지됩니다. **Ctrl+E**는 대화상자 없이 현재 프레임의 활성 표시 ROI를 저장합니다. 저장 좌표계·클래스 설정은 내보내기 창의 값을 사용하며, 프레임 구간 설정과 관계없이 한 프레임을 저장합니다.
 
 내보내기는 별도 작업 스레드와 전용 bag 리더를 재사용하며 재생·센서 수신·원본 녹화를 유지합니다. 진행률에서 취소하거나 Hide로 창을 닫아 둘 수 있고 ROI 탭의 Export progress…로 다시 확인합니다. 폴더와 파일은 `20261028_134010_f14797_roi1-2`처럼 기록 시각·화면의 프레임 번호·ROI로 짧게 이름을 정합니다. 구간 폴더에는 처음·마지막 프레임과 추출 개수가 들어갑니다. 기본 이름 ROI 1·ROI 2는 `roi1-2`로 합치고, 박스가 더 많으면 `+Nmore`를 붙입니다. 전체 원본명·박스 좌표·좌표계는 JSON에 보존합니다. 동일한 이름은 `_2`, `_3` 폴더로 구분하여 덮어쓰지 않습니다. 실시간 데이터는 토픽명과 원래 수신 sequence를 사용합니다. 취소·오류가 발생한 작업의 새 폴더는 정리합니다. 강제 종료나 전원 중단으로 남은 폴더는 최상위 metadata의 status가 `complete`인지 확인해야 합니다.
 
@@ -246,9 +250,11 @@ NPY는 [NumPy 표준 형식](https://numpy.org/doc/2.0/reference/generated/numpy
 
 ## 데이터셋 열람과 학습
 
-상단 **Datasets**에서 ROI 내보내기 폴더 또는 NPY·PCD 폴더를 선택합니다. **Data** 목록, 하단 타임라인, **←/→**로 샘플을 넘깁니다. **Fit each sample**은 샘플마다 화면을 맞춥니다. 원본 좌표를 확인하도록 dataset 프로필의 IMU·센서 높이·지면 검출은 기본적으로 꺼져 있습니다. 파일 읽기는 뷰어 작업 스레드에서 수행합니다.
+상단 **Point clouds**를 누르면 메인 bag 재생을 유지한 채 별도 확인 창을 엽니다. 같은 입력란에 **파일 또는 폴더 경로**를 넣고 Enter/Open을 누릅니다. 파일이면 한 샘플, 폴더이면 내부 샘플 목록을 표시합니다. ROI 내보내기 폴더·그 안의 points 폴더·일반 NPY/PCD/XYZI BIN 폴더·coord.npy 샘플 폴더를 지원합니다. **Open points** 또는 Ctrl+O로 경로를 다시 선택합니다. **Data**의 Previous/Next, 목록, **←/→**로 하나씩 확인합니다. 경로를 다시 입력해 열면 외부에서 수정한 라벨도 다시 읽습니다.
 
-NPY는 pickle 없는 C-order float32/float64 N×3/4를 지원합니다. PCD는 ascii/binary XYZ와 선택 intensity를 지원하며 binary_compressed는 지원하지 않습니다. 내보내기 폴더의 NPY와 PCD를 같은 샘플로 중복 표시하지 않습니다. 정리된 샘플 폴더의 `coord.npy`, `intensity.npy`, `meta.json`, `segment.npy`도 읽습니다. 포인트 라벨은 Data에서 존재 여부를 확인하며, 표시 색상을 정답으로 저장하지 않습니다.
+검토 화면은 **Data / View** 탭으로 구성하며 저장된 좌표·점 순서를 유지합니다. **Color points by label**은 점별 ID를 색으로 표시하고 클래스별 점 개수를 보여 줍니다. 원본 metadata에 classes 배열이 있으면 해당 클래스 이름을 사용합니다. 포인트 라벨은 `labels/<id>.npy` 또는 `segment.npy`의 N개 정수(-1 무시, 0..65535 클래스 ID)입니다. 수동 라벨에 유효한 값이 없으면 `draft_segment.npy`, `weak_segment.npy` 순으로 찾아 **Unverified draft**로 구분합니다. ROI 이름으로 저장한 클래스 후보만 있는 데이터에는 점별 라벨이 없다고 표시합니다.
+
+`annotations/<id>.json` 또는 `annotations.json`의 수동 3D 박스는 **Show annotated boxes**로 확인합니다. 빈 boxes는 배경 샘플입니다. 라벨 수·형식·좌표계가 맞지 않으면 점군을 유지하면서 오류를 표시합니다. NPY는 pickle 없는 C-order float32/float64 N×3/4, PCD는 ascii/binary XYZ와 선택 intensity를 지원합니다. 같은 샘플의 NPY와 PCD를 중복 표시하지 않습니다. 파일과 라벨 읽기는 별도 작업 스레드에서 처리합니다.
 
 **Train**에서 모델·학습용 Python·트레이너 프로젝트·데이터·출력 폴더를 설정합니다. **Check setup**은 실제 선택한 Python에서 환경과 라벨을 검사합니다. **Start training**은 별도 프로세스로 실행하고 epoch·loss·로그를 표시합니다. Hide 후에도 학습하며 뷰어를 사용할 수 있고 Stop으로 자식 프로세스까지 종료합니다. 출력은 `litept_001`, `centerpoint_001`처럼 분리하고 request·validation·result JSON, training.log, prepared 데이터, model 체크포인트를 보존합니다. 체크포인트는 추론 모델로 자동 교체하지 않습니다.
 

@@ -131,6 +131,15 @@ def main():
         check('roi_names_are_default_class_hints',hints['point_annotations']=='not_provided'and
             [item['class_name']for item in hints['regions']]==[item['name']for item in manifest['roi_sensor_frame']])
         capture(x11,window,out/'01_sensor_export.png')
+        c.click('export_close')
+        direct=out/'quick-exports';direct.mkdir();c.enter('quick_export_folder',str(direct))
+        prefs=out/'settings/lidar_viewer/roi_export_folder.txt'
+        check('typed_export_folder_is_remembered',prefs.read_text()==str(direct))
+        offset=len(text());c.chord('e');wait(lambda:'ROI export: Saved'in text()[offset:])
+        quick=list(direct.iterdir());check('shortcut_exports_one_current_frame_without_dialog',len(quick)==1 and
+            json.loads((quick[0]/'metadata.json').read_text())['frames_requested']==1)
+        c.click('quick_export_browse');wait(lambda:prefs.read_text()==str(exports));time.sleep(.2)
+        c.click('roi_export')
         c.enter('export_class_name','person');c.click('export_aligned');path,manifest=start_export();sample=manifest['samples'][0]
         meta=validate_sample(path,sample,expected(frames/f'{sample["source_frame_index"]:05d}.bin'),True)
         check('common_class_overrides_hints_and_keeps_roi_names',meta['category']=='person'and

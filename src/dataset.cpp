@@ -1,4 +1,6 @@
 #include "lidar_viewer/dataset.hpp"
+#include "lidar_viewer/roi.hpp"
+#include <cmath>
 #include <boost/property_tree/json_parser.hpp>
 #include <algorithm>
 #include <array>
@@ -45,10 +47,12 @@ double Scalar(const char * bytes,std::size_t width,char type,bool big=false)
     if (width==8) {double x;std::memcpy(&x,value.data(),8);return x;}}
   if (type=='u' || type=='U') {if(width==1) return static_cast<unsigned char>(bytes[0]);
     if(width==2) {std::uint16_t x;std::memcpy(&x,value.data(),2);return x;}
-    if(width==4) {std::uint32_t x;std::memcpy(&x,value.data(),4);return x;}}
+    if(width==4) {std::uint32_t x;std::memcpy(&x,value.data(),4);return x;}
+    if(width==8) {std::uint64_t x;std::memcpy(&x,value.data(),8);return static_cast<double>(x);}}
   if (type=='i' || type=='I') {if(width==1) return static_cast<signed char>(bytes[0]);
     if(width==2) {std::int16_t x;std::memcpy(&x,value.data(),2);return x;}
-    if(width==4) {std::int32_t x;std::memcpy(&x,value.data(),4);return x;}}
+    if(width==4) {std::int32_t x;std::memcpy(&x,value.data(),4);return x;}
+    if(width==8) {std::int64_t x;std::memcpy(&x,value.data(),8);return static_cast<double>(x);}}
   throw std::runtime_error("Unsupported numeric point format");
 }
 struct Array
@@ -99,10 +103,12 @@ FrameData Numpy(const fs::path & path)
       array.columns==4 ? static_cast<float>(Scalar(row.data()+3*array.width,array.width,'f',array.big)) : 1.f};
   }
   const auto strength=path.parent_path()/"intensity.npy";
+  if(!array.file) throw std::runtime_error("Truncated point array: "+path.u8string());
   if (path.filename()=="coord.npy" && array.columns==3 && fs::is_regular_file(strength)) {
     Array values(strength);
     if (values.rows!=array.rows || values.columns!=1) throw std::runtime_error("Intensity array does not match coordinate count");
     for (auto & point:frame.points) {values.file.read(row.data(),static_cast<std::streamsize>(values.width));point.intensity=static_cast<float>(Scalar(row.data(),values.width,values.type,values.big));}
+    if(!values.file) throw std::runtime_error("Truncated intensity array");
   }
   return frame;
 }
@@ -145,6 +151,17 @@ FrameData Pcd(const fs::path & path)
   }
   return frame;
 }
+FrameData BinaryXyzi(const fs::path & path)
+{
+  const auto bytes=fs::file_size(path);
+  if(bytes%sizeof(KittiPoint) || bytes/sizeof(KittiPoint)>kMaxPoints)
+    throw std::runtime_error("BIN points must contain float32 XYZI records (16 bytes per point)");
+  FrameData frame;frame.points.resize(static_cast<std::size_t>(bytes/sizeof(KittiPoint)));
+  std::ifstream input(path,std::ios::binary);
+  input.read(reinterpret_cast<char *>(frame.points.data()),static_cast<std::streamsize>(bytes));
+  if(!input) throw std::runtime_error("Cannot read BIN point cloud: "+path.u8string());
+  return frame;
+}
 void Add(std::vector<FrameHandle> & frames,const fs::path & root,const fs::path & points,const fs::path & metadata,const std::string & name={})
 {
   if (!fs::is_regular_file(points)) throw std::runtime_error("Missing dataset sample: "+points.u8string());
@@ -156,6 +173,11 @@ void Add(std::vector<FrameHandle> & frames,const fs::path & root,const fs::path 
     const auto info=Json(metadata);sample->coordinate_space=info.get<std::string>("coordinate_space","sensor");
     sample->annotation_status=info.get<std::string>("annotation_status",info.get<std::string>("label_type","unlabeled"));
     sample->category=info.get<std::string>("category","");sample->source=info.get<std::string>("source.path",info.get<std::string>("source_bag",""));
+    if(const auto hints=info.get_child_optional("labeling.regions")) for(const auto & entry:*hints) {
+      const auto name=entry.second.get<std::string>("class_name","");
+      if(name.size()>128 || sample->class_hints.size()>=128) throw std::runtime_error("Class hints exceed review limits");
+      if(!name.empty() && std::find(sample->class_hints.begin(),sample->class_hints.end(),name)==sample->class_hints.end()) sample->class_hints.push_back(name);
+    }
     sample->source_frame=info.get<std::size_t>("source.frame_number",info.get<std::size_t>("frame_index",0));
     sample->point_count=info.get<std::size_t>("point_count",0);
     if(!sample->source_frame) if(const auto index=info.get_optional<std::size_t>("source.frame_index")) sample->source_frame=*index+1;
@@ -164,10 +186,18 @@ void Add(std::vector<FrameHandle> & frames,const fs::path & root,const fs::path 
   }
   for(const auto & labels:{points.parent_path()/"segment.npy",root/"labels"/fs::u8path(points.stem().u8string()+".npy")})
     if(fs::is_regular_file(labels)) {sample->labels=labels;break;}
-  FrameHandle frame;frame.path=points;frame.format=points.extension()==".npy" ? InputFormat::Numpy : InputFormat::Pcd;
+  FrameHandle frame;frame.path=points;frame.format=points.extension()==".npy" ? InputFormat::Numpy : points.extension()==".bin" ? InputFormat::DatasetXyzi : InputFormat::Pcd;
   frame.label=sample->name;frame.dataset_sample=sample;frames.push_back(std::move(frame));
 }
-void Scan(const fs::path & root,std::vector<FrameHandle> & frames,InputLoadState * load,unsigned depth=0)
+void AddFile(std::vector<FrameHandle> & frames,const fs::path & points)
+{
+  auto root=points.parent_path();
+  if((root.filename()=="points" || root.filename()=="pointcloud") &&
+      (fs::is_directory(root.parent_path()/"metadata") || fs::is_directory(root.parent_path()/"labels") || fs::is_regular_file(root.parent_path()/"metadata.json"))) root=root.parent_path();
+  const auto metadata=points.filename()=="coord.npy" && fs::is_regular_file(root/"meta.json") ? root/"meta.json" : root/"metadata"/fs::u8path(points.stem().u8string()+".json");
+  Add(frames,root,points,metadata);
+}
+void Scan(const fs::path & root,std::vector<FrameHandle> & frames,InputLoadState * load,bool include_bin,unsigned depth=0)
 {
   if(load) load->CheckCancelled();
   if(depth>32) throw std::runtime_error("Dataset nesting exceeds 32 folders");
@@ -190,29 +220,33 @@ void Scan(const fs::path & root,std::vector<FrameHandle> & frames,InputLoadState
   for(const auto & entry:fs::directory_iterator(root,fs::directory_options::skip_permission_denied)) {
     if(entry.is_symlink()) continue;
     if(entry.is_directory()) children.push_back(entry.path());
-    else if(entry.is_regular_file() && IsDatasetFile(entry.path())) files.push_back(entry.path());
+    else if(entry.is_regular_file() && (IsDatasetFile(entry.path()) || (include_bin && entry.path().extension()==".bin"))) files.push_back(entry.path());
   }
   std::sort(files.begin(),files.end());std::sort(children.begin(),children.end());
   for(const auto & file:files) {
     if(load) load->CheckCancelled();
     const auto stem=file.stem().u8string();
-    if(stem=="intensity" || stem=="segment" || stem=="weak_segment" || stem=="ring" || stem=="point_time" || stem=="point_index") continue;
+    if(stem=="intensity" || stem=="segment" || stem=="weak_segment" || stem=="ring" || stem=="point_time" || stem=="point_index" || stem=="draft_segment" || stem=="label_confidence" || stem=="source_cache_point_index") continue;
     if(file.extension()==".pcd" && fs::is_regular_file(file.parent_path()/fs::u8path(file.stem().u8string()+".npy"))) continue;
-    Add(frames,root,file,root/"metadata"/fs::u8path(file.stem().u8string()+".json"));
+    AddFile(frames,file);
   }
   for(const auto & child:children) {
     const auto name=child.filename().u8string();
     if(name=="labels" || name=="annotations" || name=="metadata" || name=="training" || name==".git" || name=="__pycache__") continue;
-    Scan(child,frames,load,depth+1);
+    Scan(child,frames,load,include_bin,depth+1);
   }
 }
 }  // namespace
 bool IsDatasetFile(const fs::path & path) {return path.extension()==".npy" || path.extension()==".pcd";}
-std::vector<FrameHandle> ResolveDatasetFrames(const fs::path & path,InputLoadState * load)
+std::vector<FrameHandle> ResolveDatasetFrames(const fs::path & path,InputLoadState * load,bool include_bin)
 {
+  if((path.filename()=="points" || path.filename()=="pointcloud") && fs::is_regular_file(path.parent_path()/"metadata.json"))
+    return ResolveDatasetFrames(path.parent_path(),load,include_bin);
   std::vector<FrameHandle> frames;
-  if(fs::is_regular_file(path)) Add(frames,path.parent_path(),path,path.parent_path()/"metadata"/fs::u8path(path.stem().u8string()+".json"));
-  else Scan(path,frames,load);
+  if(fs::is_regular_file(path)) {
+    if(!IsDatasetFile(path) && !(include_bin && path.extension()==".bin")) throw std::runtime_error("Choose an NPY, PCD or XYZI BIN point cloud");
+    AddFile(frames,path);
+  } else Scan(path,frames,load,include_bin);
   std::map<std::string,std::size_t> names;
   for(const auto & frame:frames) ++names[frame.label];
   for(auto & frame:frames) if(names[frame.label]>1) {
@@ -221,5 +255,79 @@ std::vector<FrameHandle> ResolveDatasetFrames(const fs::path & path,InputLoadSta
   }
   return frames;
 }
-FrameData LoadDatasetFrame(const FrameHandle & handle) {return handle.format==InputFormat::Numpy ? Numpy(handle.path) : Pcd(handle.path);}
+FrameData LoadDatasetFrame(const FrameHandle & handle)
+{
+  auto frame=handle.format==InputFormat::Numpy ? Numpy(handle.path) : handle.format==InputFormat::DatasetXyzi ? BinaryXyzi(handle.path) : Pcd(handle.path);
+  auto annotation=std::make_shared<DatasetAnnotations>();
+  const auto root=handle.path.parent_path();
+  const auto sample=handle.dataset_sample;
+  bool draft_metadata=false;
+  try {
+    if(sample && fs::is_regular_file(sample->metadata)) {
+      const auto meta=Json(sample->metadata);
+      const auto status=meta.get<std::string>("annotation_status","")+" "+meta.get<std::string>("label_type","")+" "+meta.get<std::string>("annotation.state","");
+      for(const auto * word:{"weak","draft","pseudo","predicted"}) draft_metadata|=status.find(word)!=std::string::npos;
+      if(const auto classes=meta.get_child_optional("classes")) {
+        int id=0;for(const auto & entry:*classes) {
+          const auto name=entry.second.get_value<std::string>();
+          if(name.size()>128 || id>=256) throw std::runtime_error("Class names exceed review limits");
+          annotation->class_names.emplace_back(id++,name);
+        }
+      }
+      if(const auto target=meta.get_optional<int>("target_class_id"))
+        annotation->class_names.emplace_back(*target,meta.get<std::string>("category","Class "+std::to_string(*target)));
+    }
+    const auto manual=sample ? sample->labels : fs::path{};
+    for(const auto & file:{manual,root/"draft_segment.npy",root/"weak_segment.npy"}) {
+      if(file.empty() || !fs::is_regular_file(file)) continue;
+      Array values(file);
+      if(values.rows!=frame.points.size() || values.columns!=1 || (values.type!='i' && values.type!='u'))
+        throw std::runtime_error("Point labels must be N integers in the same order as points: "+file.u8string());
+      std::vector<std::int32_t> labels;labels.reserve(values.rows);std::array<char,8> bytes{};bool known=false;
+      for(std::size_t i=0;i<values.rows;++i) {
+        values.file.read(bytes.data(),static_cast<std::streamsize>(values.width));
+        if(!values.file) throw std::runtime_error("Truncated point label array: "+file.u8string());
+        const auto value=Scalar(bytes.data(),values.width,values.type,values.big);
+        if(!std::isfinite(value) || value < -1 || value>65535) throw std::runtime_error("Label IDs must be -1 or 0..65535");
+        labels.push_back(static_cast<std::int32_t>(value));known|=value>=0;
+      }
+      annotation->point_labels=std::move(labels);annotation->source=file.filename().u8string();annotation->draft=file!=manual || draft_metadata;
+      if(known) break;
+    }
+    const auto box_name=fs::u8path(handle.path.stem().u8string()+".json");
+    const auto boxes=sample && fs::is_regular_file(sample->root/"annotations"/box_name) ?
+      sample->root/"annotations"/box_name : root/"annotations.json";
+    if(fs::is_regular_file(boxes)) {
+      const auto info=Json(boxes);
+      if(sample && sample->coordinate_space!="stored" && info.get<std::string>("coordinate_space",sample->coordinate_space)!=sample->coordinate_space)
+        throw std::runtime_error("Box annotation coordinate space differs from points");
+      const auto vector=[](const Tree & tree) {
+        if(tree.size()!=3) throw std::runtime_error("Annotation vectors need three numbers");
+        auto it=tree.begin();Vec3 p;p.x=(it++)->second.get_value<float>();p.y=(it++)->second.get_value<float>();p.z=it->second.get_value<float>();return p;
+      };
+      for(const auto & entry:info.get_child("boxes")) {
+        if(annotation->boxes.size()>=4096) throw std::runtime_error("Too many annotation boxes");
+        const auto & data=entry.second;RoiBox box;
+        box.name=data.get<std::string>("class_name");box.center=vector(data.get_child("center_m"));box.size=vector(data.get_child("size_m"));box.yaw_deg=data.get<float>("yaw_deg");ValidateRoiBox(box);
+        annotation->boxes.push_back({box.name,box.center,box.size,box.yaw_deg});
+      }
+      annotation->box_annotations=true;
+    }
+  } catch(const std::exception & error) {
+    annotation->error=error.what();std::vector<std::int32_t>().swap(annotation->point_labels);std::vector<DatasetBox>().swap(annotation->boxes);
+  }
+  // Keep labels in lockstep when invalid XYZ samples are discarded. The
+  // normal frame finalizer then sees only valid coordinates.
+  if(!annotation->point_labels.empty()) {
+    std::size_t retained=0;
+    for(std::size_t i=0;i<frame.points.size();++i) {
+      const auto p=frame.points[i];if(!std::isfinite(p.x)||!std::isfinite(p.y)||!std::isfinite(p.z)) continue;
+      frame.points[retained]=p;annotation->point_labels[retained++]=annotation->point_labels[i];
+    }
+    frame.points.resize(retained);annotation->point_labels.resize(retained);
+  }
+  std::map<int,std::size_t> counts;for(const auto label:annotation->point_labels) ++counts[label];
+  for(const auto & entry:counts) annotation->label_counts.push_back(entry);
+  frame.annotations=std::move(annotation);return frame;
+}
 }  // namespace lidar_viewer

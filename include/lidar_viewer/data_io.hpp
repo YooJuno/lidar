@@ -51,9 +51,10 @@ enum class InputFormat
   Ros2Bag,
   Numpy,
   Pcd,
+  DatasetXyzi,
 };
 
-namespace lidar_viewer {struct DatasetSample;}
+namespace lidar_viewer {struct DatasetSample;struct DatasetAnnotations;}
 struct FrameHandle
 {
   fs::path path;
@@ -82,6 +83,7 @@ struct FrameData
   std::string frame_id;
   std::optional<std::int64_t> timestamp_ns;
   std::optional<lidar_viewer::FrameImuData> imu;
+  std::shared_ptr<const lidar_viewer::DatasetAnnotations> annotations;
 };
 
 std::vector<FrameHandle> ResolveInputFrames(

@@ -332,7 +332,7 @@ std::vector<FrameHandle> ResolveInputFrames(
 
 FrameData LoadFrame(const FrameHandle & handle, FrameIntensity intensity, FrameReadIsolation isolation)
 {
-  if (handle.format==InputFormat::Numpy || handle.format==InputFormat::Pcd) {
+  if (handle.format==InputFormat::Numpy || handle.format==InputFormat::Pcd || handle.format==InputFormat::DatasetXyzi) {
     auto frame=lidar_viewer::LoadDatasetFrame(handle);FinalizeFrame(frame,intensity,true);return frame;
   }
   if (handle.format == InputFormat::Ros2Bag) {

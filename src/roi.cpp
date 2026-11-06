@@ -6,6 +6,7 @@
 #include <iomanip>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <sstream>
 #include <stdexcept>
 
@@ -51,6 +52,7 @@ Vec3 RoiCoordinateFrame::InverseTransform(Vec3 p) const
 
 void ValidateRoiBox(const RoiBox & box)
 {
+  if(box.color_index < -1 || box.color_index>=static_cast<int>(kRoiColors.size())) throw std::runtime_error("ROI color must be one of the eight palette entries");
   if (box.mode != RoiBoxMode::Include && box.mode != RoiBoxMode::Exclude)
     throw std::runtime_error("Invalid ROI box mode");
   if (box.name.size() > 127 || box.name.find_first_of("\r\n") != std::string::npos ||
@@ -164,6 +166,8 @@ std::string SerializeRoiSettings(const RoiSettings & value, const std::string & 
         << b.size.x << ' ' << b.size.y << ' ' << b.size.z << ' '
         << std::remainder(b.yaw_deg, 360.f) << '\n';
   }
+  for(std::size_t i=0;i<value.boxes.size();++i)
+    if(value.boxes[i].color_index>=0) out<<prefix<<"color="<<i<<' '<<value.boxes[i].color_index<<'\n';
   return out.str();
 }
 
@@ -172,6 +176,7 @@ RoiSettings ParseRoiSettings(const std::string & text, const RoiSettings & fallb
   RoiSettings result;
   bool found = false;
   int count = -1;
+  std::map<int,int> colors;
   std::istringstream lines(text);
   std::string line;
   std::size_t number = 0;
@@ -183,10 +188,16 @@ RoiSettings ParseRoiSettings(const std::string & text, const RoiSettings & fallb
     if (line.compare(0, prefix.size(), prefix) != 0) continue;
     const auto key = line.substr(prefix.size(), eq-prefix.size()), value = line.substr(eq + 1);
     if (key != "enabled" && key != "show_boxes" && key != "count" &&
-        key != "box" && key != "exclude_box") continue;
+        key != "box" && key != "exclude_box" && key != "color") continue;
     found = true;
     try {
-      if (key == "enabled") result.enabled = ParseBool(value);
+      if(key=="color") {
+        std::istringstream fields(value);std::string index,color,extra;
+        if(!(fields>>index>>color) || (fields>>extra)) throw std::runtime_error("expected box index and palette color");
+        const int i=settings::ParseStrictInt(index),c=settings::ParseStrictInt(color);
+        if(i<0 || c<0 || c>=8 || !colors.emplace(i,c).second) throw std::runtime_error("invalid or duplicate ROI color");
+      }
+      else if (key == "enabled") result.enabled = ParseBool(value);
       else if (key == "show_boxes") result.show_boxes = ParseBool(value);
       else if (key == "count") {
         count = settings::ParseStrictInt(value);
@@ -217,6 +228,10 @@ RoiSettings ParseRoiSettings(const std::string & text, const RoiSettings & fallb
   if (!found) return fallback;
   if (count < 0 || static_cast<std::size_t>(count) != result.boxes.size())
     throw std::runtime_error("ROI count does not match box entries");
+  for(const auto & entry:colors) {
+    if(static_cast<std::size_t>(entry.first)>=result.boxes.size()) throw std::runtime_error("ROI color references a missing box");
+    result.boxes[static_cast<std::size_t>(entry.first)].color_index=entry.second;
+  }
   return result;
 }
 

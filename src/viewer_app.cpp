@@ -27,6 +27,7 @@
 #include "lidar_viewer/platform.hpp"
 #include "lidar_viewer/background_worker.hpp"
 #include "lidar_viewer/dataset.hpp"
+#include "lidar_viewer/review_window.hpp"
 #include "lidar_viewer/training_ui.hpp"
 
 #include <algorithm>
@@ -203,12 +204,15 @@ GLuint CreateProgram()
     uniform float u_point_size;
     out float v_intensity;
     out float v_height;
+    layout(location = 2) in int a_label;
+    flat out int v_label;
 
     void main() {
       gl_Position = u_mvp * vec4(a_position, 1.0);
       gl_PointSize = u_point_size;
       v_intensity = a_intensity;
       v_height = a_position.z;
+      v_label = a_label;
     }
   )";
 
@@ -216,6 +220,7 @@ GLuint CreateProgram()
     #version 330 core
     in float v_intensity;
     in float v_height;
+    flat in int v_label;
     out vec4 frag_color;
 
     uniform int u_color_mode;
@@ -232,6 +237,12 @@ GLuint CreateProgram()
     }
 
     void main() {
+      if (u_color_mode == 3) {
+        vec3 colors[8]=vec3[8](vec3(1,.59,.31),vec3(.40,.61,1),vec3(.39,.84,.55),vec3(.70,.54,1),
+          vec3(.97,.49,.73),vec3(.96,.82,.35),vec3(.33,.80,.87),vec3(.98,.44,.44));
+        frag_color=vec4(v_label<0 ? vec3(.28,.32,.38) : v_label==0 ? vec3(.68,.72,.78) : colors[(v_label-1)%8],1);
+        return;
+      }
       if (v_intensity < -0.5) {
         frag_color = vec4(1.0, 0.12, 0.08, 1.0);
         return;
@@ -489,7 +500,7 @@ struct ViewerState
   float global_ground_offset{0.0f};
   CameraState camera;
   GLuint vao{0};
-  GLuint vbo{0};
+  GLuint vbo{0},label_vbo{0};
   bool frame_dirty{false};
   bool fit_view_requested{false};
   int color_mode{0};
@@ -538,10 +549,15 @@ struct ViewerState
   bool roi_rename_requested{false};
   std::array<char,128> roi_rename_name{};
   lidar_viewer::FileDialog dataset_picker;
+  bool review_window{false};
+  std::unique_ptr<lidar_viewer::ReviewWindowProcess> point_review;
   bool dataset_tab_requested{false},open_training{false};
+  bool open_dataset_review{false},close_dataset_review{false},dataset_show_labels{true},dataset_show_boxes{true};
+  std::array<char,4096> dataset_review_path{};fs::path dataset_opened_root;
   bool dataset_fit_each{true};std::optional<std::size_t> dataset_fitted_index;
   std::optional<std::size_t> dataset_list_index;
   std::unique_ptr<lidar_viewer::TrainingWorkspace> training_workspace;
+  bool export_folder_loaded{false};
   bool export_aligned{false};
   int export_scope{0},export_first{1},export_last{1},export_stride{1};
   std::array<char,4096> export_directory{};
@@ -658,6 +674,7 @@ void MarkRoiPending(ViewerState & state)
 }
 
 void SetTransientStatus(ViewerState & state, const std::string & message);
+void StartRoiExport(ViewerState & state,bool current_frame_only=false);
 
 struct VisiblePointRange {std::size_t first{0}, count{0};};
 
@@ -758,6 +775,12 @@ void UploadFrame(ViewerState & state)
     static_cast<GLsizeiptr>(state.frame.points.size() * sizeof(KittiPoint)),
     state.frame.points.data(),
     GL_STATIC_DRAW);
+  const auto labels=state.frame.annotations;
+  if(labels && labels->point_labels.size()==state.frame.points.size() && !labels->point_labels.empty()) {
+    glBindBuffer(GL_ARRAY_BUFFER,state.label_vbo);
+    glBufferData(GL_ARRAY_BUFFER,static_cast<GLsizeiptr>(labels->point_labels.size()*sizeof(std::int32_t)),labels->point_labels.data(),GL_STATIC_DRAW);
+    glEnableVertexAttribArray(2);glVertexAttribIPointer(2,1,GL_INT,sizeof(std::int32_t),nullptr);
+  } else {glDisableVertexAttribArray(2);glVertexAttribI1i(2,-1);}
 }
 
 void AppendBoxLine(std::vector<Vec3> & vertices, const Vec3 & a, const Vec3 & b)
@@ -1291,6 +1314,13 @@ void ApplyCalibration(ViewerState & state, const FrameData * source = nullptr,
   const auto started=std::chrono::steady_clock::now();
   FrameData frame=source ? *source : state.base_frame;
   frame.source_intensities.reset();
+  if(frame.annotations) {
+    // Review stored data without changing coordinates, ordering or labels.
+    state.processed_obstacles=frame.points.size();state.ground_removed_count=0;state.ground_view=ViewerState::GroundView::All;
+    state.processed_frame=frame;state.frame=std::move(frame);state.roi_frame={};
+    state.ground_removal_enabled=false;state.imu_level_enabled=false;state.algorithm_config.clustering.enabled=false;
+    state.algorithm_config.detection.enabled=false;state.detector_input.reset();return;
+  }
   lidar_viewer::ImuLevelingResult leveling;
   leveling.status="Off";
   if (state.imu_level_enabled) {
@@ -1431,13 +1461,17 @@ void StoreFrameInCache(ViewerState & state, std::size_t index, FrameData frame)
 
   state.frame_cache.emplace(index, std::move(frame));
   std::size_t bytes=0;
-  for (const auto & entry:state.frame_cache) bytes+=entry.second.points.capacity()*sizeof(KittiPoint);
+  for (const auto & entry:state.frame_cache) {
+    bytes+=entry.second.points.capacity()*sizeof(KittiPoint);
+    if(entry.second.annotations) bytes+=entry.second.annotations->point_labels.capacity()*sizeof(std::int32_t);
+  }
   // Retain one oversized frame so it can still be consumed without reloading.
   while (state.frame_cache_order.size() > 1 &&
       (state.frame_cache_order.size() > kMaxCachedFrames || bytes > kFrameCacheBytes)) {
     const std::size_t evict_index = state.frame_cache_order.front();
     state.frame_cache_order.pop_front();
     bytes-=state.frame_cache.at(evict_index).points.capacity()*sizeof(KittiPoint);
+    if(state.frame_cache.at(evict_index).annotations) bytes-=state.frame_cache.at(evict_index).annotations->point_labels.capacity()*sizeof(std::int32_t);
     state.frame_cache.erase(evict_index);
   }
 }
@@ -1723,7 +1757,8 @@ void OpenBagSource(ViewerState & state, std::size_t index)
     auto load=std::make_shared<lidar_viewer::InputLoadState>();
     auto prepared=std::make_unique<ViewerState>();
     auto & staged=*prepared;
-    const auto profile=DetectDatasetProfile(path);
+    staged.review_window=state.review_window;
+    const auto profile=state.review_window ? "dataset" : DetectDatasetProfile(path);
     const bool change_profile = state.dataset_profile != profile;
     staged.dataset_profile = profile;
     staged.detector_cli_override=state.detector_cli_override;
@@ -1752,8 +1787,8 @@ void OpenBagSource(ViewerState & state, std::size_t index)
     if (!state.geometry_worker) state.geometry_worker=std::make_unique<lidar_viewer::BackgroundWorker>();
     state.bag_load_future = state.geometry_worker->Submit([path, topic, imu_topic, load, prepared=std::move(prepared)]() mutable {
       ViewerState::BagLoadResult result;
-      result.frames = ResolveInputFrames(path, topic, imu_topic, load.get());
-      if (result.frames.empty()) throw std::runtime_error("No point cloud frames in this bag");
+      result.frames = prepared->review_window ? lidar_viewer::ResolveDatasetFrames(path,load.get(),true) : ResolveInputFrames(path, topic, imu_topic, load.get());
+      if (result.frames.empty()) throw std::runtime_error("No point cloud samples found in this input");
       load->Stage(lidar_viewer::InputLoadStage::ReadingFirstFrame);
       result.first_frame = LoadFrame(result.frames.front());
       load->Stage(lidar_viewer::InputLoadStage::PreparingDisplay);
@@ -1842,8 +1877,9 @@ void OpenInputPath(ViewerState & state, const fs::path & input)
 {
   if (state.live.Active() || state.loading_bag_source || state.folder_scan_future.valid())
     throw std::runtime_error("Disconnect live input or wait for loading before opening a file");
-  const auto path=input.filename()=="metadata.json" ? input.parent_path() : input;
-  const bool dataset=lidar_viewer::IsDatasetFile(path) || (fs::is_directory(path) && !IsRos2BagInput(path));
+  auto path=input.filename()=="metadata.json" ? input.parent_path() : input;
+  if((path.filename()=="points" || path.filename()=="pointcloud") && fs::is_regular_file(path.parent_path()/"metadata.json")) path=path.parent_path();
+  const bool dataset=state.review_window || lidar_viewer::IsDatasetFile(path) || (fs::is_directory(path) && !IsRos2BagInput(path));
   auto sources=dataset ? std::vector<BagSource>{} : DiscoverBagSources(path);
   if(dataset) {const auto canonical=fs::canonical(path);sources.push_back({canonical,canonical.filename().u8string(),{}, {}});}
   if (sources.empty() && input.extension()==".bin" && fs::is_regular_file(input)) {
@@ -1866,6 +1902,7 @@ void OpenInputPath(ViewerState & state, const fs::path & input)
   }
   state.bag_date_filter.clear();
   state.bag_search.fill('\0');
+  if(dataset && state.current_bag_source==selected_index) state.current_bag_source.reset(); // Reload external label edits.
   OpenBagSource(state, selected_index);
 }
 
@@ -1905,7 +1942,11 @@ void CompleteDatasetPicker(ViewerState & state,GLFWwindow * window)
     const auto result=state.dataset_picker.Poll();if(!result) return;
     glfwFocusWindow(window);
     if(!result->error.empty()) throw std::runtime_error(result->error);
-    if(!result->path.empty()) OpenInputPath(state,result->path);
+    if(!result->path.empty()) {
+      const auto path=result->path.u8string();
+      if(path.size()<state.dataset_review_path.size()) {state.dataset_review_path.fill(0);std::copy(path.begin(),path.end(),state.dataset_review_path.begin());}
+      OpenInputPath(state,result->path);state.close_dataset_review=true;
+    }
   } catch(const std::exception & error) {state.ui_error=error.what();}
 }
 
@@ -1984,6 +2025,12 @@ void CompleteBagLoad(ViewerState & state)
       state.loop_playback = staged.loop_playback;
     }
     state.current_index = 0;
+    if(!state.frames.empty() && state.frames.front().dataset_sample) {
+      const auto path=state.bag_sources[selected].path;
+      state.dataset_opened_root=fs::is_regular_file(path) ? path.parent_path() : path;
+      state.roi_tool=ViewerState::RoiTool::Navigate;
+      const auto text=path.u8string();if(text.size()<state.dataset_review_path.size()) {state.dataset_review_path.fill(0);std::copy(text.begin(),text.end(),state.dataset_review_path.begin());}
+    }
     state.current_bag_source = selected;
     state.global_ground_offset = ground_offset;
     state.alignment_initialized = true;
@@ -2927,7 +2974,7 @@ void KeyCallback(GLFWwindow * window, int key, int, int action, int mods)
   auto * state = static_cast<ViewerState *>(glfwGetWindowUserPointer(window));
   if (!state) return;
   if (key == GLFW_KEY_O && (mods & GLFW_MOD_CONTROL) && action == GLFW_PRESS) {
-    StartBagPicker(*state);
+    if(state->review_window) state->open_dataset_review=true;else StartBagPicker(*state);
     return;
   }
   if ((mods&GLFW_MOD_CONTROL) && key==GLFW_KEY_S && action==GLFW_PRESS) {
@@ -2935,7 +2982,12 @@ void KeyCallback(GLFWwindow * window, int key, int, int action, int mods)
   }
   const bool typing=ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput;
   const bool popup=ImGui::GetCurrentContext() && ImGui::IsPopupOpen(nullptr,ImGuiPopupFlags_AnyPopup);
+  if((mods&GLFW_MOD_CONTROL) && key==GLFW_KEY_E && action==GLFW_PRESS && !popup && !state->review_window && !state->base_frame.annotations) {
+    StartRoiExport(*state,true);return;
+  }
   if (!typing && !popup && action==GLFW_PRESS) {
+    if((state->review_window || state->base_frame.annotations) && (key==GLFW_KEY_R || key==GLFW_KEY_DELETE ||
+        ((mods&GLFW_MOD_CONTROL) && (key==GLFW_KEY_D || key==GLFW_KEY_E)))) return;
     if (key==GLFW_KEY_ESCAPE && state->open_app_settings) {
       state->open_app_settings=false;if (state->app_settings_dirty) SaveAppSettings(*state);return;
     }
@@ -3420,16 +3472,28 @@ void TraceUi(const char * id)
   std::cout<<"UI "<<id<<' '<<a.x<<' '<<a.y<<' '<<b.x<<' '<<b.y<<std::endl;
 }
 
+void SaveExportFolder(ViewerState & state)
+{
+  const auto path=ExpandFolderPath(state.export_directory.data()).u8string();
+  if(path.find_first_of("\r\n")!=std::string::npos) throw std::runtime_error("Export folder must be a single path");
+  const auto config=lidar_viewer::UserConfigurationDirectory();fs::create_directories(config);
+  lidar_viewer::settings::AtomicWriteText(config/"roi_export_folder.txt",path);
+}
+
 void UpdateRoiExport(ViewerState & state)
 {
   try {
+    if(!state.export_folder_loaded) {
+      state.export_folder_loaded=true;std::ifstream file(lidar_viewer::UserConfigurationDirectory()/"roi_export_folder.txt");std::string path;
+      if(std::getline(file,path) && path.size()<state.export_directory.size()) std::copy(path.begin(),path.end(),state.export_directory.begin());
+    }
     if (const auto selected=state.export_picker.Poll()) {
       if (!selected->error.empty()) state.export_error=selected->error;
       else if (!selected->path.empty()) {
         const auto path=selected->path.u8string();
         if (path.size()>=state.export_directory.size()) state.export_error="The selected path is too long";
         else {std::fill(state.export_directory.begin(),state.export_directory.end(),0);
-          std::copy(path.begin(),path.end(),state.export_directory.begin());}
+          std::copy(path.begin(),path.end(),state.export_directory.begin());SaveExportFolder(state);}
       }
     }
   } catch (const std::exception & error) {state.export_error=error.what();}
@@ -3448,9 +3512,10 @@ void UpdateRoiExport(ViewerState & state)
   }
 }
 
-void StartRoiExport(ViewerState & state)
+void StartRoiExport(ViewerState & state,bool current_frame_only)
 {
-  if (state.export_future.valid() || state.export_picker.Active()) return;
+  if(state.export_future.valid() || state.export_picker.Active()) {SetTransientStatus(state,"Export is already running");return;}
+  if(current_frame_only && !state.export_directory[0]) {state.open_roi_export=true;state.export_error="Choose an export folder first";return;}
   try {
     lidar_viewer::RoiExportRequest request;
     request.regions=state.display_roi;request.aligned_coordinates=state.export_aligned;
@@ -3460,13 +3525,14 @@ void StartRoiExport(ViewerState & state)
     request.class_name=state.export_class_name.data();request.roi_names_as_labels=state.export_roi_name_labels;
     const auto parent=ExpandFolderPath(state.export_directory.data());
     if (parent.empty()) throw std::runtime_error("Choose an export folder");
+    fs::create_directories(parent);SaveExportFolder(state);
     if (state.live_mode) {
       if (!state.live_has_frame) throw std::runtime_error("Waiting for the first live frame");
       request.live_snapshot=state.base_frame;request.live_sequence=state.live_display_sequence;
       request.live_topic=state.live_points_topic.data();
     } else {
       if (state.frames.empty()) throw std::runtime_error("Open a recording first");
-      if (state.export_scope==0) request.sources.push_back({state.frames[state.current_index],state.current_index});
+      if (current_frame_only || state.export_scope==0) request.sources.push_back({state.frames[state.current_index],state.current_index});
       else {
         if (state.export_first<1 || state.export_last<state.export_first || state.export_stride<1 ||
             static_cast<std::size_t>(state.export_last)>state.frames.size())
@@ -3486,7 +3552,7 @@ void StartRoiExport(ViewerState & state)
     state.export_future=state.export_worker->Submit([request=std::move(request),progress=state.export_progress] {
       return lidar_viewer::ExportRoiDataset(request,progress);
     });
-  } catch (const std::exception & error) {state.export_error=error.what();}
+  } catch (const std::exception & error) {state.export_error=error.what();if(current_frame_only) {state.open_roi_export=true;SetTransientStatus(state,"Export failed");}}
 }
 
 void BuildRoiExportDialog(ViewerState & state)
@@ -3647,10 +3713,13 @@ void BuildRoiEditor(ViewerState & state)
     for (std::size_t i=0;i<EditedRoi(state).boxes.size();++i) {
       ImGui::PushID(static_cast<int>(i));auto & box=EditedRoi(state).boxes[i];
       ImGui::BeginDisabled(state.roi_gesture.active);
-      const std::string label=(box.name.empty() ? "Unnamed region" : box.name)+"###Region";
+      const std::string label="    "+(box.name.empty() ? std::string("Unnamed region") : box.name)+"###Region";
       if (ImGui::Selectable(label.c_str(),i==SelectedRoi(state),0,{ImGui::GetContentRegionAvail().x-38*s,30*s})) {
         SelectedRoi(state)=i;state.roi_numeric_edit=false;SelectRoiTool(state,ViewerState::RoiTool::Move);
       }
+      const auto dot=ImGui::GetItemRectMin();const auto & tint=lidar_viewer::RoiBoxColor(box);
+      ImGui::GetWindowDrawList()->AddCircleFilled({dot.x+8*s,dot.y+15*s},4*s,
+        ImGui::ColorConvertFloat4ToU32({tint.r,tint.g,tint.b,box.enabled ? 1.f : .4f}));
       TraceUi(("roi_row_"+std::to_string(i)).c_str());
       if(i==SelectedRoi(state)) TraceUi("roi_selected_row");
       if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) FocusSelectedRoi(state);
@@ -3738,6 +3807,20 @@ void BuildRoiEditor(ViewerState & state)
       ImGui::TextUnformatted("Name");ImGui::SetNextItemWidth(-1);
       if (ImGui::InputText("##RoiName",name.data(),name.size())) {box.name=name.data();edited=true;}
       TraceUi("roi_name");
+      ImGui::TextUnformatted("Color");
+      for(std::size_t i=0;i<lidar_viewer::kRoiColors.size();++i) {
+        if(i) ImGui::SameLine();
+        ImGui::PushID(static_cast<int>(i));const auto & color=lidar_viewer::kRoiColors[i];
+        if(ImGui::ColorButton("##RoiColor",{color.r,color.g,color.b,1},ImGuiColorEditFlags_NoTooltip|ImGuiColorEditFlags_NoDragDrop,{30*s,30*s})) {
+          box.color_index=static_cast<int>(i);edited=true;
+        }
+        TraceUi(("roi_color_"+std::to_string(i)).c_str());
+        if(static_cast<int>(i)==lidar_viewer::RoiColorIndex(box)) {
+          const auto a=ImGui::GetItemRectMin(),b=ImGui::GetItemRectMax();
+          ImGui::GetWindowDrawList()->AddRect({a.x-2*s,a.y-2*s},{b.x+2*s,b.y+2*s},IM_COL32(245,248,255,255),4*s,0,2*s);
+        }
+        Tip(color.name);ImGui::PopID();
+      }
       float center[]{box.center.x,box.center.y,box.center.z},size[]{box.size.x,box.size.y,box.size.z};
       ImGui::TextUnformatted("Position X / Y / Z (sensor, m)");ImGui::SetNextItemWidth(-1);
       edited|=ImGui::InputFloat3("##RoiCenter",center,"%.3f");TraceUi("roi_center");
@@ -3786,7 +3869,8 @@ void BuildRoiEditor(ViewerState & state)
   }
   if (!lidar_viewer::SameRoi(before,EditedRoi(state))) {
     if (!state.roi_numeric_edit) EditedRoiHistory(state).Record(before);
-    state.roi_numeric_edit=ImGui::IsAnyItemActive();MarkRoiPending(state);RebuildRoiGeometry(state);
+    state.roi_numeric_edit=ImGui::IsAnyItemActive();
+    if(!lidar_viewer::SameRoiGeometry(before,EditedRoi(state))) {MarkRoiPending(state);RebuildRoiGeometry(state);}
   }
   if (!ImGui::IsAnyItemActive()) state.roi_numeric_edit=false;
   if (display) {
@@ -3797,6 +3881,17 @@ void BuildRoiEditor(ViewerState & state)
     if (lidar_viewer::ActionButton("##ExportRoi",UiIcon::Export,
         state.export_future.valid() ? "Export progress..." : "Export points...",{-1,32*s},s)) state.open_roi_export=true;
     TraceUi("roi_export");ImGui::EndDisabled();
+    ImGui::TextDisabled("Export folder");ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x-38*s);
+    const bool path_enter=ImGui::InputTextWithHint("##QuickExportFolder","Folder path",state.export_directory.data(),state.export_directory.size(),ImGuiInputTextFlags_EnterReturnsTrue);
+    const bool path_done=ImGui::IsItemDeactivatedAfterEdit();TraceUi("quick_export_folder");
+    if(path_enter || path_done) try {SaveExportFolder(state);}catch(const std::exception & error) {state.export_error=error.what();}
+    ImGui::SameLine();ImGui::BeginDisabled(state.export_picker.Active());
+    if(IconButton("##QuickExportBrowse",UiIcon::Folder,"Choose export folder",s)) {
+      try {auto path=ExpandFolderPath(state.export_directory.data());if(!fs::is_directory(path)) path=lidar_viewer::UserHome();state.export_picker.OpenDirectory(path);}
+      catch(const std::exception & error) {state.export_error=error.what();}
+    }
+    TraceUi("quick_export_browse");ImGui::EndDisabled();ImGui::TextDisabled("Ctrl+E: export current frame");
+    if(!state.export_error.empty()) ImGui::TextWrapped("%s",state.export_error.c_str());
   }
   ImGui::PopID();
   ImGui::PopStyleVar(2);
@@ -3828,22 +3923,73 @@ void BuildAppSettings(ViewerState & state)
 fs::path CurrentDatasetRoot(const ViewerState & state)
 {
   if(state.frames.empty() || !state.frames.front().dataset_sample) return {};
+  if(!state.dataset_opened_root.empty()) return state.dataset_opened_root;
   if(state.current_bag_source && *state.current_bag_source<state.bag_sources.size()) {
     const auto path=state.bag_sources[*state.current_bag_source].path;return fs::is_directory(path) ? path : path.parent_path();
   }
   return state.frames.front().dataset_sample->root;
 }
 
+ImVec4 DatasetLabelColor(int id)
+{
+  if(id<0) return {.28f,.32f,.38f,1};
+  if(id==0) return {.68f,.72f,.78f,1};
+  constexpr int indices[]{1,3,2,4,5,6,0,7};const auto & c=lidar_viewer::kRoiColors[indices[(id-1)%8]];
+  return {c.r,c.g,c.b,1};
+}
+void BuildDatasetReviewDialog(ViewerState & state)
+{
+  if(state.open_dataset_review) {ImGui::OpenPopup("Open point clouds");state.open_dataset_review=false;state.close_dataset_review=false;}
+  const float s=state.ui_layout.scale,w=std::min(680*s,ImGui::GetIO().DisplaySize.x-32*s);
+  ImGui::SetNextWindowSizeConstraints({w,0},{w,ImGui::GetIO().DisplaySize.y-32*s});
+  if(!ImGui::BeginPopupModal("Open point clouds",nullptr,ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoSavedSettings)) return;
+  if(state.close_dataset_review) {ImGui::CloseCurrentPopup();state.close_dataset_review=false;ImGui::EndPopup();return;}
+  ImGui::TextWrapped("Enter a file or folder path. Browse folder samples with Previous / Next or Left / Right.");
+  ImGui::TextDisabled("NPY / PCD / XYZI BIN | point labels and 3D boxes | read-only");
+  ImGui::BeginDisabled(state.dataset_picker.Active());
+  ImGui::SetNextItemWidth(-100*s);
+  if(ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+  const bool enter=ImGui::InputTextWithHint("##ReviewPath","File or folder path",state.dataset_review_path.data(),state.dataset_review_path.size(),ImGuiInputTextFlags_EnterReturnsTrue);
+  TraceUi("dataset_review_path");ImGui::SameLine();
+  if(ImGui::Button("Browse...",{92*s,0})) {
+    try {auto path=fs::u8path(state.dataset_review_path.data());if(!fs::is_directory(path)) path=lidar_viewer::UserHome();state.dataset_picker.OpenFile(path);}
+    catch(const std::exception & error) {state.ui_error=error.what();}
+  }
+  TraceUi("dataset_review_browse");
+  if(ImGui::Button("Open",{140*s,0}) || enter) {
+    try {const auto path=ExpandFolderPath(state.dataset_review_path.data());if(!fs::is_directory(path) && !fs::is_regular_file(path)) throw std::runtime_error("Enter an existing point cloud file or folder");
+      OpenInputPath(state,path);ImGui::CloseCurrentPopup();}
+    catch(const std::exception & error) {state.ui_error=error.what();}
+  }
+  TraceUi("dataset_review_open");ImGui::SameLine();
+  if(ImGui::Button("Cancel",{100*s,0}) || ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
+  ImGui::EndDisabled();if(!state.ui_error.empty()) ImGui::TextWrapped("%s",state.ui_error.c_str());ImGui::EndPopup();
+}
+
 void BuildDatasetPanel(ViewerState & state)
 {
   const float s=state.ui_layout.scale;
   const auto root=CurrentDatasetRoot(state);
-  SectionTitle("Dataset samples");ImGui::TextWrapped("%s",root.filename().u8string().c_str());
+  SectionTitle("Label data review");
+  if(!state.dataset_review_path[0]) {const auto path=root.u8string();if(path.size()<state.dataset_review_path.size()) std::copy(path.begin(),path.end(),state.dataset_review_path.begin());}
+  ImGui::SetNextItemWidth(-1);
+  if(ImGui::InputText("##DatasetPath",state.dataset_review_path.data(),state.dataset_review_path.size(),ImGuiInputTextFlags_EnterReturnsTrue)) {
+    try {OpenInputPath(state,ExpandFolderPath(state.dataset_review_path.data()));}catch(const std::exception & error) {state.ui_error=error.what();}
+  }
+  TraceUi("dataset_folder_path");
+  ImGui::BeginDisabled(state.current_index==0);if(ImGui::Button("< Previous",{ImGui::GetContentRegionAvail().x*.48f,0})) TryLoadFrame(state,state.current_index-1);
+  TraceUi("dataset_previous");ImGui::EndDisabled();ImGui::SameLine();
+  ImGui::BeginDisabled(state.current_index+1>=state.frames.size());if(ImGui::Button("Next >",{-1,0})) TryLoadFrame(state,state.current_index+1);
+  TraceUi("dataset_next");ImGui::EndDisabled();
   ImGui::TextDisabled("%zu samples  |  Left / Right to browse",state.frames.size());
   if(ImGui::Checkbox("Fit each sample",&state.dataset_fit_each)) state.dataset_fitted_index.reset();
   TraceUi("dataset_fit_each");
+  if(!state.review_window) {ImGui::SameLine();
+    if(ImGui::SmallButton("Train...")) state.open_training=true;
+    TraceUi("dataset_train");
+  }
   const auto selected=state.current_index;
-  if(ImGui::BeginListBox("##DatasetSamples",{-1,std::min(260*s,std::max(100*s,ImGui::GetContentRegionAvail().y-250*s))})) {
+  if(ImGui::BeginListBox("##DatasetSamples",{-1,std::min(200*s,std::max(90*s,ImGui::GetContentRegionAvail().y-380*s))})) {
     ImGuiListClipper clip;clip.Begin(static_cast<int>(state.frames.size()));
     clip.IncludeItemByIndex(static_cast<int>(selected));
     while(clip.Step()) for(int i=clip.DisplayStart;i<clip.DisplayEnd;++i) {
@@ -3857,17 +4003,37 @@ void BuildDatasetPanel(ViewerState & state)
   }
   if(selected>=state.frames.size() || !state.frames[selected].dataset_sample) return;
   const auto & sample=*state.frames[selected].dataset_sample;
-  ImGui::Text("Sample %zu / %zu",selected+1,state.frames.size());
+  ImGui::Text("Sample %zu / %zu  |  %zu points",selected+1,state.frames.size(),state.base_frame.points.size());
   TraceUi(("dataset_current_"+std::to_string(selected)).c_str());
-  ImGui::Text("%zu points",state.base_frame.points.size());
-  ImGui::Text("Coordinates: %s",sample.coordinate_space.c_str());
-  if(sample.source_frame) ImGui::Text("Source frame: %zu",sample.source_frame);
-  if(!sample.category.empty()) ImGui::Text("Category: %s",sample.category.c_str());
-  ImGui::TextWrapped("Labels: %s",sample.annotation_status.c_str());
-  if(!sample.labels.empty()) ImGui::TextDisabled("Point label file present; validate before training.");
-  if(ImGui::Button("Training settings",{-1,30*s})) state.open_training=true;
-  TraceUi("dataset_train");
+
+  if(!sample.category.empty()) ImGui::TextWrapped("Class hint: %s",sample.category.c_str());
+  else if(!sample.class_hints.empty()) {
+    std::string names;for(std::size_t i=0;i<std::min<std::size_t>(3,sample.class_hints.size());++i) {if(i) names+=", ";names+=sample.class_hints[i];}
+    if(sample.class_hints.size()>3) names+=" ...";
+    ImGui::TextWrapped("Class hints: %s",names.c_str());
+  }
+  if(const auto labels=state.base_frame.annotations) {
+    if(!labels->error.empty()) ImGui::TextColored({1,.6f,.4f,1},"Label error: %s",labels->error.c_str());
+    if(labels->point_labels.empty()) ImGui::TextWrapped("No point labels. Class hints do not label individual points.");
+    else {
+      ImGui::TextWrapped("%s: %s",labels->draft ? "Unverified draft" : "Point labels",labels->source.c_str());
+      ImGui::Checkbox("Color points by label",&state.dataset_show_labels);TraceUi("dataset_label_colors");
+      std::size_t shown=0;for(const auto & entry:labels->label_counts) {
+        if(shown++>=12) break;
+        std::string name=entry.first<0 ? "Unlabeled" : "Class "+std::to_string(entry.first);
+        for(const auto & item:labels->class_names) if(item.first==entry.first) name=item.second;
+        ImGui::TextColored(DatasetLabelColor(entry.first),"%d  %s  (%zu)",entry.first,name.c_str(),entry.second);
+      }
+      if(labels->label_counts.size()>12) ImGui::TextDisabled("+ %zu more classes",labels->label_counts.size()-12);
+    }
+    if(labels->box_annotations) {
+      if(!labels->boxes.empty()) ImGui::Checkbox("Show annotated boxes",&state.dataset_show_boxes);
+      ImGui::Text("%zu annotated boxes",labels->boxes.size());
+    }
+  }
   if(ImGui::CollapsingHeader("Sample details")) {
+    ImGui::Text("Coordinates: %s",sample.coordinate_space.c_str());
+    if(sample.source_frame) ImGui::Text("Source frame: %zu",sample.source_frame);
     ImGui::TextWrapped("Points: %s",state.frames[selected].path.u8string().c_str());
     if(!sample.source.empty()) ImGui::TextWrapped("Source: %s",sample.source.c_str());
     if(!sample.metadata.empty()) ImGui::TextWrapped("Metadata: %s",sample.metadata.u8string().c_str());
@@ -3880,7 +4046,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   const float s = layout.scale;
   bool reprocess = false, alignment_changed=false, refresh_objects=false, refresh_detector=false;
   const bool has_input = state.live_mode ? state.live_has_frame : !state.frames.empty();
-  const bool dataset_input=!state.live_mode && !state.frames.empty() && state.frames.front().dataset_sample!=nullptr;
+  const bool dataset_input=state.review_window || (!state.live_mode && !state.frames.empty() && state.frames.front().dataset_sample!=nullptr);
   BeginPanel("Header", layout.header, false);
   ImGui::SetCursorPosY(15.f * s);
   ImGui::TextColored({.35f, .82f, .96f, 1.f}, "LiDAR");
@@ -3888,21 +4054,27 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   ImGui::TextUnformatted("Studio");
   ImGui::SameLine(190.f*s);
   ImGui::BeginDisabled(state.live.Active() || state.loading_bag_source.has_value() || state.folder_scan_future.valid() || state.bag_picker.Active() || state.dataset_picker.Active());
-  if (lidar_viewer::ActionButton("##OpenFile",lidar_viewer::UiIcon::Folder,"Open file",{110*s,0},s)) StartBagPicker(state);
-  ImGui::EndDisabled(); Tip("Open BIN, NPY, PCD or ROS bag. Ctrl+O.");
-  ImGui::SameLine();
-  ImGui::BeginDisabled(state.loading_bag_source.has_value() || state.folder_scan_future.valid() || state.bag_picker.Active());
-  if (lidar_viewer::ActionButton("##Live",lidar_viewer::UiIcon::Live,"Live",{85*s,0},s)) state.open_live_dialog=true;
-  ImGui::EndDisabled();
-  ImGui::SameLine();ImGui::BeginDisabled(state.live.Active() || state.loading_bag_source.has_value() || state.folder_scan_future.valid() || state.bag_picker.Active() || state.dataset_picker.Active());
-  const bool wide_header=layout.header.w>=1050*s;
-  if(lidar_viewer::ActionButton("##OpenDataset",lidar_viewer::UiIcon::Folder,wide_header ? "Datasets" : nullptr,{(wide_header ? 110.f : 32.f)*s,0},s)) {
-    try {auto root=CurrentDatasetRoot(state);if(root.empty()) root=lidar_viewer::UserHome();state.dataset_picker.OpenDirectory(root);}
-    catch(const std::exception & error) {state.ui_error=error.what();}
+  if (lidar_viewer::ActionButton("##OpenFile",lidar_viewer::UiIcon::Folder,state.review_window ? "Open points" : "Open file",{120*s,0},s)) {
+    if(state.review_window) state.open_dataset_review=true;else StartBagPicker(state);
   }
-  TraceUi("open_dataset");Tip("Open a dataset folder and browse saved ROI samples.");ImGui::EndDisabled();ImGui::SameLine();
-  if(lidar_viewer::ActionButton("##Training",lidar_viewer::UiIcon::Play,wide_header ? "Train" : nullptr,{(wide_header ? 86.f : 32.f)*s,0},s)) state.open_training=true;
-  TraceUi("open_training");Tip("Configure, validate and run model training.");
+  ImGui::EndDisabled();Tip(state.review_window ? "Open a point cloud file or folder. Ctrl+O." : "Open BIN, NPY, PCD or ROS bag. Ctrl+O.");
+  ImGui::SameLine();
+  if(!state.review_window) {
+    ImGui::BeginDisabled(state.loading_bag_source.has_value() || state.folder_scan_future.valid() || state.bag_picker.Active());
+    if (lidar_viewer::ActionButton("##Live",lidar_viewer::UiIcon::Live,"Live",{85*s,0},s)) state.open_live_dialog=true;
+    ImGui::EndDisabled();ImGui::SameLine();
+    const bool wide_header=layout.header.w>=1050*s;
+    if(lidar_viewer::ActionButton("##OpenDataset",lidar_viewer::UiIcon::Eye,wide_header ? "Point clouds" : nullptr,{(wide_header ? 142.f : 32.f)*s,0},s)) {
+      try {
+        if(!state.point_review) state.point_review=std::make_unique<lidar_viewer::ReviewWindowProcess>();
+        if(!state.point_review->Open(lidar_viewer::ExecutablePath(),lidar_viewer::UserConfigurationDirectory()/"point_review.log"))
+          SetTransientStatus(state,"Point cloud review is already open; switch to its window.");
+      } catch(const std::exception & error) {state.ui_error=error.what();}
+    }
+    TraceUi("open_dataset");Tip("Open a separate window to review point clouds and labels. Bag playback continues.");ImGui::SameLine();
+    if(lidar_viewer::ActionButton("##Training",lidar_viewer::UiIcon::Play,wide_header ? "Train" : nullptr,{(wide_header ? 86.f : 32.f)*s,0},s)) state.open_training=true;
+    TraceUi("open_training");Tip("Configure, validate and run model training.");
+  }
   const float header_right = std::max(ImGui::GetItemRectMax().x+16*s, layout.header.w - 360.f * s);
   ImGui::SameLine(header_right);
   ImGui::TextColored(!state.ui_error.empty() ? ImVec4(1.f, .56f, .48f, 1) :
@@ -3918,7 +4090,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   if (ImGui::BeginPopup("Shortcuts")) {
     ImGui::TextUnformatted("Keyboard & mouse");
     ImGui::Separator();
-    ImGui::TextUnformatted("Ctrl+O       Open file chooser\nCtrl+S       Save profile\nR            Draw ROI in top view\nCtrl+Z / Y   Undo / redo ROI\nCtrl+D       Duplicate ROI (ROI tab)\nDelete       Delete ROI (ROI tab)\nEsc          Cancel ROI tool / quit\nSpace        Play / pause\nN / P        Next / previous frame\nF            Fit all points\nC            Cycle point colors\n[ / ]        Point size\nQ / E        Rotate 2D view\nLeft drag    Orbit (3D) / pan (2D)\nRight drag   Pan (3D) / rotate (2D)\nWheel        Zoom");
+    ImGui::TextUnformatted("Ctrl+O       Open file chooser\nCtrl+S       Save profile\nCtrl+E       Export current ROI frame\nR            Draw ROI in top view\nCtrl+Z / Y   Undo / redo ROI\nCtrl+D       Duplicate ROI (ROI tab)\nDelete       Delete ROI (ROI tab)\nEsc          Cancel ROI tool / quit\nSpace        Play / pause\nN / P        Next / previous frame\nF            Fit all points\nC            Cycle point colors\n[ / ]        Point size\nQ / E        Rotate 2D view\nLeft drag    Orbit (3D) / pan (2D)\nRight drag   Pan (3D) / rotate (2D)\nWheel        Zoom");
     ImGui::EndPopup();
   }
   ImGui::SameLine(layout.header.w-48*s);
@@ -4098,7 +4270,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       end_tab();
     }
     alignment_changed=reprocess;
-    if (begin_tab("Ground")) {
+    if (!dataset_input && begin_tab("Ground")) {
       auto & ground = state.algorithm_config.ground_removal;
       SectionTitle("Ground segmentation");
       if (ImGui::Checkbox("Classify ground", &state.ground_removal_enabled)) {
@@ -4208,11 +4380,11 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       ImGui::TextDisabled("Processing: %.1f ms",state.status_processing_ms);
       end_tab();
     }
-    if (begin_tab("ROI")) {
+    if (!dataset_input && begin_tab("ROI")) {
       BuildRoiEditor(state);
       end_tab();
     }
-    if (begin_tab("Objects")) {
+    if (!dataset_input && begin_tab("Objects")) {
       auto & detection=state.algorithm_config.detection;
       auto & clustering=state.algorithm_config.clustering;
       SectionTitle("Object analysis");
@@ -4373,6 +4545,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     if (ImGui::SmallButton("Dismiss error")) state.ui_error.clear();
   }
   ImGui::EndChild();
+  if(!state.review_window) {
   ImGui::Separator();
   const bool pending_exclusions=state.applying_exclusions ||
     !lidar_viewer::SameRoiExclusions(state.roi,state.applied_exclusions);
@@ -4396,6 +4569,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     !lidar_viewer::SameRoi(state.display_roi,state.saved_display_roi);
   ImGui::TextColored(unsaved ? ImVec4(1,.74f,.4f,1) : ImVec4(.48f,.65f,.65f,1),
     "%s",pending_exclusions ? "Apply ROI before saving" : unsaved ? "ROI changes not saved  /  Ctrl+S" : "Ctrl+S saves this profile");
+  }
   ImGui::End();
 
   // An unobtrusive divider belongs to application layout, not a data profile.
@@ -4469,8 +4643,9 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   ImGui::EndDisabled();
   ImGui::EndDisabled();
   ImGui::SameLine();
-  BuildSourceSelector(state, std::max(80.f * s, ImGui::GetContentRegionAvail().x));
-  if (!state.live_mode) {
+  if(!state.review_window) BuildSourceSelector(state, std::max(80.f * s, ImGui::GetContentRegionAvail().x));
+  else if(has_input) ImGui::TextUnformatted(state.frames[state.current_index].label.c_str());
+  if (!state.live_mode && !state.review_window) {
     ImGui::BeginDisabled(state.loading_bag_source.has_value() || state.folder_scan_future.valid() || state.bag_picker.Active());
     if (ImGui::Button("Add folder",{115*s,0})) state.open_folder_picker=true;
     ImGui::EndDisabled();Tip("Remember a collection of bag recordings for the source list.");
@@ -4590,8 +4765,8 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   const auto handles=RoiHandlePoints(state);
   if (!handles.empty() && !state.loading_bag_source) {
     draw->PushClipRect({view.x,view.y},{view.x+view.w,view.y+view.h},true);
-    const ImU32 accent=EditedRoi(state).boxes[SelectedRoi(state)].mode==lidar_viewer::RoiBoxMode::Exclude ?
-      IM_COL32(255,163,115,255) : IM_COL32(110,211,224,255);
+    const auto & color=lidar_viewer::RoiBoxColor(EditedRoi(state).boxes[SelectedRoi(state)]);
+    const ImU32 accent=ImGui::ColorConvertFloat4ToU32({color.r,color.g,color.b,1});
     for (int i=0;i<4;++i) draw->AddLine(handles[i*2].screen,handles[(i*2+2)%8].screen,accent,1.5f*s);
     draw->AddLine(handles[5].screen,handles.back().screen,accent,1.5f*s);
     for (const auto & h : handles) {
@@ -4626,6 +4801,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   }
   BuildInputLoading(state);
   BuildAppSettings(state);
+  BuildDatasetReviewDialog(state);
   if(state.open_training && !state.training_workspace) state.training_workspace=std::make_unique<lidar_viewer::TrainingWorkspace>();
   if(state.training_workspace) state.training_workspace->Draw(state.open_training,CurrentDatasetRoot(state),s);
   if (has_input && state.imu_level_enabled) {
@@ -4755,9 +4931,8 @@ void RenderRoiBoxes(ViewerState & state, const Mat4 & mvp)
   glLineWidth(2.f);
   for (std::size_t i = 0; i < std::min(EditedRoi(state).boxes.size(), renderer.vertices.size() / 24); ++i) {
     if(!EditedRoi(state).boxes[i].enabled) continue;
-    const bool display=state.roi_purpose==ViewerState::RoiPurpose::Display;
-    if (i == SelectedRoi(state)) glUniform4f(state.grid.color_loc, display ? .43f : 1.f, display ? .83f : .52f, display ? .88f : .28f, 1.f);
-    else glUniform4f(state.grid.color_loc, display ? .35f : 1.f, display ? .75f : .48f, display ? .85f : .3f, .9f);
+    const auto & color=lidar_viewer::RoiBoxColor(EditedRoi(state).boxes[i]);
+    glUniform4f(state.grid.color_loc,color.r,color.g,color.b,i==SelectedRoi(state) ? 1.f : .85f);
     glDrawArrays(GL_LINES, static_cast<GLint>(i * 24), 24);
   }
   glLineWidth(1.f);
@@ -4825,6 +5000,29 @@ void RenderClusterBoxes(ViewerState & state,const Mat4 & mvp)
     }
   }
   glDepthMask(GL_TRUE);glLineWidth(1.f);glDisable(GL_BLEND);
+}
+
+void RenderDatasetBoxes(const ViewerState & state,const Mat4 & mvp)
+{
+  const auto labels=state.frame.annotations;if(!labels || !state.dataset_show_boxes) return;
+  const auto & v=state.ui_layout.viewport;auto * draw=ImGui::GetForegroundDrawList();
+  draw->PushClipRect({v.x,v.y},{v.x+v.w,v.y+v.h},true);
+  for(const auto & annotation:labels->boxes) {
+    lidar_viewer::RoiBox box{annotation.class_name,true,annotation.center,annotation.size,annotation.yaw_deg};
+    const auto corners=lidar_viewer::RoiCorners(box);std::array<std::optional<ImVec2>,8> screen;
+    float top=v.y+v.h,left=v.x+v.w,right=v.x;
+    for(std::size_t i=0;i<corners.size();++i) {
+      const auto p=corners[i];const auto & m=mvp.m;const float w=m[3]*p.x+m[7]*p.y+m[11]*p.z+m[15];if(w<=0) continue;
+      const float z=(m[2]*p.x+m[6]*p.y+m[10]*p.z+m[14])/w;if(z < -1 || z>1) continue;
+      screen[i]=ImVec2{v.x+((m[0]*p.x+m[4]*p.y+m[8]*p.z+m[12])/w+1)*v.w*.5f,
+        v.y+(1-(m[1]*p.x+m[5]*p.y+m[9]*p.z+m[13])/w)*v.h*.5f};
+      top=std::min(top,screen[i]->y);left=std::min(left,screen[i]->x);right=std::max(right,screen[i]->x);
+    }
+    constexpr ImU32 color=IM_COL32(130,220,255,255);
+    for(unsigned i=0;i<8;++i) for(unsigned bit:{1u,2u,4u}) if(!(i&bit) && screen[i] && screen[i|bit]) draw->AddLine(*screen[i],*screen[i|bit],color,1.5f);
+    if(left<=right) draw->AddText({std::max(v.x+4,(left+right-ImGui::CalcTextSize(box.name.c_str()).x)*.5f),std::max(v.y+4,top-20)},color,box.name.c_str());
+  }
+  draw->PopClipRect();
 }
 
 void RenderDetectionLabels(const ViewerState & state,const Mat4 & mvp)
@@ -4930,6 +5128,7 @@ int RunViewer(int argc, char ** argv)
     bool imu_level = false;
     bool start_2d = false;
     bool start_live = false;
+    bool point_review=false;
     fs::path record_folder = lidar_viewer::ProjectResourcePath("recordings");
 #ifdef LIDAR_VIEWER_USER_SETTINGS
     record_folder=lidar_viewer::UserHome()/"Documents/LiDARViewer/recordings";
@@ -4942,6 +5141,7 @@ int RunViewer(int argc, char ** argv)
                   << "INPUT: .bin/.npy/.pcd file, dataset folder/metadata.json, bag collection, ROS 2 bag, .mcap, .db3 or metadata.yaml.\n"
                   << "Without INPUT, show an empty viewer. Click Open file to select a recording.\n"
                   << "Open file (Ctrl+O) selects another recording; Add folder remembers bag collections.\n"
+                  << "--point-review: open a separate read-only point cloud and label browser.\n"
                   << "--live: subscribe to live LiDAR/IMU. Pause freezes the display; Play returns to the latest frame.\n"
                   << "--record-folder: parent folder for recordings started explicitly with Record.\n"
                   << "--sensor-height: explicit display Z translation (0..5 m); no automatic bag leveling.\n"
@@ -4976,6 +5176,8 @@ int RunViewer(int argc, char ** argv)
           }
           sensor_height = height;
         }
+      } else if (arg == "--point-review") {
+        point_review=true;
       } else if (arg == "--inspect") {
         inspect = true;
       } else if (arg == "--detect") {
@@ -4999,7 +5201,10 @@ int RunViewer(int argc, char ** argv)
     }
 
     if (start_live && (input_selected || inspect)) throw std::runtime_error("Use --live without INPUT or --inspect");
+    if(point_review && start_live) throw std::runtime_error("Point review does not accept live input");
     ViewerState state;
+    state.review_window=point_review;state.open_dataset_review=point_review && !input_selected && !inspect;
+    state.dataset_tab_requested=point_review;
     const auto copy_text = [](const std::string & value, auto & buffer) {
       if (value.size() >= buffer.size()) throw std::runtime_error("Live setting is too long");
       std::copy(value.begin(), value.end(), buffer.begin());
@@ -5015,15 +5220,17 @@ int RunViewer(int argc, char ** argv)
     try {
       state.data_folders_config = DataFoldersConfigPath();
       state.hidden_sources_config=lidar_viewer::UserConfigurationDirectory()/"hidden_recordings.cfg";
+      if(!point_review) {
       state.hidden_sources=LoadHiddenBagSources(state.hidden_sources_config);
       state.data_folders = LoadBagFolders(state.data_folders_config);
       for (const auto & folder : state.data_folders)
         state.bag_sources = FilterBagSources(MergeBagSources(std::move(state.bag_sources), DiscoverBagSources(folder)),state.hidden_sources);
+      }
     } catch (const std::exception & error) {
       state.ui_error = std::string("Saved data folders could not be loaded: ") + error.what();
     }
     const bool load_initial_input = input_selected || inspect;
-    if (input_selected) {
+    if (input_selected && !point_review) {
       const auto supplied = DiscoverBagSources(input_path);
       if (!supplied.empty()) {
         input_path = supplied.front().path;
@@ -5038,7 +5245,7 @@ int RunViewer(int argc, char ** argv)
       for (std::size_t i = 0; i < state.bag_sources.size(); ++i)
         if (state.bag_sources[i].path == canonical) state.current_bag_source = i;
     }
-    state.dataset_profile = !state.frames.empty() && state.frames.front().dataset_sample ? "dataset" :
+    state.dataset_profile = point_review ? "dataset" : !state.frames.empty() && state.frames.front().dataset_sample ? "dataset" :
       load_initial_input ? DetectDatasetProfile(input_path) : "rosbag";
     state.algorithm_config = lidar_viewer::LoadPipelineConfig(AlgorithmsConfigPath());
     LoadSettings(state);
@@ -5049,7 +5256,7 @@ int RunViewer(int argc, char ** argv)
     if (sensor_height) {
       state.calibration.z_m = *sensor_height;
     }
-    const bool async_initial_bag=load_initial_input && !inspect && IsRos2BagInput(input_path);
+    const bool async_initial_bag=load_initial_input && !point_review && !inspect && IsRos2BagInput(input_path);
     if (inspect && !input_selected && !state.bag_sources.empty()) {
       // A disconnected or damaged recording must not hide other registered bags.
       for (std::size_t i = 0; i < state.bag_sources.size(); ++i) {
@@ -5068,7 +5275,7 @@ int RunViewer(int argc, char ** argv)
       }
       if (state.frames.empty()) throw std::runtime_error("No registered bag can be opened. Run with a different bag or collection folder.");
     } else if (load_initial_input && !async_initial_bag) {
-      state.frames = ResolveInputFrames(input_path, bag_topic, imu_topic);
+      state.frames = point_review ? lidar_viewer::ResolveDatasetFrames(input_path,nullptr,true) : ResolveInputFrames(input_path, bag_topic, imu_topic);
       state.dataset_tab_requested=!state.frames.empty() && state.frames.front().dataset_sample!=nullptr;
     }
     state.input_fps_estimate = EstimateInputFps(state);
@@ -5149,7 +5356,7 @@ int RunViewer(int argc, char ** argv)
 #if defined(GLFW_WAYLAND_APP_ID) && !defined(_WIN32) && !defined(__APPLE__)
     glfwWindowHintString(GLFW_WAYLAND_APP_ID,"lidar-viewer");
 #endif
-    GLFWwindow * window = glfwCreateWindow(kWindowWidth, kWindowHeight, "LiDAR Studio", nullptr, nullptr);
+    GLFWwindow * window = glfwCreateWindow(kWindowWidth, kWindowHeight, point_review ? "Point cloud review - LiDAR Studio" : "LiDAR Studio", nullptr, nullptr);
     if (!window) {
       glfwTerminate();
       throw std::runtime_error("Failed to create GLFW window");
@@ -5185,7 +5392,7 @@ int RunViewer(int argc, char ** argv)
     const ImGuiStyle base_ui_style = ImGui::GetStyle();
 
     glGenVertexArrays(1, &state.vao);
-    glGenBuffers(1, &state.vbo);
+    glGenBuffers(1, &state.vbo);glGenBuffers(1,&state.label_vbo);
 
     glBindVertexArray(state.vao);
     glBindBuffer(GL_ARRAY_BUFFER, state.vbo);
@@ -5255,11 +5462,12 @@ int RunViewer(int argc, char ** argv)
 
     while (!glfwWindowShouldClose(window)) {
       glfwPollEvents();
+      if(state.point_review) state.point_review->Poll();
       CompleteBagPicker(state, window);
       CompleteDatasetPicker(state,window);
       UpdateRoiExport(state);
       CompleteBagLoad(state);
-      UpdateSourceDurations(state);
+      if(!state.review_window) UpdateSourceDurations(state);
       const bool geometry_ready=CompleteGeometry(state);
       const bool requested_frame_ready=CompleteFrameRequest(state) || geometry_ready;
       const bool live_detector_ready=UpdateDetector(state);
@@ -5316,8 +5524,13 @@ int RunViewer(int argc, char ** argv)
         state.dataset_fitted_index=state.current_index;
         if(state.dataset_fit_each) {
           state.camera.target=state.frame.center;
+          float radius=state.base_frame.radius;
+          if(const auto labels=state.base_frame.annotations) for(const auto & object:labels->boxes) {
+            lidar_viewer::RoiBox box{object.class_name,true,object.center,object.size,object.yaw_deg};
+            for(const auto corner:lidar_viewer::RoiCorners(box)) {const auto d=corner-state.frame.center;radius=std::max(radius,std::sqrt(d.x*d.x+d.y*d.y+d.z*d.z));}
+          }
           state.camera.distance=state.camera.projection_mode==CameraState::ProjectionMode::View2D ?
-            lidar_viewer::TopViewHalfHeight(std::max(.1f,state.base_frame.radius*1.15f)) : std::max(1.f,state.base_frame.radius*2.2f);
+            lidar_viewer::TopViewHalfHeight(std::max(.1f,radius*1.15f)) : std::max(1.f,radius*2.2f);
           StoreCurrentProjectionView(state.camera);
         }
       }
@@ -5363,7 +5576,7 @@ int RunViewer(int argc, char ** argv)
       glUseProgram(program);
       glUniformMatrix4fv(mvp_loc, 1, GL_FALSE, mvp.m.data());
       glUniform1f(point_size_loc, state.camera.point_size);
-      glUniform1i(color_mode_loc, state.color_mode);
+      glUniform1i(color_mode_loc,state.dataset_show_labels && state.frame.annotations && !state.frame.annotations->point_labels.empty() ? 3 : state.color_mode);
       glUniform1f(min_height_loc, state.height_color_min);
       glUniform1f(max_height_loc, state.height_color_max);
       if (state.grid.dirty) {
@@ -5373,9 +5586,10 @@ int RunViewer(int argc, char ** argv)
       const auto visible=VisiblePoints(state);
       glDrawArrays(GL_POINTS,static_cast<GLint>(visible.first),static_cast<GLsizei>(visible.count));
       RenderGrid(state, mvp);
-      RenderClusterBoxes(state, mvp);
-      RenderDetectionLabels(state,mvp);
-      RenderRoiBoxes(state, mvp);
+      if(!state.frame.annotations) RenderClusterBoxes(state, mvp);
+      if(!state.frame.annotations) RenderDetectionLabels(state,mvp);
+      if(!state.frame.annotations) RenderRoiBoxes(state, mvp);
+      RenderDatasetBoxes(state,mvp);
       RenderAxes(state, mvp);
       glDisable(GL_SCISSOR_TEST);
       ImGui::Render();
@@ -5418,7 +5632,7 @@ int RunViewer(int argc, char ** argv)
     state.live.Disconnect();
     glDeleteProgram(program);
     glDeleteProgram(state.grid.program);
-    glDeleteBuffers(1, &state.vbo);
+    glDeleteBuffers(1, &state.vbo);glDeleteBuffers(1,&state.label_vbo);
     glDeleteBuffers(1, &state.grid.vbo);
     glDeleteBuffers(1, &state.cluster_boxes.fill_vbo);
     glDeleteBuffers(1, &state.cluster_boxes.line_vbo);

@@ -114,7 +114,9 @@ void WriteRegions(std::ostream & out,const RoiSettings & regions)
     if (!box.enabled) continue;
     if (!first) out<<',';
     first=false;out<<"{\"name\":"<<Json(box.name)<<",\"center_m\":";Vector(out,box.center);
-    out<<",\"size_m\":";Vector(out,box.size);out<<",\"yaw_deg\":"<<box.yaw_deg<<'}';
+    out<<",\"size_m\":";Vector(out,box.size);out<<",\"yaw_deg\":"<<box.yaw_deg;
+    const auto & color=RoiBoxColor(box);
+    out<<",\"color_index\":"<<RoiColorIndex(box)<<",\"color_rgb\":["<<color.r<<','<<color.g<<','<<color.b<<"]}";
   }
   out<<']';
 }
@@ -326,7 +328,7 @@ RoiExportResult ExportRoiDataset(const RoiExportRequest & request,const std::sha
       if (request.live_snapshot) metadata<<"\"live\",\"sequence\":"<<frame_index<<",\"topic\":"<<Json(request.live_topic);
       else {
         const auto & source=request.sources[i];const auto & handle=source.handle;
-        metadata<<Json(handle.format==InputFormat::Ros2Bag ? "rosbag" : handle.format==InputFormat::KittiXyzi ? "bin" :
+        metadata<<Json(handle.format==InputFormat::Ros2Bag ? "rosbag" : (handle.format==InputFormat::KittiXyzi || handle.format==InputFormat::DatasetXyzi) ? "bin" :
           handle.format==InputFormat::Numpy ? "npy" : handle.format==InputFormat::Pcd ? "pcd" : "ouster_legacy")
           <<",\"path\":"<<Json(handle.path.u8string())<<",\"topic\":"<<Json(handle.bag_topic)
           <<",\"frame_index\":"<<source.frame_index<<",\"frame_number\":"<<static_cast<std::uint64_t>(source.frame_index)+1<<",\"bag_duplicate_index\":"<<handle.bag_duplicate_index
