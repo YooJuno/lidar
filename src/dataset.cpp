@@ -197,6 +197,24 @@ void AddFile(std::vector<FrameHandle> & frames,const fs::path & points)
   const auto metadata=points.filename()=="coord.npy" && fs::is_regular_file(root/"meta.json") ? root/"meta.json" : root/"metadata"/fs::u8path(points.stem().u8string()+".json");
   Add(frames,root,points,metadata);
 }
+// Compare digit runs by value without integer conversion or overflow.
+bool NaturalLess(const std::string & a,const std::string & b)
+{
+  std::size_t i=0,j=0;
+  while(i<a.size() && j<b.size()) {
+    if(a[i]>='0' && a[i]<='9' && b[j]>='0' && b[j]<='9') {
+      auto end_a=i,end_b=j;while(end_a<a.size() && a[end_a]>='0' && a[end_a]<='9') ++end_a;
+      while(end_b<b.size() && b[end_b]>='0' && b[end_b]<='9') ++end_b;
+      auto first_a=i,first_b=j;while(first_a<end_a && a[first_a]=='0') ++first_a;while(first_b<end_b && b[first_b]=='0') ++first_b;
+      if(end_a-first_a!=end_b-first_b) return end_a-first_a<end_b-first_b;
+      const int compared=a.compare(first_a,end_a-first_a,b,first_b,end_b-first_b);
+      if(compared) return compared<0;
+      i=end_a;j=end_b;
+    } else {if(a[i]!=b[j]) return static_cast<unsigned char>(a[i])<static_cast<unsigned char>(b[j]);++i;++j;}
+  }
+  if(i!=a.size() || j!=b.size()) return i==a.size();
+  return a<b; // Deterministic ties for zero-padded spellings.
+}
 void Scan(const fs::path & root,std::vector<FrameHandle> & frames,InputLoadState * load,bool include_bin,unsigned depth=0)
 {
   if(load) load->CheckCancelled();
@@ -222,7 +240,8 @@ void Scan(const fs::path & root,std::vector<FrameHandle> & frames,InputLoadState
     if(entry.is_directory()) children.push_back(entry.path());
     else if(entry.is_regular_file() && (IsDatasetFile(entry.path()) || (include_bin && entry.path().extension()==".bin"))) files.push_back(entry.path());
   }
-  std::sort(files.begin(),files.end());std::sort(children.begin(),children.end());
+  const auto by_name=[](const fs::path & a,const fs::path & b) {return NaturalLess(a.filename().u8string(),b.filename().u8string());};
+  std::sort(files.begin(),files.end(),by_name);std::sort(children.begin(),children.end(),by_name);
   for(const auto & file:files) {
     if(load) load->CheckCancelled();
     const auto stem=file.stem().u8string();
@@ -253,6 +272,9 @@ std::vector<FrameHandle> ResolveDatasetFrames(const fs::path & path,InputLoadSta
     const auto prefix=frame.dataset_sample->root.lexically_relative(path).generic_u8string();
     if(!prefix.empty() && prefix!=".") frame.label=frame.dataset_sample->root.filename().u8string()==frame.label ? prefix : prefix+"/"+frame.label;
   }
+  std::stable_sort(frames.begin(),frames.end(),[](const FrameHandle & a,const FrameHandle & b) {
+    return a.label==b.label ? NaturalLess(a.path.generic_u8string(),b.path.generic_u8string()) : NaturalLess(a.label,b.label);
+  });
   return frames;
 }
 FrameData LoadDatasetFrame(const FrameHandle & handle)

@@ -169,7 +169,7 @@ target_include_directories(lidar_viewer_tracking PUBLIC ${CMAKE_CURRENT_SOURCE_D
 target_link_libraries(lidar_viewer_tracking PRIVATE Eigen3::Eigen)
 lidar_warnings(lidar_viewer_tracking)
 
-add_library(lidar_viewer_export STATIC src/roi_export.cpp src/data_io.cpp src/dataset.cpp src/training_job.cpp src/review_window.cpp)
+add_library(lidar_viewer_export STATIC src/roi_export.cpp src/data_io.cpp src/dataset.cpp src/training_job.cpp)
 target_include_directories(lidar_viewer_export PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(lidar_viewer_export SYSTEM PRIVATE ${PCL_INCLUDE_DIRS})
 target_link_libraries(lidar_viewer_export PUBLIC lidar_viewer_roi lidar_viewer_bag Threads::Threads)

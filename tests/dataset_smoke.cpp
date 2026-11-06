@@ -71,6 +71,21 @@ int main()
     Check(ResolveInputFrames(root/"raw/sample.bin")[0].format==InputFormat::KittiXyzi,"Normal BIN format changed");
     Text(root/"raw/broken.bin","bad");Reject([&]{LoadFrame(lidar_viewer::ResolveDatasetFrames(root/"raw/broken.bin",nullptr,true)[0]);});
     Reject([&]{lidar_viewer::ResolveDatasetFrames(root/"metadata.json");});
+    fs::create_directory(root/"numbered");
+    const std::vector<std::string> expected{"scan_frame_2.npy","scan_frame_0003.npy","scan_frame_10.npy","scan_frame_1864.npy","scan_frame_1868.npy","scan_frame_15506.npy","scan_frame_15510.npy","scan_frame_15514.npy","scan_frame_999999999999999999999999999999.npy"};
+    for(auto it=expected.rbegin();it!=expected.rend();++it) Npy(root/"numbered"/(*it),"<f4",2,4,bytes);
+    const auto numbered=lidar_viewer::ResolveDatasetFrames(root/"numbered");
+    Check(numbered.size()==expected.size(),"Numbered cloud scan lost files");
+    for(std::size_t i=0;i<expected.size();++i) Check(numbered[i].path.filename()==expected[i],"Point files are not in numeric frame order");
+    Text(root/"numbered/metadata.json","{\"schema\":\"lidar_studio.roi_dataset\",\"status\":\"complete\",\"samples\":[{\"id\":\"frame_15506\",\"points\":\"scan_frame_15506.npy\",\"metadata\":\"missing.json\"},{\"id\":\"frame_1864\",\"points\":\"scan_frame_1864.npy\",\"metadata\":\"missing.json\"}]}");
+    const auto manifest_sorted=lidar_viewer::ResolveDatasetFrames(root/"numbered");
+    Check(manifest_sorted.size()==2 && manifest_sorted[0].label=="frame_1864","Manifest samples are not in numeric frame order");
+    fs::create_directory(root/"numbered_folders");
+    for(const auto * name:{"sample_15506","sample_1864","sample_10","sample_2"}) {
+      fs::create_directory(root/"numbered_folders"/name);Npy(root/"numbered_folders"/name/"coord.npy","<f4",2,4,bytes);
+    }
+    const auto folders=lidar_viewer::ResolveDatasetFrames(root/"numbered_folders");
+    Check(folders.size()==4 && folders[0].label=="sample_2" && folders[1].label=="sample_10" && folders[2].label=="sample_1864" && folders[3].label=="sample_15506","Sample folders are not in numeric frame order");
     Npy(root/"object.npy","|O8",2,4,bytes);Reject([&]{LoadFrame(ResolveInputFrames(root/"object.npy")[0]);});
     Npy(root/"fortran.npy","<f4",2,4,bytes,true);Reject([&]{LoadFrame(ResolveInputFrames(root/"fortran.npy")[0]);});
     Npy(root/"truncated.npy","<f4",3,4,bytes);Reject([&]{LoadFrame(ResolveInputFrames(root/"truncated.npy")[0]);});

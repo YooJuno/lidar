@@ -58,7 +58,9 @@ def main():
         offset=len(log_path.read_text());controls.enter('dataset_folder_path',str(data))
         wait(lambda:'Opened point cloud:'in log_path.read_text()[offset:]);controls.rect('dataset_current_0',after=offset)
         check('typed_folder_path_reopens_review_data',True)
-        profile=out/'settings/lidar_viewer/profiles/dataset.cfg';values=dict(line.split('=',1)for line in profile.read_text().splitlines()if '='in line)
+        profile=out/'settings/lidar_viewer/profiles/dataset.cfg'
+        if not profile.exists():profile=private/'config/profiles/dataset.cfg'
+        values=dict(line.split('=',1)for line in profile.read_text().splitlines()if '='in line)
         check('dataset_view_does_not_apply_sensor_height_or_imu',float(values['calibration_z_m'])==0 and values['imu_level_enabled']=='0'and values['ground_removal_enabled']=='0')
         controls.click('dataset_train');controls.rect('training_epochs');controls.click('training_validate');wait(lambda:len(jobs())==1)
         check('training_setup_validates_annotated_dataset',json.loads(jobs()[0].read_text())['status']=='validated')

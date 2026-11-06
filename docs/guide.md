@@ -250,7 +250,7 @@ NPY는 [NumPy 표준 형식](https://numpy.org/doc/2.0/reference/generated/numpy
 
 ## 데이터셋 열람과 학습
 
-상단 **Point clouds**를 누르면 메인 bag 재생을 유지한 채 별도 확인 창을 엽니다. 같은 입력란에 **파일 또는 폴더 경로**를 넣고 Enter/Open을 누릅니다. 파일이면 한 샘플, 폴더이면 내부 샘플 목록을 표시합니다. ROI 내보내기 폴더·그 안의 points 폴더·일반 NPY/PCD/XYZI BIN 폴더·coord.npy 샘플 폴더를 지원합니다. **Open points** 또는 Ctrl+O로 경로를 다시 선택합니다. **Data**의 Previous/Next, 목록, **←/→**로 하나씩 확인합니다. 경로를 다시 입력해 열면 외부에서 수정한 라벨도 다시 읽습니다.
+상단 **Point clouds**를 누르면 같은 앱 안에서 포인트 확인 화면으로 전환합니다. **Bag** 버튼으로 기존 재생 상태와 시점을 유지한 채 돌아갑니다. 같은 입력란에 **파일 또는 폴더 경로**를 넣고 Enter/Open을 누릅니다. 파일이면 한 샘플, 폴더이면 내부 샘플 목록을 표시합니다. ROI 내보내기 폴더·그 안의 points 폴더·일반 NPY/PCD/XYZI BIN 폴더·coord.npy 샘플 폴더를 지원합니다. **Open points** 또는 Ctrl+O로 경로를 다시 선택합니다. **Browse…**의 **Choose folder… / Choose file…**에서 탐색기로 폴더나 파일을 고릅니다. **Data**의 Previous/Next, 목록, **←/→**로 하나씩 확인합니다. 폴더의 파일·샘플 폴더는 숫자 순서로 정렬하며, 프레임을 넘겨도 시점과 줌을 유지합니다. **Fit [F]**를 눌렀을 때만 현재 샘플에 화면을 맞춥니다. 경로를 다시 입력해 열면 외부에서 수정한 라벨도 다시 읽습니다.
 
 검토 화면은 **Data / View** 탭으로 구성하며 저장된 좌표·점 순서를 유지합니다. **Color points by label**은 점별 ID를 색으로 표시하고 클래스별 점 개수를 보여 줍니다. 원본 metadata에 classes 배열이 있으면 해당 클래스 이름을 사용합니다. 포인트 라벨은 `labels/<id>.npy` 또는 `segment.npy`의 N개 정수(-1 무시, 0..65535 클래스 ID)입니다. 수동 라벨에 유효한 값이 없으면 `draft_segment.npy`, `weak_segment.npy` 순으로 찾아 **Unverified draft**로 구분합니다. ROI 이름으로 저장한 클래스 후보만 있는 데이터에는 점별 라벨이 없다고 표시합니다.
 
